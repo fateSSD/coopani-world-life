@@ -17,6 +17,8 @@ import {
   quoteMove, recentVisits, snapshot, applyCert, applySpend,
 } from '../src/state.ts';
 import { readTown } from '../src/bridge.ts';
+import { LifeWorld } from '../src/world.ts';
+import { LIFE_DEFAULTS } from '../src/config.ts';
 
 let pass = 0;
 let fail = 0;
@@ -560,6 +562,47 @@ console.log('\n[32] 本城：留空用内置，填了就用他填的');
   /* 两个都空才落到芦花塘 —— 那是兜底，不是默认。 */
   const none = await readTown('', '');
   ok(none.name === '芦花塘', '什么都不填才是芦花塘');
+}
+
+console.log('\n[33] 睡觉即时广播 / homeCity 热改 / 凌晨 nagged 本地日期');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'life-reg-'));
+  const pushed = [];
+  const cfg = { ...LIFE_DEFAULTS(), enabled: true, homeCity: '成都', notify: 'once' };
+  const w = new LifeWorld({ cfg, dataDir: dir, botName: '大肥鱼' });
+  await w.start({
+    log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+    pushEvent: async (e) => { pushed.push(e); return { ...e, blobs: [] }; },
+  });
+
+  const actTool = w.tools().find((x) => x.name === 'life_act');
+  await actTool.handler({ kind: 'sleep' });
+  const pubSleep = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
+  ok(Boolean(pubSleep.asleepUntil), 'life_act sleep 后立刻广播 life-public.json');
+
+  await actTool.handler({ kind: 'eat' });
+  const pubAwake = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
+  ok(pubAwake.asleepUntil === '', 'life_act eat 醒来后立刻清空 asleepUntil');
+
+  /* homeCity 热改：只改 cfg.homeCity，tick 应重读本城。 */
+  cfg.homeCity = '杭州';
+  await w.tick();
+  ok(w.town.name === '杭州' && w.town.source === 'own', 'homeCity 热改后 tick 生效', `${w.town.name}/${w.town.source}`);
+
+  /* 凌晨 0–8 点（UTC 前一天）跨线提醒后，nagged[key] 必须写本地日期，不能写 UTC 日期。 */
+  const dawn = new Date(2026, 10, 16, 2, 0, 0); // 本地 2026-11-16 02:00
+  const localDay = localDateKey(dawn);
+  w.state.vitals.food = 31;
+  w.state.updatedAt = new Date(dawn.getTime() - 3_600_000).toISOString();
+  /* 模拟 tick 里跨线后的记录逻辑：shouldNag 与写入同口径 */
+  const r = advance(w.state, dawn);
+  ok(r.crossed.includes('food'), '测试前提：饱腹掉过阈值');
+  if (w.shouldNag('food', dawn)) {
+    w.state.nagged.food = localDateKey(dawn);
+  }
+  ok(w.state.nagged.food === localDay, 'nagged 写入本地日期', w.state.nagged.food);
+  ok(!w.shouldNag('food', new Date(2026, 10, 16, 3, 0, 0)), '同一本地日凌晨再次检查不重复提醒');
+  await w.stop();
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

@@ -107,6 +107,7 @@ export class LifeWorld implements World {
    */
   private lastTickMs = 0;
   private lastTownUrl: string | null = null;
+  private lastHomeCity: string | null = null;
 
   /**
    * 会话文件的 mtime 基线。
@@ -147,6 +148,7 @@ export class LifeWorld implements World {
     this.log = host.log;
     this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
     this.lastTownUrl = String(this.cfg.townUrl || '').trim();
+    this.lastHomeCity = String(this.cfg.homeCity || '').trim();
     /*
      * 基线：启动那一刻文件的时间戳。之后变了才算「他又说过话」。
      * 启动时文件不存在（`0`）就不算立过基线 —— 它第一次出现说明他刚聊过，要记。
@@ -159,7 +161,7 @@ export class LifeWorld implements World {
     void this.versionCheck.startupRefresh();
     this.restartTimer();
     host.log.info(
-      `模拟鱼生已就绪：${this.town.name}（${this.town.source === 'server' ? '读服务器' : '内置'}）`
+      `模拟鱼生已就绪：${this.town.name}（${this.townSourceLabel()}）`
       + `　·　上次存档 ${this.state.updatedAt}`
       + (this.recovered === 'bak' ? '　·　主档坏了，用的是备份' : ''),
     );
@@ -231,10 +233,15 @@ export class LifeWorld implements World {
     const ms = Math.max(15_000, Number(this.cfg.tickMs) || 60_000);
     if (ms !== this.lastTickMs) this.restartTimer();
     const townUrl = String(this.cfg.townUrl || '').trim();
-    if (this.lastTownUrl !== null && townUrl !== this.lastTownUrl) {
+    const homeCity = String(this.cfg.homeCity || '').trim();
+    if (
+      (this.lastTownUrl !== null && townUrl !== this.lastTownUrl)
+      || (this.lastHomeCity !== null && homeCity !== this.lastHomeCity)
+    ) {
       this.lastTownUrl = townUrl;
-      this.town = await readTown(townUrl, this.cfg.homeCity);
-      this.log?.info(`模拟鱼生：本城改成了 ${this.town.name}（${this.town.source === 'server' ? '读服务器' : '内置'}）`);
+      this.lastHomeCity = homeCity;
+      this.town = await readTown(townUrl, homeCity);
+      this.log?.info(`模拟鱼生：本城改成了 ${this.town.name}（${this.townSourceLabel()}）`);
     }
 
     this.journey = readJourney(this.opts.dataDir, now);
@@ -272,7 +279,7 @@ export class LifeWorld implements World {
      * 所以这里只说「钱够了」，搬不搬她自己判断：户型合不合适、要不要再攒点买下来、
      * 这阵子想不想折腾 —— 这些理由代码都不知道。
      */
-    const today = now.toISOString().slice(0, 10);
+    const today = localDateKey(now);
     for (const g of readyGoals(this.state)) {
       const key = `goal:${g.id}`;
       if (this.state.nagged[key] === today) continue;
@@ -295,7 +302,7 @@ export class LifeWorld implements World {
         this.lowText(key, v),
         'debounce',
       );
-      this.state.nagged[key] = now.toISOString().slice(0, 10);
+      this.state.nagged[key] = today;
     }
 
     if (dirty) {
@@ -524,6 +531,8 @@ export class LifeWorld implements World {
         const r = applyAct(this.state, String(args?.kind ?? ''), now);
         if (!r.ok) return { text: r.reason ?? '这件事做不了。' };
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
+        /* 睡下去或做别的醒来，立刻广播 —— 不等下一个 tickMs 窗口。 */
+        this.broadcastLife(now);
         const kind = ACTS[String(args.kind)];
         const after = Object.entries(ACTS[String(args.kind)]?.gain ?? {})
           .map(([k, d]) => `${VITAL_LABEL[k as VitalKey]} ${Number(d) > 0 ? '+' : ''}${d}`)
@@ -1183,6 +1192,14 @@ export class LifeWorld implements World {
     };
   }
 
+  private townSourceLabel(): string {
+    return this.town.source === 'server'
+      ? '读服务器'
+      : this.town.source === 'own'
+        ? '你自己填的'
+        : '内置';
+  }
+
   /**
    * 扩展名旁边那三盏灯。
    *
@@ -1228,7 +1245,9 @@ export class LifeWorld implements World {
           hint: `${this.town.problem || '配了地址但读不到'}。城名暂时用内置的，不影响她过日子。`
             + '会自己重试；一直红就检查设置里那个网址拼对了没有',
         }
-        : { label: '本城', state: 'offline', hint: `用内置的${this.town.name}。没配服务器就是这样，**不用管** —— 想改城名才去填那个网址` };
+        : this.town.source === 'own'
+          ? { label: '本城', state: 'offline', hint: `你自己填的${this.town.name}。没配服务器就是这样，**不用管** —— 想改城名去设置里改或填服务器网址` }
+          : { label: '本城', state: 'offline', hint: `用内置的${this.town.name}。没配服务器就是这样，**不用管** —— 想改城名才去填那个网址` };
 
     /* ---- 旅行 ---- */
     const j = readJourney(this.opts.dataDir, now);
@@ -1466,7 +1485,7 @@ export class LifeWorld implements World {
           version: VERSION,
           digest: [
             `版本 ${VERSION}`,
-            `城：${this.town.name}（${this.town.source === 'server' ? '读服务器' : '内置'}）`,
+            `城：${this.town.name}（${this.townSourceLabel()}）`,
             `住：${HOME_TIER_LABEL[this.state.home.tier]} · ${this.state.home.tenure === 'own' ? '买下的' : '租的'} · 每月 ${this.state.home.monthly} 元`,
             `她那边：${DAYPART_LABEL[dayPart(at)]} ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
             `旅行扩展：${j.installed ? j.phase || '已装' : '没装'}`,

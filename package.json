@@ -1,6 +1,6 @@
 {
   "name": "coopani-world-life",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "type": "module",
   "description": "模拟鱼生 · 需要 Coopani 0.2.17+：给她一本过日子的账 —— 五条需求会自己掉，职业、住处、钱、目标全在面板上。",
   "author": {
