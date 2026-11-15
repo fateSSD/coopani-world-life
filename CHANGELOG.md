@@ -1,5 +1,22 @@
 # 变更记录
 
+## 0.9.1
+
+**标签改成市场认识的词 —— 之前搜不到。**
+
+`cortico.tags` 原来是 `['companion', 'life']`。而 **`life` 不在市场词表里**
+（`Pal-AI-Lab/cortico-extensions` 的 `TAGS.md`，29 个 tag，没有它）。
+**市场是按 tag 分组和筛选的，所以搜「生活」「陪伴」根本找不到这个扩展。**
+
+现在是 `['companion', 'internal-state']`：
+
+- **`companion`** 正是它的位置 —— 词表的定义就是「mood, affinity, **daily routine**, sense of time, speaking first」，一条不差
+- **`internal-state`** 是**该自己声明的劝告标签**：这个扩展确实在 World 里管着 bot 的内部状态（五条需求、情绪、说好了的事），脱离 bot 自己的 Memory。不声明等于「未声明、也未审核」，而那句提醒是使用者该看到的
+
+`keywords` 也补了 npm 侧的搜索词（`life-simulation` / `daily-life` / `needs` / `mood` / `routine`）——
+市场不看它，但在 npm 上搜得到。
+
+
 ## 0.9.0
 
 **灯的说明补全了 —— 灰的到底要不要管。**

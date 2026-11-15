@@ -34,7 +34,7 @@ export interface LifeWorldOptions {
 }
 
 /** 版本号。envPrompt 里露出来，报障时第一个要确认的数。 */
-const VERSION = '0.9.0';
+const VERSION = '0.9.1';
 
 /** 人话的时长：「3 分钟」「2 小时」。灯上的 hint 用，不要写 180000 毫秒。 */
 function fmtSpan(ms: number): string {
