@@ -1001,6 +1001,24 @@ export function recentVisits(state: LifeState, now: Date, days = 7): number {
 }
 
 /**
+ * 攒够了、但还没办的目标。
+ *
+ * ## 为什么不在这里直接帮她搬
+ *
+ * 「攒够 5200 就搬到新小区」是**她自己的目标**。代码替她执行，那这个目标
+ * 就不再是她的决定了 —— 它变成一个定时器。
+ *
+ * 所以这一层只回答「钱够了没有」，**搬不搬由她判断**：
+ * 户型可能不合适、可能想再攒点买下来、可能这阵子不想折腾。
+ * 这些理由代码都不知道，只有她（和她的模型）知道。
+ *
+ * 调用方拿到结果后只该做一件事：**告诉她「攒够了」**，然后等她自己动。
+ */
+export function readyGoals(state: LifeState): Goal[] {
+  return state.goals.filter((g) => !g.done && g.need > 0 && state.money.cash >= g.need);
+}
+
+/**
  * 往 tellable 池子里放一条。
  *
  * **上限 20 条，满了丢最旧的。** 它不是日志，是「她可以拿出来说的事」。

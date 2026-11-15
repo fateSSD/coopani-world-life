@@ -8,7 +8,7 @@ import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
 import {
   ACTS, CRITICAL, HOME_TIER_COST, HOME_TIER_LABEL, LOW, MAX_PENDING, MAX_PLEDGES,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL,
-  advance, applyAct, applyMove, applyWork, localDateKey, noteVisit, quoteMove,
+  advance, applyAct, applyMove, applyWork, localDateKey, noteVisit, quoteMove, readyGoals,
   recentVisits, remember, snapshot,
   type HomeTier, type LifeState, type PendingBlock, type Snapshot, type VitalKey,
 } from './state.ts';
@@ -34,7 +34,7 @@ export interface LifeWorldOptions {
 }
 
 /** 版本号。envPrompt 里露出来，报障时第一个要确认的数。 */
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 
 export class LifeWorld implements World {
   readonly id = LIFE_ID;
@@ -202,6 +202,28 @@ export class LifeWorld implements World {
     for (const c of r.recovered) {
       remember(this.state, `${c.text.replace(/。$/, '')}，已经好了。`, now);
       await this.push('life.recovered', `${c.text.replace(/。$/, '')}，已经好了。`, 'debounce');
+    }
+
+    /*
+     * 目标攒够了 —— **只给信号，不替她搬。**
+     *
+     * 「攒够 5200 就搬到新小区」是她自己的目标。代码替她执行，
+     * 这个目标就变成了一个定时器，不再是她的决定。
+     *
+     * 所以这里只说「钱够了」，搬不搬她自己判断：户型合不合适、要不要再攒点买下来、
+     * 这阵子想不想折腾 —— 这些理由代码都不知道。
+     */
+    const today = now.toISOString().slice(0, 10);
+    for (const g of readyGoals(this.state)) {
+      const key = `goal:${g.id}`;
+      if (this.state.nagged[key] === today) continue;
+      this.state.nagged[key] = today;
+      await this.push(
+        'life.goal',
+        `攒够了：「${g.what}」要的钱有了。手上 ${this.state.money.cash} 元，要 ${g.need} 元。`
+          + '搬不搬、什么时候搬，你自己看 —— 这只是一个数到齐了。',
+        'debounce',
+      );
     }
 
     /* 掉过线的那几条 —— 按配置的密度说。 */
@@ -804,6 +826,9 @@ export class LifeWorld implements World {
     if (s.goals.length) {
       parts.push(`目标：${s.goals.map((g) => {
         if (g.done) return `${g.what}（已经做到了）`;
+        if (g.need > 0 && s.money.cash >= g.need) {
+          return `${g.what}（钱够了，还没办）`;
+        }
         return `${g.what}（还差 ${Math.max(0, g.need - s.money.cash)}）`;
       }).join('；')}`);
     }
@@ -904,9 +929,17 @@ export class LifeWorld implements World {
         `钱：手上 ${s.money.cash} 元`,
       ].join('　·　'),
       'life.goal': s.goals.length
-        ? s.goals.map((g) => (g.done
-          ? `${g.what}（已经做到了）`
-          : `${g.what}（还差 ${Math.max(0, g.need - s.money.cash)}）`)).join('；')
+        ? s.goals.map((g) => {
+          if (g.done) return `${g.what}（已经做到了）`;
+          /*
+           * 攒够了的要**明说「够」**，不能还写「还差 0」。
+           * 「还差 0」读起来像没到，而「钱够了，还没办」才是她该做的那个判断的入口。
+           */
+          if (g.need > 0 && s.money.cash >= g.need) {
+            return `${g.what}（钱够了，还没办 —— 手上 ${s.money.cash}，要 ${g.need}）`;
+          }
+          return `${g.what}（还差 ${Math.max(0, g.need - s.money.cash)}）`;
+        }).join('；')
         : '（还没给自己定目标）',
       'life.body': bodyText,
       'life.low': lowText,
@@ -1126,6 +1159,27 @@ export class LifeWorld implements World {
         visitedDays: s.visitedDays,
         recovered: this.recovered,
         /*
+         * 反馈用的那一份。
+         *
+         * `digest` 是**要粘到公开 issue 里的东西**，所以：
+         * 不带 uid、不带 dataDir、不带任何路径 —— 只带能复现问题的状态。
+         * 版本号是第一行，因为报障时第一个要确认的数就是它。
+         */
+        feedback: {
+          repo: 'https://github.com/fateSSD/coopani-world-life',
+          version: VERSION,
+          digest: [
+            `版本 ${VERSION}`,
+            `城：${this.town.name}（${this.town.source === 'server' ? '读服务器' : '内置'}）`,
+            `住：${HOME_TIER_LABEL[this.state.home.tier]} · ${this.state.home.tenure === 'own' ? '买下的' : '租的'} · 每月 ${this.state.home.monthly} 元`,
+            `她那边：${DAYPART_LABEL[dayPart(at)]} ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
+            `旅行扩展：${j.installed ? j.phase || '已装' : '没装'}`,
+            `五条：${(Object.keys(VITAL_LABEL) as VitalKey[]).map((k) => `${VITAL_LABEL[k]} ${Math.round(s.vitals[k])}`).join(' ')}`,
+            `局面：悬着 ${s.pending.length} 件 · 说好了 ${s.pledges.length} 件 · 欠着 ${s.overdue.length} 件`,
+            `目标：${s.goals.map((g) => g.what).join('；') || '无'}`,
+          ].join('\n'),
+        },
+        /*
          * 四档的搬家报价。**面板要能在按之前把价说清** ——
          * 「还差 2200」写在按钮旁边，比点一下弹「钱不够」好得多。
          */
@@ -1277,6 +1331,11 @@ export const LIFE_DESCRIBE = {
     {
       type: 'life.low',
       description: { zh: '某条需求掉到了阈值以下。', en: 'One of her needs dropped below the threshold.' },
+      trigger: 'debounce' as const,
+    },
+    {
+      type: 'life.goal',
+      description: { zh: '一个目标的钱攒够了（搬不搬她自己定）。', en: 'Enough money for a goal (moving is her call).' },
       trigger: 'debounce' as const,
     },
     {

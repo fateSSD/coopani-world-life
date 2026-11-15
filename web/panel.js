@@ -20,6 +20,15 @@ const TEXT = {
   zh: {
     loading: '读她的日子…',
     empty: '还没读到。',
+    fbLead: '有 bug，或者想让她能干什么？',
+    fbBug: '复制诊断信息',
+    fbWant: '复制诊断信息（想加东西）',
+    fbOpenBug: '开 Issues 报 bug ↗',
+    fbOpenWant: '开 Issues 提需求 ↗',
+    fbCopied: '已复制，粘过去就行',
+    fbAddr: '仓库：',
+    fbWhy: '按钮只负责把版本和当前状态复制到剪贴板（不带任何身份信息）。'
+      + '点右边的链接去 GitHub 开一条，把复制的内容粘在正文里 —— 这样一眼能看出是哪个版本、什么状态。',
     who: '她是谁',
     visits: '他来过',
     visitDays: '这几天 {n} 天',
@@ -72,6 +81,15 @@ const TEXT = {
   en: {
     loading: 'Reading her day…',
     empty: 'Nothing yet.',
+    fbLead: 'A bug, or something you want her to do?',
+    fbBug: 'Copy diagnostics',
+    fbWant: 'Copy diagnostics (feature request)',
+    fbOpenBug: 'Open an issue ↗',
+    fbOpenWant: 'Request a feature ↗',
+    fbCopied: 'copied — just paste it',
+    fbAddr: 'Repo: ',
+    fbWhy: 'The button only copies the version and current state to your clipboard '
+      + '(no identifying info). Use the link to open a GitHub issue and paste it in the body.',
     who: 'Who she is',
     visits: 'You came by',
     visitDays: '{n} days',
@@ -229,6 +247,27 @@ function ensureStyle(root) {
 .lf-move .dep { font-size: 12px; color: #6b7280; }
 .lf-note-line { margin: 10px 0 0; font-size: 11.5px; color: #9ca3af; line-height: 1.7; }
 
+/*
+ * 底部反馈栏。
+ *
+ * ## 为什么不是 mailto:
+ *
+ * 宿主的 setWindowOpenHandler 只对 http(s) 调 shell.openExternal，其余一律 deny ——
+ * **mailto 点下去是静默无事发生，比没有按钮更糟**（旅行扩展踩过，自己也踩过）。
+ *
+ * 所以：按钮只做「把诊断信息复制到剪贴板」，旁边给一个 https 的链接去 Issues。
+ * 复制 + 打开是两个动作，用户点两下，比一个点了没反应的按钮可靠。
+ */
+.lf-fb { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+  padding: 13px 16px; margin-top: 12px; }
+.lf-fb .lead { margin: 0 0 9px; font-size: 13px; color: #374151; }
+.lf-fb .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lf-fb .why { margin: 8px 0 0; font-size: 11.5px; color: #9ca3af; line-height: 1.6; }
+.lf-fb .addr { display: flex; align-items: center; gap: 8px; margin-top: 8px;
+  font-size: 11.5px; color: #6b7280; flex-wrap: wrap; }
+.lf-fb .addr code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+.lf-fb a.lf-btn { text-decoration: none; display: inline-block; }
+
 .lf-cols { display: flex; flex-wrap: wrap; gap: 12px; }
 .lf-cols > .lf-card { flex: 1 1 210px; margin-bottom: 0; }
 .lf-list { margin: 0; padding: 0; list-style: none; }
@@ -289,12 +328,13 @@ export default {
         watches.append(el('h3', null, t(lang, 'watches')));
         wants.append(el('h3', null, t(lang, 'wants')));
         cols.append(habits, watches, wants, pendingCard, pledgeCard);
+        const fbBox = el('section', 'lf-fb');
         const foot = el('div', 'lf-foot');
         const reload = el('button', 'lf-btn', t(lang, 'reload'));
         const msg = el('span', 'lf-msg', '');
         foot.append(reload, msg);
 
-        app.append(head, sub, note, whoCard, vitalsCard, goalCard, moveCard, moodRow, cols, foot);
+        app.append(head, sub, note, whoCard, vitalsCard, goalCard, moveCard, moodRow, cols, fbBox, foot);
 
         const drawVitals = (vitals, low) => {
           vitalsCard.innerHTML = '';
@@ -539,6 +579,7 @@ export default {
             note.textContent = (note.textContent ? note.textContent + '　·　' : '') + t(lang, 'recoveredFresh');
           }
 
+          if (!fbBox.childElementCount) drawFeedback(d);
           drawWho(d);
           drawVitals(d.vitals, d.low);
           drawGoals(d);
@@ -583,6 +624,71 @@ export default {
           drawPledges(d);
           drawList(wants, t(lang, 'wants'), d.wants,
             (w) => `${w.what}${w.scale === 'big' ? '（得攒一攒）' : ''}`);
+        };
+
+        /** 复制到剪贴板。宿主的 webview 里 clipboard API 未必有，要有降级。 */
+        const copyText = (text) => {
+          try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              return navigator.clipboard.writeText(text);
+            }
+          } catch (e) { /* 落到下面 */ }
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.append(ta);
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+          } catch (e) { /* 复制不了就算了 */ }
+          return Promise.resolve();
+        };
+
+        /**
+         * 反馈栏。**只画一次** —— 内容里没有会变的东西（版本和仓库是常量），
+         * 跟着 30 秒刷新重画一遍是白费。
+         */
+        const drawFeedback = (d) => {
+          const fb = d.feedback;
+          if (!fb || !fb.repo) { fbBox.remove(); return; }
+          fbBox.innerHTML = '';
+          fbBox.append(el('p', 'lead', t(lang, 'fbLead')));
+
+          const row = el('div', 'row');
+          for (const kind of ['bug', 'want']) {
+            const btn = el('button', 'lf-btn', t(lang, kind === 'bug' ? 'fbBug' : 'fbWant'));
+            btn.type = 'button';
+            btn.addEventListener('click', () => {
+              /* 复制之后给个即时反馈，否则点了像没反应 —— 而那正是这套东西要避免的 */
+              copyText(fb.digest).then(() => {
+                const old = btn.textContent;
+                btn.textContent = t(lang, 'fbCopied');
+                setTimeout(() => { btn.textContent = old; }, 1800);
+              });
+            });
+            row.append(btn);
+          }
+          /*
+           * 两条 https 链接 —— 这是唯一能真的点出去的一类。
+           * `issues/new` 带预填 title，正文让他粘（诊断信息已经复制好了）。
+           */
+          for (const kind of ['bug', 'want']) {
+            const a = el('a', 'lf-btn', t(lang, kind === 'bug' ? 'fbOpenBug' : 'fbOpenWant'));
+            a.href = fb.repo + '/issues/new?title=' + encodeURIComponent(
+              (kind === 'bug' ? '[bug] ' : '[want] ') + 'v' + fb.version);
+            a.target = '_blank';
+            a.rel = 'noreferrer';
+            row.append(a);
+          }
+          fbBox.append(row);
+
+          const addr = el('div', 'addr');
+          addr.append(el('span', null, t(lang, 'fbAddr')));
+          addr.append(el('code', null, fb.repo));
+          fbBox.append(addr);
+          fbBox.append(el('p', 'why', t(lang, 'fbWhy')));
         };
 
         const load = () => ctx.invoke('snapshot').then(render).catch((e) => {
