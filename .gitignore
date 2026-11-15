@@ -1,0 +1,6 @@
+node_modules/
+_icon_src/
+*.tmp
+*.bak
+life-state.json
+.tmp/

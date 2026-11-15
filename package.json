@@ -1,0 +1,56 @@
+{
+  "name": "coopani-world-life",
+  "version": "0.5.0",
+  "type": "module",
+  "description": "模拟鱼生 · 需要 Coopani 0.2.17+：给她一本过日子的账 —— 五条需求会自己掉，职业、住处、钱、目标全在面板上。",
+  "author": {
+    "name": "Mr.Q"
+  },
+  "license": "MIT",
+  "keywords": [
+    "cortico-world",
+    "cortico",
+    "life",
+    "simulation"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "cortico": {
+    "kind": "world",
+    "api": 6,
+    "displayName": "模拟鱼生",
+    "describe": "describe.json",
+    "webUiClient": "web/panel.js",
+    "tags": [
+      "companion",
+      "life"
+    ],
+    "locales": {
+      "zh": {
+        "displayName": "模拟鱼生",
+        "description": "需要 Coopani 0.2.17+\n\n让她真的在过日子，而不是只在某个城市待着。\n\n- **五条需求**：饱腹、精力、清爽、娱乐、社交。会自己掉，得自己补。\n- **职业和住处**：顶一天活挣一天的钱；城中村、老小区、新小区、别墅区，租或买，攒够了能搬。\n- **三层意向**：想要的、悬着的、说好了 —— 说出口的事世界里记着，到期没做不会自己消失。\n- **她记得你哪天来过。**\n\n**和别的扩展一起用**\n\n- 装了旅行扩展：她在哪座城、那边几点、在不在路上，这边只读不写 —— 位置只有一个来源。\n- 装了碰面服务器：城名、街名、城规由服务器主在管理页设，所有鱼看到同一座城。\n- 不装任何一个也能自己过日子。"
+      },
+      "en": {
+        "displayName": "Simulated Fish Life",
+        "description": "Needs Coopani 0.2.17+\n\nShe actually lives her days instead of merely staying in a city.\n\n- **Five needs**: food, energy, cleanliness, fun, company. They drop; she refills them.\n- **Job and housing**: work a day for a day's pay; four housing tiers from urban village to villa, rent or buy, move up when she has saved enough.\n- **Three layers of intent**: wants, undecided things, promises — what she says out loud is recorded, and an overdue promise does not quietly disappear.\n- **She remembers which days you came by.**\n\n**Works with other extensions**\n\n- With the travel extension: where she is, what time it is there, whether she is on the road — read only, one source of truth for position.\n- With the meet server: the town name, streets and rules are set by the server owner; every fish sees the same town.\n- Works on its own without either."
+      }
+    },
+    "icon": "assets/icon.png"
+  },
+  "files": [
+    "src",
+    "web",
+    "ENV_PROMPT.md",
+    "README.md",
+    "describe.json",
+    "assets",
+    "CHANGELOG.md",
+    "LICENSE",
+    "tools"
+  ]
+}
