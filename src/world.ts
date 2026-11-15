@@ -364,7 +364,14 @@ export class LifeWorld implements World {
     const mode = this.cfg.notify;
     if (mode === 'off') return false;
     if (mode === 'always') return true;
-    const today = now.toISOString().slice(0, 10);
+    /*
+     * ⚠ 用 `localDateKey`，不是 `toISOString().slice(0, 10)`（2026-11-15 修）。
+     *
+     * 后者是 **UTC 日期**：北京时间凌晨 0–8 点时它还是前一天，于是那会儿的告警
+     * 占用的是**前一天**的额度 —— 同一天会推两次，第二天早上那次反而不推。
+     * 和 `workedToday` 是同一个毛病，一处写成 UTC、一处写成本地，就会这样。
+     */
+    const today = localDateKey(now);
     return this.state.nagged[key] !== today;
   }
 
