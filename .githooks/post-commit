@@ -1,0 +1,67 @@
+#!/bin/sh
+# post-commit —— commit 之后自动推送（main -> origin/main）。
+#
+# ## 行为约定
+# ① 钩子会推，commit 之后不要再手动 git push。
+# ② 远程领先时跳过并提示，不硬推、不留 rebase 中间态。
+# ③ 失败只提示，绝不挡住 commit（commit 本身已经成功）。
+# ④ 对账：`git fetch -q origin && git rev-list --left-right --count HEAD...origin/main`
+#    输出 "0 0" = 已同步。
+
+trap 'exit 0' EXIT
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+GITDIR="$(git rev-parse --git-dir 2>/dev/null)" || exit 0
+
+git remote get-url origin >/dev/null 2>&1 || exit 0
+
+# merge / rebase / cherry-pick 中间态不推，避免推出半成品
+for f in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+    [ -e "$GITDIR/$f" ] && exit 0
+done
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+[ -z "$BRANCH" ] && exit 0
+[ "$BRANCH" = "HEAD" ] && exit 0
+
+case "$BRANCH" in
+    main) REMOTE_BRANCH=main ;;
+    *) exit 0 ;;
+esac
+
+LOG="$GITDIR/push.log"
+printf '\n===== %s  push %s -> origin/%s =====\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$BRANCH" "$REMOTE_BRANCH" >> "$LOG" 2>/dev/null
+
+if GIT_TERMINAL_PROMPT=0 timeout 30 git fetch -q origin "$REMOTE_BRANCH" 2>/dev/null; then
+    BEHIND="$(git rev-list --count "HEAD..origin/$REMOTE_BRANCH" 2>/dev/null || echo 0)"
+    if [ "${BEHIND:-0}" -gt 0 ]; then
+        echo "" >&2
+        echo "[post-commit] 远程 $REMOTE_BRANCH 领先本地 $BEHIND 个提交，已跳过推送。" >&2
+        echo "[post-commit] 先同步：git pull --rebase origin $REMOTE_BRANCH，再手动推。" >&2
+        printf '跳过推送：远程领先 %s 个提交\n----- exit=skip\n' "$BEHIND" >> "$LOG" 2>/dev/null
+        exit 0
+    fi
+fi
+
+if command -v timeout >/dev/null 2>&1; then
+    OUT="$(cd "$ROOT" && GIT_TERMINAL_PROMPT=0 timeout 90 git push origin "$BRANCH:$REMOTE_BRANCH" 2>&1)"
+    RC=$?
+else
+    OUT="$(cd "$ROOT" && GIT_TERMINAL_PROMPT=0 git push origin "$BRANCH:$REMOTE_BRANCH" 2>&1)"
+    RC=$?
+fi
+
+printf '%s\n----- exit=%s\n' "$OUT" "$RC" >> "$LOG" 2>/dev/null
+
+if [ "$RC" -ne 0 ]; then
+    echo "" >&2
+    echo "[post-commit] 自动推送未成功（exit=$RC），提交已保存在本地，没推上去。" >&2
+    printf '%s\n' "$OUT" | sed 's/^/    /' >&2
+    echo "[post-commit] 手动补推：git push origin $BRANCH:$REMOTE_BRANCH" >&2
+    echo "[post-commit] 完整日志：$LOG" >&2
+else
+    echo "[post-commit] 已推送到 origin/$REMOTE_BRANCH" >&2
+fi
+
+exit 0
