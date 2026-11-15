@@ -97,7 +97,7 @@ export interface TownView {
    * `failed` 是「你配了但读不到」，是故障（红灯）。
    * 混成一个，面板上就永远看不出「明明配了地址却一直是默认城名」。
    */
-  source: 'server' | 'builtin' | 'failed';
+  source: 'server' | 'builtin' | 'own' | 'failed';
   /** `failed` 时的一句话原因。给灯上的 hint 用。 */
   problem?: string;
 }
@@ -153,10 +153,43 @@ export const BUILTIN_TOWN: TownView = {
  */
 export async function readTown(
   townUrl: string,
+  homeCity = '',
   opts: { timeoutMs?: number } = {},
 ): Promise<TownView> {
   const base = String(townUrl || '').trim();
-  if (!base) return { ...BUILTIN_TOWN };
+  const own = String(homeCity || '').trim();
+
+  /*
+   * 三条路的优先级（2026-11-15 Mr.Q：「服务器空着就是在用户填的城市，
+   * 填了服务器才是服务器的城市」）：
+   *
+   *   1. 配了服务器 → 服务器说了算（那是「所有人住同一座城」的用法）
+   *   2. 没配服务器、但本机填了城名 → **用他填的**（这条以前根本没有）
+   *   3. 都没填 → 内置的芦花塘
+   *
+   * 第 3 条才是「兜底」，不是「默认」—— 一个没配任何东西的人，
+   * 不该被塞进一座他没选过的虚构城。
+   */
+  const ownTown = (): TownView => ({
+    id: 'own',
+    name: own,
+    /* 来历、街名、城规都留空：他没填的东西我不替他编。 */
+    origin: '',
+    streets: [],
+    rules: [],
+    custom: true,
+    source: 'own',
+  });
+
+  /*
+   * 服务器出问题时退哪：**退他自己填的那座城，不是退芦花塘**。
+   * 他填了北京，服务器超时不该让他一觉醒来住回塘里。
+   */
+  const fallback = (problem: string): TownView => (own
+    ? { ...ownTown(), source: 'failed', problem }
+    : { ...BUILTIN_TOWN, source: 'failed', problem });
+
+  if (!base) return own ? ownTown() : { ...BUILTIN_TOWN };
 
   const root = base.replace(/\/+$/, '').replace(/\/town\/info$/, '');
   const ctrl = new AbortController();
@@ -171,11 +204,9 @@ export async function readTown(
        * 配了地址但服务端回非 200 —— **这是故障，不是「没配」**。
        * 常见是 Worker 还是旧版（没有 `/town/info` 这个口），或者域名指错了。
        */
-      return {
-        ...BUILTIN_TOWN,
-        source: 'failed',
-        problem: `服务器回了 ${res.status}，先按内置的算（可能是那个服务器还是旧版，没有 /town/info）`,
-      };
+      return fallback(
+        `服务器回了 ${res.status}，先按你填的算（可能是那个服务器还是旧版，没有 /town/info）`,
+      );
     }
     const j: any = await res.json();
     const streets = Array.isArray(j?.streets) ? j.streets.filter((x: unknown) => typeof x === 'string') : [];
@@ -200,11 +231,7 @@ export async function readTown(
      * 具体是哪种错（ECONNREFUSED / 证书 / JSON）**不往 hint 里塞** ——
      * 那既不解释问题也不指向动作。
      */
-    return {
-      ...BUILTIN_TOWN,
-      source: 'failed',
-      problem: '连不上那个地址（超时或断网），先按内置的算',
-    };
+    return fallback('连不上那个地址（超时或断网），先按你填的算');
   } finally {
     clearTimeout(timer);
   }

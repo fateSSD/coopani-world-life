@@ -82,6 +82,7 @@ const TEXT = {
     noneYet: '还没给自己定过什么。',
     town: '住',
     server: '读服务器',
+    townOwn: '你自己填的',
     builtin: '内置',
     noJourney: '没装旅行扩展 —— 不知道她在哪座城，日子照过。',
     onRoad: '在路上，往 {to} 去（出发地 {from}）',
@@ -158,6 +159,7 @@ const TEXT = {
     noneYet: 'She has not set anything for herself yet.',
     town: 'Lives in',
     server: 'from server',
+    townOwn: 'yours',
     builtin: 'built in',
     noJourney: 'Travel extension not installed — unknown city, life goes on.',
     onRoad: 'On the road to {to} (from {from})',
@@ -632,7 +634,9 @@ export default {
         const render = (d) => {
           if (!d) return;
           town.textContent = d.town.name || '—';
-          tag.textContent = t(lang, d.town.source === 'server' ? 'server' : 'builtin');
+          /* 三档：服务器的城 / 你自己填的城 / 内置的芦花塘。 */
+          tag.textContent = t(lang,
+            d.town.source === 'server' ? 'server' : d.town.source === 'own' ? 'townOwn' : 'builtin');
           const bits = [];
           bits.push(`${d.dayPart} ${d.clock}`);
           if (d.street) bits.push(d.street);

@@ -145,7 +145,7 @@ export class LifeWorld implements World {
   async start(host: WorldHost): Promise<void> {
     this.host = host;
     this.log = host.log;
-    this.town = await readTown(this.cfg.townUrl);
+    this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
     this.lastTownUrl = String(this.cfg.townUrl || '').trim();
     /*
      * 基线：启动那一刻文件的时间戳。之后变了才算「他又说过话」。
@@ -233,7 +233,7 @@ export class LifeWorld implements World {
     const townUrl = String(this.cfg.townUrl || '').trim();
     if (this.lastTownUrl !== null && townUrl !== this.lastTownUrl) {
       this.lastTownUrl = townUrl;
-      this.town = await readTown(townUrl);
+      this.town = await readTown(townUrl, this.cfg.homeCity);
       this.log?.info(`模拟鱼生：本城改成了 ${this.town.name}（${this.town.source === 'server' ? '读服务器' : '内置'}）`);
     }
 
@@ -1057,8 +1057,8 @@ export class LifeWorld implements World {
       parts.push(`他这几天来过 ${s.visitedDays} 天`);
     }
 
-    const streets = this.town.streets.join(' / ');
-    parts.push(`城里有：${streets}`);
+    /* 街名可能一条都没有（用户只填了城名）—— 那时候不说「城里有：」。 */
+    if (this.town.streets.length) parts.push(`城里有：${this.town.streets.join(' / ')}`);
 
     return parts.join('\n');
   }
@@ -1106,7 +1106,9 @@ export class LifeWorld implements World {
       'life.version': VERSION,
       'life.now': `${DAYPART_LABEL[dayPart(at)]}，她那边 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
       'life.here': whereText || '（没装旅行扩展，不知道在哪座城）',
-      'life.town': `${this.town.name}　·　${this.town.streets.join(' / ')}`,
+      'life.town': this.town.streets.length
+        ? `${this.town.name}　·　${this.town.streets.join(' / ')}`
+        : `${this.town.name}（街名还没定，你自己走着看）`,
       'life.street': this.state.street ? `你住在${this.state.street}。` : '你还没选定住在哪条街。',
       'life.who': [
         `做事：${s.job.what || '现在没在做事'}`,
@@ -1311,7 +1313,7 @@ export class LifeWorld implements World {
     }
 
     if (method === 'reloadTown') {
-      this.town = await readTown(this.cfg.townUrl);
+      this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
       return { ok: true, town: this.town };
     }
 

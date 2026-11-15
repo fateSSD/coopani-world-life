@@ -16,6 +16,7 @@ import {
   advance, applyAct, applyMove, applyWork, freshState, localDateKey, noteVisit,
   quoteMove, recentVisits, snapshot, applyCert, applySpend,
 } from '../src/state.ts';
+import { readTown } from '../src/bridge.ts';
 
 let pass = 0;
 let fail = 0;
@@ -539,6 +540,26 @@ console.log('\n[31] 旅行花销从她账上扣（life-spend 条子）');
   const r4 = applySpend(s, [{ id: 'sp-bad', amount: 0 }], t0);
   ok(r4.settled[0].status === 'rejected', '数不对回 rejected');
   ok(s.spendApplied.includes('sp-bad'), '坏条子也进判重表，不会每跳重拒一次');
+}
+
+console.log('\n[32] 本城：留空用内置，填了就用他填的');
+{
+  const builtin = await readTown('');
+  ok(builtin.source === 'builtin' && builtin.name === '芦花塘', '什么都不填 → 芦花塘', builtin.name);
+
+  /* 2026-11-15 Mr.Q：「服务器空着就是在用户填的城市」—— 这条路以前根本不存在。 */
+  const mine = await readTown('', '北京');
+  ok(mine.name === '北京' && mine.source === 'own', '填了北京 → 就是北京', `${mine.name}/${mine.source}`);
+  ok(mine.streets.length === 0, '街名不替他编', String(mine.streets.length));
+
+  /* 服务器不通时，退的是他填的那座城，不是芦花塘。 */
+  const dead = await readTown('https://example.invalid', '北京');
+  ok(dead.source === 'failed', '服务器不通标成 failed', dead.source);
+  ok(dead.name === '北京', '服务器挂了也还住在自己填的城里', dead.name);
+
+  /* 两个都空才落到芦花塘 —— 那是兜底，不是默认。 */
+  const none = await readTown('', '');
+  ok(none.name === '芦花塘', '什么都不填才是芦花塘');
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

@@ -13,7 +13,14 @@ import type { WorldSection } from 'cortico/world.ts';
 export const LIFE_ID = 'life';
 
 export interface LifeConfigSection extends WorldSection {
-  /** 她住的那座城由哪台服务器定。留空 = 用内置的芦花塘，不联网。 */
+  /**
+   * 她住在哪座城。留空 = 内置的芦花塘（早市街 / 灶前巷 / 望水坡）。
+   *
+   * 2026-11-15 加：原来只有「服务器」和「内置」两条路，用户填不了自己想让她住的城。
+   * 现在按 journey 那套来 —— **本机填的优先，服务器是覆盖**。
+   */
+  homeCity: string;
+  /** 她住的那座城由哪台服务器定。填了 = 覆盖上面那座（所有人同一座城）。 */
   townUrl: string;
   /** 她多久检查一次自己。**和「掉得快慢」无关**，只影响提醒的准时程度。 */
   tickMs: number;
@@ -27,6 +34,7 @@ export const LIFE_DEFAULTS = (): LifeConfigSection => ({
    * 用户第一次打开这个世界，她才第一次开始饿。
    */
   enabled: false,
+  homeCity: '',
   townUrl: '',
   tickMs: 60_000,
   notify: 'once',
@@ -45,6 +53,16 @@ export function lifeConfigGroups(): ConfigGroup[] {
          * 写成裸名 `townUrl`，设置页保存时会落到 config.json 顶层，
          * 而 World 读的是 `worlds.life.townUrl` —— 配了等于没配，还不报错。
          */
+        'worlds.life.homeCity': {
+          type: 'string',
+          title: '她住的那座城',
+          description: '填一座真实的城 —— 北京、成都、兰州都行。'
+            + '\n填了之后：她住在这座城，出门、逛街、找活都在这儿。街名留空就由她自己走着看。'
+            + '\n\n留空：用内置的「芦花塘」（早市街 / 灶前巷 / 望水坡 + 四条城规），一个网络请求都不发。'
+            + '\n\n⚠ 下面那栏「由谁来定」填了服务器地址的话，这一栏会被服务器上的城名覆盖 —— '
+            + '服务器是给「大家都住同一座城」用的。',
+          'x-hot': true,
+        },
         'worlds.life.townUrl': {
           type: 'string',
           title: '她住的那座城，由谁来定',
@@ -57,7 +75,7 @@ export function lifeConfigGroups(): ConfigGroup[] {
             + '\n例如 https://cooppetsjourney.top'
             + '\n\n填了之后：城名、街名、城规都从服务器读。你在管理页改完，这边下次检查就跟着变 ——'
             + '所有装了这个扩展的鱼看到的是同一座城。'
-            + '\n\n留空：用内置的「芦花塘」（早市街 / 灶前巷 / 望水坡 + 四条城规），一个网络请求都不发。'
+            + '\n\n留空：不用服务器，就用上面「她住的那座城」那一栏 —— 那一栏也空着才是内置的芦花塘。'
             + '\n\n改城名的地方，就是那个服务器的 /pets 页面里的「本城」页签。'
             + '\n\n想让她在旅行扩展里也属于这座城：去旅行扩展的设置里，把「从哪儿出发」填成这个城名。'
             + '填了之后她的日记、照片地点、足迹都会写这个名字，而她其实还在那座地理城市里 —— '
