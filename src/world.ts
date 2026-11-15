@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
-  Logger, ToolDef, World, WorldHost, WorldWebUiDecl, TriggerMode,
+  Logger, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp, TriggerMode,
 } from 'cortico/core/types.ts';
 import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
 import {
@@ -34,7 +34,16 @@ export interface LifeWorldOptions {
 }
 
 /** 版本号。envPrompt 里露出来，报障时第一个要确认的数。 */
-const VERSION = '0.7.2';
+const VERSION = '0.8.0';
+
+/** 人话的时长：「3 分钟」「2 小时」。灯上的 hint 用，不要写 180000 毫秒。 */
+function fmtSpan(ms: number): string {
+  const sec = Math.round(ms / 1000);
+  if (sec < 90) return `${sec} 秒`;
+  const min = Math.round(sec / 60);
+  if (min < 90) return `${min} 分钟`;
+  return `${(min / 60).toFixed(1)} 小时`;
+}
 
 export class LifeWorld implements World {
   readonly id = LIFE_ID;
@@ -82,6 +91,15 @@ export class LifeWorld implements World {
    * **不读内容**：内容归宿主的记忆系统管，生活层碰了就越界了（方案 §6.2）。
    */
   private sessionMtime = 0;
+
+  /**
+   * 上一次 tick 跑起来的时刻（内存，不进存档）。
+   *
+   * 这一格是「**她还在过日子吗**」的唯一证据。盘上的 `state.updatedAt` 测不出来 ——
+   * 定时器挂了之后那个数就一直停在那儿，而面板上五条还是好好的，
+   * 看起来一切正常，其实她已经不动了。
+   */
+  private lastTickAt = 0;
   /**
    * 基线立过没有。
    *
@@ -108,6 +126,8 @@ export class LifeWorld implements World {
      */
     this.sessionMtime = this.sessionStamp();
     this.sessionBaselineSet = this.sessionMtime > 0;
+    /* 刚起来算活着 —— 否则第一分钟灯就是红的，白白吓人一次。 */
+    this.lastTickAt = Date.now();
     this.restartTimer();
     host.log.info(
       `模拟鱼生已就绪：${this.town.name}（${this.town.source === 'server' ? '读服务器' : '内置'}）`
@@ -174,6 +194,8 @@ export class LifeWorld implements World {
   /* ---------------- 推进 ---------------- */
 
   private async tick(): Promise<void> {
+    /* 先打点再干活：这一格记的是「定时器还活着」，不是「这一跳有活干」。 */
+    this.lastTickAt = Date.now();
     const now = new Date();
 
     /* 先把热改接上：周期变了重排定时器，地址变了重读城名。 */
@@ -969,9 +991,69 @@ export class LifeWorld implements World {
     };
   }
 
+  /**
+   * 扩展名旁边那三盏灯。
+   *
+   * ## 三态语义（照抄 journey 定下的，别自己发明）
+   *
+   * - **绿 `online`** = 上一次成功了
+   * - **灰 `offline`** = 没启用。**这不是故障** —— 点成红的，用户会去修一个没坏的东西
+   * - **红 `error`** = 配好了但用不了。**这一种不会自己好，正是最需要有人提醒的**
+   *
+   * ## 为什么第一盏是「过日子」
+   *
+   * 前两盏管外部依赖，第一盏管**她自己**。定时器挂掉、Core 被系统挂起、
+   * `tickMs` 配成了一个荒唐的值 —— 这些情况下需求不再衰减，
+   * 而面板上五个数字还是最后一次的样子，**看起来一切正常，其实她已经不动了**。
+   * 这是整套东西里最安静的失败。
+   */
+  private worldLamps(): WorldLamp[] {
+    const now = new Date();
+    const tickMs = Math.max(15_000, Number(this.cfg.tickMs) || 60_000);
+
+    /* ---- 过日子 ---- */
+    const idleMs = Math.max(0, Date.now() - this.lastTickAt);
+    const idleLimit = Math.max(3 * tickMs, 180_000);
+    const alive: WorldLamp = idleMs <= idleLimit
+      ? { label: '过日子', state: 'online', hint: idleMs < 10_000 ? '刚刚还在动' : `上一次推进在 ${fmtSpan(idleMs)}前` }
+      : {
+        label: '过日子',
+        state: 'error',
+        hint: `已经 ${fmtSpan(idleMs)}没有推进了 —— 她没在过日子，五条也不会再掉。去看 Core 日志`,
+      };
+
+    /* ---- 本城 ---- */
+    const host = (() => {
+      try { return new URL(String(this.cfg.townUrl || '')).host; } catch { return ''; }
+    })();
+    const town: WorldLamp = this.town.source === 'server'
+      ? { label: '本城', state: 'online', hint: `从 ${host} 读的：${this.town.name}` }
+      : this.town.source === 'failed'
+        ? { label: '本城', state: 'error', hint: this.town.problem || '配了地址但读不到，先按内置的算' }
+        : { label: '本城', state: 'offline', hint: `用内置的${this.town.name} —— 没配服务器，这不算故障` };
+
+    /* ---- 旅行 ---- */
+    const j = readJourney(this.opts.dataDir, now);
+    const staleLimitSec = 600;
+    const travel: WorldLamp = !j.installed
+      ? { label: '旅行', state: 'offline', hint: '没装旅行扩展 —— 不知道她在哪座城，日子照过' }
+      : j.staleSec > staleLimitSec
+        ? { label: '旅行', state: 'error', hint: `旅行那边 ${Math.round(j.staleSec / 60)} 分钟没更新了，位置可能已经过时` }
+        : {
+          label: '旅行',
+          state: 'online',
+          hint: j.phase === 'traveling'
+            ? `在路上，往${j.toName || '下一站'}去`
+            : j.phase === 'staying' ? `在${j.cityName || '外地'}` : `在家${j.cityName ? `（${j.cityName}）` : ''}`,
+        };
+
+    return [alive, town, travel];
+  }
+
   webUi(): WorldWebUiDecl {
     return {
       label: '模拟鱼生',
+      lamps: this.worldLamps(),
       panels: [
         {
           id: 'now',

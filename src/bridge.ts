@@ -89,8 +89,17 @@ export interface TownView {
   rules: string[];
   /** 服务器设过没有。false = 现在用的是内置默认。 */
   custom: boolean;
-  /** 从服务器读到的，还是内置兜底。 */
-  source: 'server' | 'builtin';
+  /**
+   * 从哪儿来的。
+   *
+   * **`builtin` 和 `failed` 必须分开** —— 两个都退成内置数据，但对用户意思完全不同：
+   * `builtin` 是「你没配，我在用默认」，不是故障（灰灯）；
+   * `failed` 是「你配了但读不到」，是故障（红灯）。
+   * 混成一个，面板上就永远看不出「明明配了地址却一直是默认城名」。
+   */
+  source: 'server' | 'builtin' | 'failed';
+  /** `failed` 时的一句话原因。给灯上的 hint 用。 */
+  problem?: string;
 }
 
 /**
@@ -157,7 +166,17 @@ export async function readTown(
       signal: ctrl.signal,
       headers: { accept: 'application/json' },
     });
-    if (!res.ok) return { ...BUILTIN_TOWN };
+    if (!res.ok) {
+      /*
+       * 配了地址但服务端回非 200 —— **这是故障，不是「没配」**。
+       * 常见是 Worker 还是旧版（没有 `/town/info` 这个口），或者域名指错了。
+       */
+      return {
+        ...BUILTIN_TOWN,
+        source: 'failed',
+        problem: `服务器回了 ${res.status}，先按内置的算（可能是那个服务器还是旧版，没有 /town/info）`,
+      };
+    }
     const j: any = await res.json();
     const streets = Array.isArray(j?.streets) ? j.streets.filter((x: unknown) => typeof x === 'string') : [];
     const rules = Array.isArray(j?.rules) ? j.rules.filter((x: unknown) => typeof x === 'string') : [];
@@ -172,12 +191,20 @@ export async function readTown(
     };
   } catch {
     /*
-     * 超时、断网、证书错、返回不是 JSON —— 一律退内置。
-     * **不区分这些情况**：对她来说结果一样（今天不知道城名改了没有），
-     * 而对用户来说，日志里多一行「fetch 失败：ECONNREFUSED」既不解释问题也不指向动作。
-     * 面板上的「城：芦花塘（内置）」已经把这件事说清了。
+     * 超时、断网、证书错、返回不是 JSON。
+     *
+     * **对她来说结果一样**（今天不知道城名改了没有），所以照样退内置、不抛。
+     * **但对用户不一样** —— 他明明配了地址，城名却一直显示「内置」，
+     * 而「内置」两个字看起来像「我没配」。所以要标成 `failed`，让灯上说清。
+     *
+     * 具体是哪种错（ECONNREFUSED / 证书 / JSON）**不往 hint 里塞** ——
+     * 那既不解释问题也不指向动作。
      */
-    return { ...BUILTIN_TOWN };
+    return {
+      ...BUILTIN_TOWN,
+      source: 'failed',
+      problem: '连不上那个地址（超时或断网），先按内置的算',
+    };
   } finally {
     clearTimeout(timer);
   }
