@@ -7,6 +7,14 @@
     "name": "Mr.Q"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fateSSD/coopani-world-life.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fateSSD/coopani-world-life/issues"
+  },
+  "homepage": "https://github.com/fateSSD/coopani-world-life#readme",
   "keywords": [
     "cortico-world",
     "cortico",
