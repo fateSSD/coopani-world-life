@@ -7,7 +7,7 @@ import type {
 } from 'cortico/core/types.ts';
 import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
 import {
-  ACTS, CRITICAL, HOME_TIER_COST, HOME_TIER_LABEL, LOW, MAX_PENDING, MAX_PLEDGES,
+  ACTS, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, LOW, MAX_PENDING, MAX_PLEDGES,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL,
   advance, applyAct, applyMove, applySpend, applyWork, applyCert, localDateKey, noteVisit, quoteMove, readyGoals,
   recentVisits, remember, snapshot,
@@ -369,6 +369,21 @@ export class LifeWorld implements World {
   }
 
   /** 阈值事件的正文。**只写事实，不写结论**（铁律 1）。 */
+  /**
+   * 「哪条掉到多少了」这句话。
+   *
+   * ## 为什么现在带上「还能撑多久」和「怎么回」（2026-11-15 Mr.Q 选的做法）
+   *
+   * 原来只说跌幅（「精力掉到 19」）。她手上只有这个数，判断不了急不急 ——
+   * 19 到底是「还能撑一晚上」还是「一小时后动不了」，她不知道，于是**干等着**。
+   * 真实数据：建档 11 小时，她一次没睡、一顿饭、一天工没出，精力掉到 19.3 还在原地。
+   *
+   * 补上两个**算术事实**：按当前衰减速率还能撑几小时、哪个动作能回多少。
+   * ## 但不下命令
+   *
+   * 铁律一：只报事实。所以这里没有「你该去睡了」——
+   * 只给「睡一觉能回 80，而洗、玩、见人都要再扣精力」。做不做是她的事。
+   */
   private lowText(key: VitalKey, v: number): string {
     const where = this.journey.installed && this.journey.phase === 'staying'
       ? `在${this.journey.cityName}`
@@ -376,17 +391,22 @@ export class LifeWorld implements World {
         ? `在去${this.journey.toName}的路上`
         : '';
     const tail = where ? `　·　${where}` : '';
+    /* 见底时间 = 现在的值 ÷ 每小时掉多少。除出来的，不是估的。 */
+    const hours = v / DECAY_PER_HOUR[key];
+    const left = hours >= 1
+      ? `按现在的掉法，${Math.round(hours)} 小时左右见底。`
+      : '按现在的掉法，撑不到一小时。';
     switch (key) {
       case 'food':
-        return `饱腹掉到 ${v}。上回吃东西到现在已经过去一阵了。${tail}`;
+        return `饱腹 ${v}，${left}吃一顿能回 30（15 元）；钱紧就将就吃一口，回 12。${tail}`;
       case 'energy':
-        return `精力掉到 ${v}。${v <= CRITICAL ? '已经很低了，再撑下去要出事。' : '有点撑不住了。'}${tail}`;
+        return `精力 ${v}，${left}睡一觉回 80，不花钱 —— 洗、玩、见人都要再扣精力，只有睡是往上走的。${tail}`;
       case 'clean':
-        return `清爽掉到 ${v}。${tail}`;
+        return `清爽 ${v}，${left}洗个澡回 55，不花钱。${tail}`;
       case 'fun':
-        return `娱乐掉到 ${v}。这段时间除了干活没别的事。${tail}`;
+        return `娱乐 ${v}，${left}找点乐子回 38（22 元，要花 6 点精力）。${tail}`;
       case 'social':
-        return `社交掉到 ${v}。好一阵没跟谁说过话了。${tail}`;
+        return `社交 ${v}，${left}跟人说说话回 30（30 元，花 5 点精力）。${tail}`;
     }
   }
 
