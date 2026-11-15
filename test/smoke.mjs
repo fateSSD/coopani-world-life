@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import {
   ACTS, DECAY_PER_HOUR, HOME_TIER_COST, LOW, MAX_CATCHUP_HOURS, MAX_PENDING, StateStore,
   advance, applyAct, applyMove, applyWork, freshState, localDateKey, noteVisit,
-  quoteMove, recentVisits, snapshot,
+  quoteMove, recentVisits, snapshot, applyCert, applySpend,
 } from '../src/state.ts';
 
 let pass = 0;
@@ -237,8 +237,12 @@ console.log('\n[15] 出工：一天一次');
   const s = freshState(t0);
   const before = s.money.cash;
   const r = applyWork(s, '菜市场搬货', t0);
-  ok(r.ok && r.earned === 120, '挣了 120', String(r.earned));
-  ok(r.cash === before + 120, '到账了');
+  /*
+   * 2026-11-15：默认日薪从 120 改成 90 —— 新的 `freshState` 按零工价起步。
+   * 老存档里的 120 由 `normJob` 兜着，不会跟着降。
+   */
+  ok(r.ok && r.earned === 90, '挣了 90', String(r.earned));
+  ok(r.cash === before + 90, '到账了');
   ok(s.job.what === '菜市场搬货', '记住了干什么');
   ok(s.job.days === 1, '计了一天工');
   const again = applyWork(s, '再干一天', t0);
@@ -435,6 +439,106 @@ console.log('\n[27] 承诺：到期没做要留一笔');
    */
   advance(s, new Date(t0.getTime() + 30 * 86_400_000));
   ok(s.pledges.length === 1, '过了一个月还在欠着，没有静默消失', String(s.pledges.length));
+}
+
+console.log('\n[28] 职业：门槛决定工资（2026-11-15）');
+{
+  const t0 = new Date('2026-11-15T12:00:00Z');
+  const s = freshState(t0);
+  s.vitals.energy = 90;
+
+  /* 零工：没有门槛，八九十 */
+  const odd = applyWork(s, '搬货', t0);
+  ok(odd.ok && odd.earned === 90, '搬货一天 90', String(odd.earned));
+
+  /* 有证的活，没证接不了，而且要说清怎么补 */
+  const t1 = new Date(t0.getTime() + 86_400_000);
+  s.vitals.energy = 90;
+  const noCert = applyWork(s, '护工', t1);
+  ok(!noCert.ok, '没护工证接不了护工');
+  ok(/护工证/.test(String(noCert.reason)) && /400/.test(String(noCert.reason)),
+    '拒绝时说了缺哪张证、多少钱', String(noCert.reason));
+
+  /* 考下来就能接，价钱按表 */
+  const c = applyCert(s, '护工证', t1);
+  ok(c.ok && c.paid === 400, '考护工证花 400', String(c.paid));
+  ok(s.job.certs.includes('护工证'), '证记在她身上');
+  const t2 = new Date(t0.getTime() + 2 * 86_400_000);
+  s.vitals.energy = 90;
+  const care = applyWork(s, '护工', t2);
+  ok(care.ok && care.earned === 210, '有证之后护工一天 210', String(care.earned));
+
+  /* 同一张证不用考两遍 */
+  const again = applyCert(s, '护工证', t2);
+  ok(!again.ok, '同一张证考不了第二遍');
+
+  /* 经验门槛：专业档要证 + 30 天工 */
+  const t3 = new Date(t0.getTime() + 3 * 86_400_000);
+  s.job.certs.push('护士执业证');
+  s.vitals.energy = 90;
+  const noDays = applyWork(s, '社区护士', t3);
+  ok(!noDays.ok && /30 天/.test(String(noDays.reason)), '年头不够接不了护士', String(noDays.reason));
+}
+
+console.log('\n[29] 高薪的代价：档越高越累，专业那档还掉社交');
+{
+  const t0 = new Date('2026-11-15T12:00:00Z');
+  const mk = (job, certs = []) => {
+    const s = freshState(t0);
+    s.vitals = { food: 90, energy: 90, clean: 90, fun: 90, social: 90 };
+    s.job.certs = certs;
+    s.job.days = 40;   // 年头门槛先满足，只测体力
+    applyWork(s, job, t0);
+    return s;
+  };
+  const odd = mk('搬货');
+  const pro = mk('会计', ['会计证']);
+  ok(odd.vitals.social === 90, '零工不掉社交', String(odd.vitals.social));
+  ok(pro.vitals.social === 78, '专业岗掉 12 点社交', String(pro.vitals.social));
+  ok(pro.vitals.energy < odd.vitals.energy, '专业岗更耗精力',
+    `${pro.vitals.energy} vs ${odd.vitals.energy}`);
+  ok(pro.vitals.fun < odd.vitals.fun, '专业岗更没力气玩');
+}
+
+console.log('\n[30] 考证：钱不够就考不了');
+{
+  const t0 = new Date('2026-11-15T12:00:00Z');
+  const s = freshState(t0);
+  s.money.cash = 300;
+  const r = applyCert(s, '护士执业证', t0);
+  ok(!r.ok && /800/.test(String(r.reason)), '钱不够说清差多少', String(r.reason));
+  ok(s.money.cash === 300, '没考成不扣钱');
+  ok(!applyCert(s, '不存在的证', t0).ok, '没有的证考不了');
+}
+
+console.log('\n[31] 旅行花销从她账上扣（life-spend 条子）');
+{
+  const t0 = new Date('2026-11-15T12:00:00Z');
+  const s = freshState(t0);
+  s.money.cash = 1000;
+
+  const r1 = applySpend(s, [{ id: 'sp-1', amount: 451, note: '路费' }], t0);
+  ok(r1.changed && s.money.cash === 549, '扣了 451', String(s.money.cash));
+  ok(s.money.spent === 451, '花销记上', String(s.money.spent));
+  ok(r1.settled[0].status === 'applied', '回执 applied');
+
+  /* 同一张条子再来一次 —— 这是最贵的一种错：重复扣她的钱。 */
+  const r2 = applySpend(s, [{ id: 'sp-1', amount: 451, note: '路费' }], t0);
+  ok(s.money.cash === 549, '同一张条子不重复扣', String(s.money.cash));
+  ok(!r2.changed, '没变就不写盘');
+  ok(r2.settled[0].status === 'applied', '重复来的也要回执 —— 好让对面删掉自己那份');
+
+  /* 钱不够：扣到 0，不欠（欠债是另一套系统，一期不做）。 */
+  const before = s.tellable.length;
+  const r3 = applySpend(s, [{ id: 'sp-2', amount: 2000, note: '房费' }], t0);
+  ok(s.money.cash === 0, '扣到 0 为止，不欠', String(s.money.cash));
+  ok(r3.settled[0].status === 'applied', '扣到 0 也算收了');
+  ok(s.tellable.length > before, '没付清要留一句给她自己看见');
+
+  /* 数不对的条子回 rejected —— 不然那份文件在对面永远删不掉。 */
+  const r4 = applySpend(s, [{ id: 'sp-bad', amount: 0 }], t0);
+  ok(r4.settled[0].status === 'rejected', '数不对回 rejected');
+  ok(s.spendApplied.includes('sp-bad'), '坏条子也进判重表，不会每跳重拒一次');
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

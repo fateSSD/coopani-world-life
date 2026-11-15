@@ -1,6 +1,7 @@
-import { statSync } from 'node:fs';
+import { statSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { VersionCheck } from './version-check.ts';
 import type {
   Logger, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp, TriggerMode,
 } from 'cortico/core/types.ts';
@@ -8,12 +9,12 @@ import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
 import {
   ACTS, CRITICAL, HOME_TIER_COST, HOME_TIER_LABEL, LOW, MAX_PENDING, MAX_PLEDGES,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL,
-  advance, applyAct, applyMove, applyWork, localDateKey, noteVisit, quoteMove, readyGoals,
+  advance, applyAct, applyMove, applySpend, applyWork, applyCert, localDateKey, noteVisit, quoteMove, readyGoals,
   recentVisits, remember, snapshot,
   type HomeTier, type LifeState, type PendingBlock, type Snapshot, type VitalKey,
 } from './state.ts';
 import {
-  BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readTown,
+  BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown,
   type JourneyView, type TownView,
 } from './bridge.ts';
 
@@ -33,8 +34,24 @@ export interface LifeWorldOptions {
   botName: string;
 }
 
-/** 版本号。envPrompt 里露出来，报障时第一个要确认的数。 */
-const VERSION = '0.9.1';
+/**
+ * 版本号。envPrompt 里露出来，报障时第一个要确认的数，现在也上到面板表头。
+ *
+ * **从 `package.json` 读，不在这儿写死。** 原来这里是 `const VERSION = '0.9.1'`，
+ * 和 `package.json` 各存一份 —— 2026-11-15 升到 0.10.0 时差点只改了一处，
+ * 那会变成「npm 上是新的、面板上写旧的」，报障时两边对着一个假数字讨论。
+ *
+ * 读不到就 `0.0.0`：版本号错一个总比扩展起不来好。
+ */
+function readVersion(): string {
+  try {
+    const p = fileURLToPath(new URL('../package.json', import.meta.url));
+    return String(JSON.parse(readFileSync(p, 'utf8')).version || '0.0.0');
+  } catch {
+    return '0.0.0';
+  }
+}
+const VERSION = readVersion();
 
 /** 人话的时长：「3 分钟」「2 小时」。灯上的 hint 用，不要写 180000 毫秒。 */
 function fmtSpan(ms: number): string {
@@ -59,6 +76,13 @@ export class LifeWorld implements World {
   constructor(opts: LifeWorldOptions) {
     this.opts = opts;
     this.store = new StateStore(opts.dataDir);
+    /*
+     * 版本检查（2026-11-15，照 journey 那套搬过来的）。
+     *
+     * 面板要「立刻能画」，所以 `state()` 只读缓存，网络那一半异步跑。
+     * 查不到就显示「不知道」，不显示「已是最新」—— 两回事。
+     */
+    this.versionCheck = new VersionCheck({ dataDir: opts.dataDir, current: VERSION });
     const { state, recovered } = this.store.load();
     this.state = state;
     this.journey = readJourney(opts.dataDir);
@@ -110,6 +134,9 @@ export class LifeWorld implements World {
    */
   private sessionBaselineSet = false;
 
+  /** 版本号与新版本检查。面板表头那个徽章读它。 */
+  private readonly versionCheck: VersionCheck;
+
   /** 配置是活引用：每次读都拿最新值，热改才能生效。 */
   private get cfg(): LifeConfigSection { return this.opts.cfg; }
 
@@ -128,6 +155,8 @@ export class LifeWorld implements World {
     this.sessionBaselineSet = this.sessionMtime > 0;
     /* 刚起来算活着 —— 否则第一分钟灯就是红的，白白吓人一次。 */
     this.lastTickAt = Date.now();
+    /* 查最新版：不 await，面板不该等网络。 */
+    void this.versionCheck.startupRefresh();
     this.restartTimer();
     host.log.info(
       `模拟鱼生已就绪：${this.town.name}（${this.town.source === 'server' ? '读服务器' : '内置'}）`
@@ -211,6 +240,13 @@ export class LifeWorld implements World {
     this.journey = readJourney(this.opts.dataDir, now);
     /* presence 要在 advance 之前记 —— 它是「今天」的事，跟衰减无关。 */
     this.checkPresence(now);
+    /*
+     * 收旅行扩展递过来的花销条子。
+     *
+     * 放在 `advance` 之前、并且**不跟着 `r.hours` 走** —— 她欠的那笔钱跟她这一小时
+     * 过没过没有关系，不能因为「这一跳没走时间」就把条子留着不发。
+     */
+    this.settleSpendRequests(now);
     const r = advance(this.state, now);
     if (r.hours <= 0) return;
 
@@ -266,6 +302,54 @@ export class LifeWorld implements World {
         /* 存不进去要说，但**不能把 tick 搞挂** —— 下一跳还会再来一次。 */
         this.log?.warn(`模拟鱼生：存档失败 ${(e as Error).message}`);
       }
+    }
+  }
+
+  /**
+   * 收旅行扩展递过来的花销条子（2026-11-15）。
+   *
+   * ## 为什么是她来扣，不是那边扣
+   *
+   * `life-state.json` 只有一个写者 —— 本扩展。那边同时写的话，两个进程各写一份
+   * `.tmp` 再 `rename`，谁后写谁覆盖，丢的是她的钱。所以那边只放条子，
+   * 这边读、判重、扣、回执。
+   *
+   * ## 三条边界
+   *
+   * 1. **判重**：`state.spendApplied` 和扣钱在同一次 `save()` 里落下，崩在中间也不会重复扣；
+   * 2. **不扣成负数**：钱不够就扣到 0，并记一条「没付清」—— 欠债是一整套催缴与协商，
+   *    一期不做（卷二「房租扣到 0 为止」是同一条规矩）；
+   * 3. **看不懂的条子也要回执**：用文件名当 id 回 `rejected`，否则那份文件在那边永远删不掉。
+   */
+  private settleSpendRequests(now: Date): void {
+    const reqs = readSpendRequests(this.opts.dataDir);
+    if (!reqs.length) return;
+    const { settled, changed } = applySpend(this.state, reqs, now);
+    if (changed) {
+      try { this.store.save(this.state); } catch { /* 下一跳再存 —— 判重表已经进内存了 */ }
+    }
+    this.writeSpendSettled(settled);
+  }
+
+  /**
+   * 回执：**这是本扩展自己的文件**，那边读它来删自己放下的条子。
+   *
+   * 按 200 条滚。写不进去只记日志 —— 回执丢了最多是那边多留一份文件，
+   * 绝不能因为回执写不出来把她这一跳搞挂。
+   */
+  private writeSpendSettled(list: { id: string; status: 'applied' | 'rejected' }[]): void {
+    if (!list.length) return;
+    try {
+      const file = join(this.opts.dataDir, 'life-spend-settled.json');
+      let prev: { id: string; status: string }[] = [];
+      try {
+        const raw = JSON.parse(readFileSync(file, 'utf8'));
+        if (Array.isArray(raw?.settled)) prev = raw.settled;
+      } catch { /* 第一次写，或者上一份坏了 —— 都当空的 */ }
+      const merged = [...prev, ...list].slice(-200);
+      writeFileSync(file, JSON.stringify({ v: 1, at: new Date().toISOString(), settled: merged }, null, 2));
+    } catch (e) {
+      this.log?.warn(`花销回执没写成：${(e as Error)?.message ?? e}`);
     }
   }
 
@@ -329,6 +413,7 @@ export class LifeWorld implements World {
       this.toolStatus(),
       this.toolAct(),
       this.toolWork(),
+      this.toolCert(),
       this.toolMove(),
       this.toolOut(),
       this.toolHabit(),
@@ -410,8 +495,13 @@ export class LifeWorld implements World {
       name: 'life_work',
       description:
         '去顶一天活，挣这一天的钱。**一天一次**，按你本地的自然日算。'
-        + '很累：精力掉一大截、身上也脏、一天下来没什么乐子。'
-        + '干什么自己说 —— 搬货、看店、端盘子、送外卖都行，说了就记下，以后默认还是这个。'
+        + '价钱不一样：搬货、看店、端盘子、送外卖、发传单这类零工一天八九十；'
+        + '后厨帮工、装修小工、跑腿、摆摊这类熟练活一百三四（要干满三十天）；'
+        + '护工、网约车司机、厨师、电工要证、一天两百二到两百四；'
+        + '护士、代课老师、会计、社工要证又要有年头、一天三百到三百四。'
+        + '要证的活没证接不了 —— 证去考，用 `life_cert`。'
+        + '越贵的活越累：档越高扣得越多，专业那档一整天不在家，社交也掉。'
+        + '填表里的名字就按那个价；自己随口说的活按零工算，说了就记下，以后默认还是这个。'
         + '精力低于 20 的时候去不了，那是身体真的动不了，不是不让你去。',
       parameters: {
         type: 'object',
@@ -433,6 +523,43 @@ export class LifeWorld implements World {
           text: `干完了，挣了 ${r.earned} 元。手上现在 ${r.cash} 元。`
             + `现在五条：${this.vitalsLine(r.vitals)}`,
         };
+      },
+    };
+  }
+
+  /**
+   * 考证。
+   *
+   * ## 为什么这个工具必须存在
+   *
+   * 职业表的门槛（`jobs.ts`）如果只靠「她说自己有证」，那张表就是摆设 ——
+   * 第一天她就能声称自己是护士。有了这条花钱考的路，门槛才是一个真的取舍：
+   * 手上有 3000，是去考一张 600 的驾照（之后日薪 90 → 230），还是先搬去老小区。
+   */
+  private toolCert(): ToolDef {
+    return {
+      name: 'life_cert',
+      description:
+        '去考一张证。花钱、花精力，考下来才能接要证的活。'
+        + '护工证 400 / 驾照 600 / 厨师证 500 / 电工证 450 / 护士执业证 800 / 教师资格证 700 / 会计证 750 / 社工证 550。'
+        + '钱不够就考不了，先攒。同一张证不用考两遍。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['cert'],
+        properties: {
+          cert: {
+            type: 'string',
+            description: '考哪张证，写名字，比如「驾照」「护工证」。',
+          },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const r = applyCert(this.state, String(args?.cert ?? ''), new Date());
+        if (!r.ok) return { text: r.reason ?? '没考成。' };
+        try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
+        return { text: `考下了${r.cert}，花了 ${r.paid} 元。手上还剩 ${r.cash} 元。` };
       },
     };
   }
@@ -762,17 +889,23 @@ export class LifeWorld implements World {
         '记下一件你想要的。'
         + '和「许愿」不一样：许愿是要等谁答应的事，想要就是想要，不用谁批。'
         + '`scale` 分两档：small 是今天就能办的小事，big 是得攒一攒的。'
+        + '`kind` 分两档：thing 是东西（一双鞋、一副耳环），place 是**想去的地方**（下一趟想去哪座城）。'
         + '想要的东西不会自己实现 —— 记下来是为了你以后还知道自己想要什么。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         required: ['what'],
         properties: {
-          what: { type: 'string', description: '想要什么。' },
+          what: { type: 'string', description: '想要什么；想去哪就写地名。' },
           scale: {
             type: 'string',
             enum: ['small', 'big'],
             description: 'small 今天就能办；big 得攒一攒。默认 small。',
+          },
+          kind: {
+            type: 'string',
+            enum: ['thing', 'place'],
+            description: 'thing 是东西（默认）；place 是去的地方 —— 下一趟想去哪座城。',
           },
           note: { type: 'string', description: '为什么想要。可以不说。' },
         },
@@ -786,14 +919,16 @@ export class LifeWorld implements World {
           return { text: '已经记着 10 件想要的了。先把办得到的办掉几件吧。' };
         }
         const scale = args?.scale === 'big' ? 'big' : 'small';
+        const kind = args?.kind === 'place' ? 'place' : 'thing';
         const id = `a-${now.getTime().toString(36)}`;
         this.state.wants.push({
-          id, what, scale, since: now.toISOString(),
+          id, what, scale, kind, since: now.toISOString(),
           note: String(args?.note ?? '').trim(),
         });
         try { this.store.save(this.state); } catch { /* 同上 */ }
         return {
-          text: `记下了：想要${what}（${scale === 'big' ? '得攒一攒' : '今天就能办'}）。（id ${id}）`,
+          text: `记下了：${kind === 'place' ? '想去' : '想要'}${what}`
+            + `（${scale === 'big' ? '得攒一攒' : '今天就能办'}）。（id ${id}）`,
         };
       },
     };
@@ -844,6 +979,7 @@ export class LifeWorld implements World {
     parts.push(s.job.what
       ? `做事：${s.job.what}，顶一天 ${s.job.daily} 元，一共出过 ${s.job.days} 天工`
       : '做事：现在没在做事（可以在本城里顶一天活，见 life_work）');
+    if (s.job.certs.length) parts.push(`手上的证：${s.job.certs.join('、')}`);
     parts.push(`钱：手上 ${s.money.cash} 元（累计进 ${s.money.earned} / 出 ${s.money.spent}）`);
     if (s.goals.length) {
       parts.push(`目标：${s.goals.map((g) => {
@@ -1164,6 +1300,9 @@ export class LifeWorld implements World {
       const at = herNow(j, now);
       return {
         version: VERSION,
+        /* 表头那个徽章：知道有新版才变色，不知道就只说自己的版本。 */
+        latestVersion: this.versionCheck.state().latest,
+        versionOutdated: this.versionCheck.state().outdated,
         at: now.toISOString(),
         herNow: at.toISOString(),
         dayPart: DAYPART_LABEL[dayPart(at)],
@@ -1202,11 +1341,19 @@ export class LifeWorld implements World {
         },
         job: {
           what: this.state.job.what,
+          id: this.state.job.id,
           daily: this.state.job.daily,
           days: this.state.job.days,
+          certs: this.state.job.certs,
           lastAt: this.state.job.lastAt,
-          /* 今天出过工没有 —— 页面不用自己算自然日。 */
-          workedToday: this.state.job.lastAt === now.toISOString().slice(0, 10),
+          /*
+           * 今天出过工没有 —— 页面不用自己算自然日。
+           *
+           * ⚠ 必须用 `localDateKey`：原来这里是 `now.toISOString().slice(0, 10)`，
+           * 那是 **UTC 日期**，GMT+8 的凌晨 0–8 点会判成前一天，面板上「今天还没出工」
+           * 会在她已经出过工的时候显示出来。卷二专门记过这个坑，这一处漏了。
+           */
+          workedToday: this.state.job.lastAt === localDateKey(now),
         },
         money: {
           cash: this.state.money.cash,
@@ -1286,160 +1433,22 @@ export class LifeWorld implements World {
 }
 
 /** 不进提示词，给人和扩展市场看的全量自描述。 */
-export const LIFE_DESCRIBE = {
-  tools: [
-    {
-      name: 'life_status',
-      description: '看一眼自己现在什么状态：五条需求、身上的不舒服、眼下的情绪、在留意的事。',
-      parameters: { type: 'object', additionalProperties: false, properties: {} },
-      tags: ['read'],
-      summary: { zh: '查看自己的需求、状态和情绪。', en: 'Check her own needs, conditions and mood.' },
-    },
-    {
-      name: 'life_ask',
-      description: '把拿不准的事挂起来（带卡点），或者处理掉。不是待办。',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          what: { type: 'string' },
-          blocked: { type: 'string', enum: ['money', 'time', 'ask', 'doubt'] },
-          cost: { type: 'integer' },
-          id: { type: 'string' },
-        },
-      },
-      tags: ['write'],
-      summary: { zh: '挂起 / 处理一件悬着的事。', en: 'Park or resolve something she is undecided about.' },
-    },
-    {
-      name: 'life_pledge',
-      description: '记下说好要做的事，或兑现/认了。到期没做会留一笔欠着。',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          what: { type: 'string' },
-          to: { type: 'string' },
-          dueHours: { type: 'integer' },
-          said: { type: 'string' },
-          id: { type: 'string' },
-          done: { type: 'boolean' },
-        },
-      },
-      tags: ['write'],
-      summary: { zh: '记一条承诺 / 兑现或认账。', en: 'Record a promise, fulfil it or own the miss.' },
-    },
-    {
-      name: 'life_act',
-      description: '自己做一件事：吃、睡、洗、玩、跟人说话。身体会变。',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['kind'],
-        properties: { kind: { type: 'string', enum: Object.keys(ACTS) } },
-      },
-      tags: ['write'],
-      summary: { zh: '吃睡洗玩见人，自己决定。', en: 'Eat, sleep, wash, play or meet — on her own call.' },
-    },
-    {
-      name: 'life_work',
-      description: '去顶一天活，挣这一天的钱。一天一次，很累。',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: { what: { type: 'string' } },
-      },
-      tags: ['write'],
-      summary: { zh: '顶一天活挣钱。', en: 'Work a day for pay.' },
-    },
-    {
-      name: 'life_move',
-      description: '搬去另一档住处。押两个月，一次付清。',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['tier'],
-        properties: {
-          tier: { type: 'string', enum: ['urban-village', 'old', 'new', 'villa'] },
-        },
-      },
-      tags: ['write'],
-      summary: { zh: '搬家（城中村 / 老小区 / 新小区 / 别墅区）。', en: 'Move to another housing tier.' },
-    },
-    {
-      name: 'life_out',
-      description: '出门走走，可以去某条街。闷得少一点，身上脏一点。',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: { where: { type: 'string' } },
-      },
-      tags: ['write'],
-      summary: { zh: '出门走走。', en: 'Go out for a walk.' },
-    },
-    {
-      name: 'life_habit',
-      description: '给自己定一条常态（「早上一般先洗把脸」），或者删掉一条。',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          what: { type: 'string' },
-          when: { type: 'string', enum: ['morning', 'noon', 'afternoon', 'evening', 'night'] },
-          drop: { type: 'string' },
-        },
-      },
-      tags: ['write'],
-      summary: { zh: '定/删一条自己的常态。', en: 'Add or drop one of her standing habits.' },
-    },
-    {
-      name: 'life_watch',
-      description: '把一件事放进「我在留意」，或者拿掉。不是待办。',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: { what: { type: 'string' }, drop: { type: 'string' } },
-      },
-      tags: ['write'],
-      summary: { zh: '留意一件事 / 不再留意。', en: 'Keep an eye on something, or stop.' },
-    },
-    {
-      name: 'life_want',
-      description: '记下一件想要的东西。small 今天能办，big 得攒一攒。',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['what'],
-        properties: {
-          what: { type: 'string' },
-          scale: { type: 'string', enum: ['small', 'big'] },
-          note: { type: 'string' },
-        },
-      },
-      tags: ['write'],
-      summary: { zh: '记下一件想要的东西。', en: 'Note down something she wants.' },
-    },
-  ],
-  events: [
-    {
-      type: 'life.low',
-      description: { zh: '某条需求掉到了阈值以下。', en: 'One of her needs dropped below the threshold.' },
-      trigger: 'debounce' as const,
-    },
-    {
-      type: 'life.goal',
-      description: { zh: '一个目标的钱攒够了（搬不搬她自己定）。', en: 'Enough money for a goal (moving is her call).' },
-      trigger: 'debounce' as const,
-    },
-    {
-      type: 'life.sick',
-      description: { zh: '她病了（感冒 / 过劳）。', en: 'She fell ill (cold / overwork).' },
-      trigger: 'flush' as const,
-    },
-    {
-      type: 'life.recovered',
-      description: { zh: '病好了。', en: 'She recovered.' },
-      trigger: 'debounce' as const,
-    },
-  ],
-};
+/*
+ * 语言包化的 describe。
+ *
+ * **直接从 `describe.json` 读，不在代码里再抄一份。**（2026-11-15）
+ *
+ * 原来是两份：这里硬编码的 `LIFE_DESCRIBE`，和磁盘上的 `describe.json`。
+ * 加 `life_cert` 那次只改了后者，`verify-world` 当场报
+ * 「def.describe.tools 覆盖全部工具 → 缺：life_cert」—— 因为**宿主校验的是这份 JS 对象**，
+ * 而市场看的是磁盘那份。两份不同步的结果是「功能没坏、声明没跟上」，
+ * 而这种错最难被发现：她的工具能用，报障时却对不上。
+ *
+ * 类型靠 `verify-world` 兜（它会逐项调 tools()、查 tags 枚举、对 describe），
+ * 这里用断言换掉手抄 —— 手抄的那份没有人会记得同步。
+ */
+const DESCRIBE_FILE = fileURLToPath(new URL('../describe.json', import.meta.url));
+export const LIFE_DESCRIBE = JSON.parse(readFileSync(DESCRIBE_FILE, 'utf8')) as {
+  tools: { name: string; description: string; parameters: unknown; tags: string[]; summary: unknown }[];
+  events: { type: string; description: unknown; trigger: string }[];
+};;

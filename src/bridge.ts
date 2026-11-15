@@ -5,7 +5,7 @@
  * 生活层是读者不是作者。这个约束不是洁癖 —— 一旦这边也开始写位置，
  * 两个扩展就会各说一套，而她到底是「在佛山」还是「在家」会变成一个谜。
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /* ------------------------------------------------------------------ */
@@ -254,4 +254,64 @@ export function clockGapHours(j: JourneyView, real: Date = new Date()): number {
   const t = Date.parse(j.worldNow);
   if (!Number.isFinite(t)) return 0;
   return (t - real.getTime()) / 3_600_000;
+}
+
+/* ------------------------------------------------------------------ */
+/* journey 递过来的花销条子                                             */
+
+/**
+ * 旅行扩展递过来的一张「这一笔该从她的账上扣」。
+ *
+ * ## 为什么要走文件，不让它直接扣
+ *
+ * `life-state.json` 只有一个写者 —— 本扩展。旅行扩展同时写那个文件的话，
+ * 两个进程各自 `rename` 一份 `.tmp`，谁后写谁覆盖，丢的是她的钱。
+ * 所以那边只往 `life-spend/<id>.json` 放一张条子，这边读、判重、扣、回执
+ * （见 `coopani-world-extension` 的 `references/20-跨扩展联动.md`）。
+ */
+export interface SpendRequest {
+  /** 文件名就是它 —— 坏文件靠这个回一条 `rejected`。 */
+  id: string;
+  at: string;
+  amount: number;
+  note: string;
+}
+
+/** 条子目录名。和那边写死的那个字符串必须一致，改一处等于断桥。 */
+export const SPEND_DIR = 'life-spend';
+
+/**
+ * 读她名下的条子。**读不出来的一条不吞** —— 用文件名当 id 回 `rejected`，
+ * 否则那份文件在那边永远删不掉。
+ */
+export function readSpendRequests(dataDir: string): SpendRequest[] {
+  const dir = join(dataDir, SPEND_DIR);
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const out: SpendRequest[] = [];
+  for (const name of names) {
+    const id = name.replace(/\.json$/, '');
+    try {
+      const raw = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+      const amount = Math.round(Number(raw?.amount));
+      if (!Number.isFinite(amount) || amount <= 0) {
+        /* 读得出来但数不对：记一条 0，调用方按 rejected 回。 */
+        out.push({ id, at: '', amount: 0, note: '看不懂这一笔' });
+        continue;
+      }
+      out.push({
+        id,
+        at: typeof raw?.at === 'string' ? raw.at : '',
+        amount,
+        note: typeof raw?.note === 'string' ? raw.note.slice(0, 60) : '',
+      });
+    } catch {
+      out.push({ id, at: '', amount: 0, note: '这文件读不出来' });
+    }
+  }
+  return out;
 }

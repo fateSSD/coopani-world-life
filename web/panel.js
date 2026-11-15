@@ -48,6 +48,13 @@ const TEXT = {
     noPledge: '没有说好要做的事。',
     overdueTag: '到期没做',
     job: '在做什么',
+    certs: '手上的证',
+    noCert: '还没有证',
+    wishes: '想去哪',
+    noWish: '还没记下想去的地方。',
+    verSelf: 'v{v}',
+    verNew: 'v{v} → v{new}',
+    verHint: '新版本 {new} 已经在市场上了',
     noJob: '没在做事',
     home: '住在哪',
     rent: '租的',
@@ -117,6 +124,13 @@ const TEXT = {
     noPledge: 'Nothing promised yet.',
     overdueTag: 'overdue',
     job: 'Doing',
+    certs: 'Certificates',
+    noCert: 'no certificates yet',
+    wishes: 'Want to go',
+    noWish: 'No place on her list yet.',
+    verSelf: 'v{v}',
+    verNew: 'v{v} → v{new}',
+    verHint: 'Version {new} is out',
     noJob: 'not working',
     home: 'Lives in',
     rent: 'rented',
@@ -190,6 +204,10 @@ function ensureStyle(root) {
 .lf-town { font-size: 19px; font-weight: 650; margin: 0; }
 .lf-tag { font-size: 11.5px; padding: 1px 7px; border-radius: 999px;
   background: #eef2f7; color: #6b7280; border: 1px solid #e5e7eb; }
+/* 版本徽章：平常就是个附注（浅灰、无底），知道有新版才变成实心胶囊。 */
+.lf-ver { font-size: 11px; color: #9ca3af; letter-spacing: .2px; }
+.lf-ver[data-new="1"] { padding: 1px 7px; border-radius: 999px;
+  background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; font-weight: 600; }
 .lf-sub { color: #6b7280; font-size: 12.5px; margin: 0 0 16px; }
 .lf-note { margin: 0 0 14px; padding: 8px 11px; border-radius: 8px;
   background: #fdf8ec; border: 1px solid #ecd9b6; color: #7a5b1c; font-size: 12.5px; }
@@ -333,11 +351,17 @@ export default {
         const head = el('div', 'lf-head');
         const town = el('h1', 'lf-town', '—');
         const tag = el('span', 'lf-tag', '');
-        head.append(town, tag);
+        /*
+         * 版本徽章（2026-11-15，照 journey 那套）。
+         * 报障第一句永远是「我这是不是最新版」，两边都得猜 —— 所以写在她名字后面。
+         */
+        const ver = el('span', 'lf-ver', '');
+        head.append(town, tag, ver);
         const sub = el('p', 'lf-sub', t(lang, 'loading'));
         const note = el('div', 'lf-note');
         note.hidden = true;
         const whoCard = el('div', 'lf-card');
+        const jobCard = el('div', 'lf-card');
         const vitalsCard = el('div', 'lf-card');
         const goalCard = el('div', 'lf-card');
         const moveCard = el('div', 'lf-card');
@@ -352,12 +376,13 @@ export default {
         const habits = el('div', 'lf-card');
         const watches = el('div', 'lf-card');
         const wants = el('div', 'lf-card');
+        const wishCard = el('div', 'lf-card');
         const pendingCard = el('div', 'lf-card');
         const pledgeCard = el('div', 'lf-card');
         habits.append(el('h3', null, t(lang, 'habits')));
         watches.append(el('h3', null, t(lang, 'watches')));
         wants.append(el('h3', null, t(lang, 'wants')));
-        cols.append(habits, watches, wants, pendingCard, pledgeCard);
+        cols.append(habits, watches, wants, wishCard, pendingCard, pledgeCard);
         const helpBox = el('details', 'lf-help');
         const fbBox = el('section', 'lf-fb');
         const foot = el('div', 'lf-foot');
@@ -365,7 +390,7 @@ export default {
         const msg = el('span', 'lf-msg', '');
         foot.append(reload, msg);
 
-        app.append(head, sub, note, whoCard, vitalsCard, goalCard, moveCard, moodRow, cols, helpBox, fbBox, foot);
+        app.append(head, sub, note, whoCard, jobCard, vitalsCard, goalCard, moveCard, moodRow, cols, helpBox, fbBox, foot);
 
         const drawVitals = (vitals, low) => {
           vitalsCard.innerHTML = '';
@@ -394,6 +419,27 @@ export default {
          * 两个都写出来，因为「在新小区有房」和「现在住在新小区」不是一回事 ——
          * 她这会儿可能在大理的旅馆里。出差住店那一格单独一行小字，不混进档位。
          */
+        /*
+         * 在做什么。原来这一格只藏在「她是谁」那段文字里 —— 一眼看不出她今天有没有活干、
+         * 一天挣多少、手上有几张证。2026-11-15 Mr.Q：「职业的容器也得加进去。」
+         */
+        const drawJob = (d) => {
+          jobCard.innerHTML = '';
+          jobCard.append(el('h3', null, t(lang, 'job')));
+          const jb = d.job || {};
+          if (!jb.what) {
+            jobCard.append(el('p', 'lf-muted', t(lang, 'noJob')));
+          } else {
+            const box = el('div', 'lf-chips');
+            box.append(el('span', 'lf-chip',
+              `${jb.what}　¥${jb.daily}/天　${jb.days} 天工`));
+            jobCard.append(box);
+          }
+          const certs = jb.certs || [];
+          jobCard.append(el('p', 'lf-muted',
+            certs.length ? `${t(lang, 'certs')}：${certs.join('、')}` : t(lang, 'noCert')));
+        };
+
         const drawWho = (d) => {
           whoCard.innerHTML = '';
           whoCard.append(el('h3', null, t(lang, 'who')));
@@ -611,7 +657,20 @@ export default {
           }
 
           if (!fbBox.childElementCount) drawFeedback(d);
+          /*
+           * 版本徽章。`data-new` 同时是样式开关和可测标记 ——
+           * 有新版才实心，不知道就只写自己的版本（不写「已是最新」）。
+           */
+          const hasNew = Boolean(d.versionOutdated && d.latestVersion);
+          ver.dataset.new = hasNew ? '1' : '0';
+          ver.textContent = hasNew
+            ? t(lang, 'verNew', { v: d.version || '', new: d.latestVersion })
+            : `· ${t(lang, 'verSelf', { v: d.version || '' })}`;
+          ver.title = hasNew
+            ? t(lang, 'verHint', { v: d.version || '', new: d.latestVersion }) : '';
+
           drawWho(d);
+          drawJob(d);
           drawVitals(d.vitals, d.low);
           drawGoals(d);
           drawMoves(d);
@@ -653,8 +712,15 @@ export default {
            */
           drawPending(d);
           drawPledges(d);
-          drawList(wants, t(lang, 'wants'), d.wants,
+          /*
+           * 想买什么 / 想去哪：同一个池子（`life_want`），两种东西。
+           * 给他看的时候分开两栏 —— 他关心的「下一趟她想去哪」和「她想买什么」不是一件事。
+           */
+          const allWants = d.wants || [];
+          drawList(wants, t(lang, 'wants'), allWants.filter((w) => w.kind !== 'place'),
             (w) => `${w.what}${w.scale === 'big' ? '（得攒一攒）' : ''}`);
+          drawList(wishCard, t(lang, 'wishes'), allWants.filter((w) => w.kind === 'place'),
+            (w) => w.what);
         };
 
         /** 复制到剪贴板。宿主的 webview 里 clipboard API 未必有，要有降级。 */

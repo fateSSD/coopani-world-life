@@ -29,6 +29,7 @@
  */
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { type JobDef, findJob, certOf, CERTS } from './jobs.ts';
 
 /* ------------------------------------------------------------------ */
 /* 类型                                                                */
@@ -102,6 +103,13 @@ export interface Want {
   what: string;
   /** 多大的事。`small` = 今天就能办，`big` = 得攒一攒。 */
   scale: 'small' | 'big';
+  /**
+   * 想要的是**东西**还是**去的地方**（2026-11-15 Mr.Q：「想去哪也要有个容器」）。
+   *
+   * 两条都记在同一个池子里（同一个工具、同一张表），因为对她来说都是「想要」；
+   * 分开只是**给他看的时候**要分栏 —— 「想买什么」和「想去哪」是两件事。
+   */
+  kind: 'thing' | 'place';
   since: string;
   note: string;
 }
@@ -176,8 +184,12 @@ export interface Home {
 export interface Job {
   /** 干什么。空串 = 现在没在做事。 */
   what: string;
-  /** 顶一天活给多少。 */
+  /** 职业表里的 id（`jobs.ts`）。空串 = 她自己随口说的一种活，按零工算。 */
+  id: string;
+  /** 顶一天活给多少。有 `id` 时跟着表走，自由描述时沿用这一格。 */
   daily: number;
+  /** 手上的证（`jobs.ts` 的 `CERTS` 里的名字）。门槛就靠它兑现。 */
+  certs: string[];
   /** 上一次出工是哪天（`YYYY-MM-DD`，本地日期）。一天一次就靠它判。 */
   lastAt: string;
   /** 一共出过几天工。 */
@@ -315,6 +327,14 @@ export interface LifeState {
   goals: Goal[];
   /** 今天已经提醒过哪几条 —— 用来实现「一天一次」。 */
   nagged: Record<string, string>;
+  /**
+   * 已经扣过的外部花销 id（`life-spend/<id>.json`，来自旅行扩展）。
+   *
+   * **判重表要落在状态文件里**，不能另存一份：加钱/扣钱和「这条扣过了」
+   * 必须一次原子写进去，崩在中间就是重复扣（`references/20` §2）。
+   * 按条数滚，不按时间 —— 世界时刻在倍速下没有稳定含义。
+   */
+  spendApplied: string[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -459,7 +479,8 @@ export function freshState(now: Date = new Date()): LifeState {
       monthly: HOME_TIER_COST['urban-village'],
       since: now.toISOString(),
     },
-    job: { what: '', daily: 120, lastAt: '', days: 0 },
+    /* 新档从零工的价起步 —— 老存档里的 120 由 `normJob` 兜着，不动。 */
+    job: { what: '', id: '', daily: 90, certs: [], lastAt: '', days: 0 },
     /*
      * 启动的钱。
      *
@@ -482,6 +503,7 @@ export function freshState(now: Date = new Date()): LifeState {
       since: now.toISOString(),
     }],
     nagged: {},
+    spendApplied: [],
   };
 }
 
@@ -580,7 +602,10 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     conditions: arr(s.conditions).filter((c) => c && typeof c.id === 'string'),
     habits: arr(s.habits).filter((h) => h && typeof h.id === 'string'),
     watches: arr(s.watches).filter((w) => w && typeof w.id === 'string'),
-    wants: arr(s.wants).filter((w) => w && typeof w.id === 'string'),
+    wants: arr(s.wants)
+      .filter((w) => w && typeof w.id === 'string')
+      /* 老存档没有 `kind` —— 一律当「东西」，不改她原来记的内容。 */
+      .map((w) => ({ ...w, kind: w.kind === 'place' ? 'place' : 'thing' })),
     pending: arr(s.pending).filter((x) => x && typeof x.id === 'string'),
     pledges: arr(s.pledges).filter((x) => x && typeof x.id === 'string'),
     tellable: arr(s.tellable).filter((t) => t && typeof t.id === 'string'),
@@ -591,6 +616,7 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     money: normMoney(s.money, now),
     goals: arr(s.goals).filter((g) => g && typeof g.id === 'string'),
     nagged: (s.nagged && typeof s.nagged === 'object') ? s.nagged : {},
+    spendApplied: arr(s.spendApplied).filter((x) => typeof x === 'string').slice(-120),
   };
 }
 
@@ -624,9 +650,12 @@ function normHome(v: unknown, now: Date): Home {
 
 function normJob(v: unknown): Job {
   const o = (v ?? {}) as Partial<Job>;
+  const certs = Array.isArray(o.certs) ? o.certs.filter((x) => typeof x === 'string') : [];
   return {
     what: typeof o.what === 'string' ? o.what : '',
+    id: typeof o.id === 'string' ? o.id : '',
     daily: Number.isFinite(Number(o.daily)) && Number(o.daily) > 0 ? Number(o.daily) : 120,
+    certs,
     lastAt: typeof o.lastAt === 'string' ? o.lastAt : '',
     days: Number.isFinite(Number(o.days)) ? Number(o.days) : 0,
   };
@@ -934,17 +963,58 @@ export function applyWork(state: LifeState, what: string, now: Date): WorkResult
     };
   }
 
-  const label = String(what || '').trim() || state.job.what || '打零工';
-  if (what) state.job.what = label;
+  const told = String(what || '').trim();
+  /*
+   * 认表：说「护工」就按护工的价，说「帮人看摊」就还是零工的价。
+   *
+   * 不填的时候沿用上一次那个 —— 她说过「以后默认还是这个」。
+   */
+  const def = told
+    ? findJob(told)
+    : (state.job.id ? findJob(state.job.id) : null);
 
-  const pay = state.job.daily;
+  let pay: number;
+  let label: string;
+  let load: JobDef['load'];
+
+  if (def) {
+    const gate = jobGate(state, def);
+    if (gate) {
+      return { ok: false, reason: gate, earned: 0, cash: state.money.cash, vitals: state.vitals };
+    }
+    pay = def.pay;
+    label = def.name;
+    load = def.load;
+    state.job.id = def.id;
+  } else {
+    /*
+     * 表里没有 —— 她自己说的活，按零工算，**价格沿用 `daily`**。
+     *
+     * 不改成 90：老存档里她一天挣 120，突然掉到 90 会像是「你干活不值钱了」，
+     * 而用户什么都没改过。要降，是下一次调表的事。
+     */
+    label = told || state.job.what || '打零工';
+    pay = state.job.daily;
+    load = { energy: 34, clean: 16, fun: 10, social: 0 };
+    state.job.id = '';
+  }
+
+  state.job.what = label;
+  state.job.daily = pay;
+
   state.money.cash += pay;
   state.money.earned += pay;
 
-  /* 一天的代价。比一件「事」重得多 —— 这是整天。 */
-  state.vitals.energy = clamp100(state.vitals.energy - 34);
-  state.vitals.clean = clamp100(state.vitals.clean - 16);
-  state.vitals.fun = clamp100(state.vitals.fun - 10);
+  /*
+   * 一天的代价。比一件「事」重得多 —— 这是整天。
+   *
+   * 档位越高扣得越多（见 `jobs.ts` 的 `LOAD`）：钱多出来的那部分，
+   * 是从她这一天里挤出来的。专业岗还扣社交 —— 一整天不在家，谁也没见着。
+   */
+  state.vitals.energy = clamp100(state.vitals.energy - load.energy);
+  state.vitals.clean = clamp100(state.vitals.clean - load.clean);
+  state.vitals.fun = clamp100(state.vitals.fun - load.fun);
+  if (load.social) state.vitals.social = clamp100(state.vitals.social - load.social);
 
   state.job.lastAt = day;
   state.job.days += 1;
@@ -952,6 +1022,145 @@ export function applyWork(state: LifeState, what: string, now: Date): WorkResult
   remember(state, `${label}，挣了 ${pay} 元。`, now);
   state.updatedAt = now.toISOString();
   return { ok: true, earned: pay, cash: state.money.cash, vitals: state.vitals };
+}
+
+/**
+ * 这道活她够不够格。返回**拒绝时该说的话**，`null` = 能去。
+ *
+ * ## 为什么门槛要能兑现
+ *
+ * 2026-11-15 Mr.Q：「包括职业的执业资格，经验要求越多的工资越高。」
+ * 工资按门槛分档之后，门槛本身必须是真的 —— 否则她第一天就能说自己有护工证，
+ * 那张表就白做了。
+ *
+ * 三种门槛都落在**世界能查的地方**：`job.certs`（考过就是考过）、
+ * `job.days`（出过几天工，代码一直在记）。不靠她自述。
+ *
+ * 拒绝的话要把「差什么、怎么补」说出来 —— 只说「你不行」，
+ * 她下一步还是不知道往哪走（跟卷二那条「钱不够要说替代方案」同一个道理）。
+ */
+export function jobGate(state: LifeState, def: JobDef): string | null {
+  if (def.cert && !state.job.certs.includes(def.cert)) {
+    const c = certOf(def.cert);
+    return `「${def.name}」要${def.cert}，你手上没有。`
+      + (c ? `考一张 ${c.price} 元，用 \`life_cert\`。` : '');
+  }
+  if (def.days && state.job.days < def.days) {
+    return `「${def.name}」要出过 ${def.days} 天工，你才 ${state.job.days} 天。先干几天不要证的活。`;
+  }
+  return null;
+}
+
+/** 考证的结果。 */
+export interface CertResult {
+  ok: boolean;
+  reason?: string;
+  cert?: string;
+  /** 花掉多少。 */
+  paid: number;
+  cash: number;
+}
+
+/**
+ * 去考一张证。
+ *
+ * ## 为什么考证要花钱
+ *
+ * 不然「我有护工证」只是一句话。花了钱，它就是一个真的取舍：
+ * 手上有 3000，是去考一张 600 的驾照（之后日薪从 90 变 230），还是先搬去老小区？
+ *
+ * ## 为什么只花一天、不占出工日
+ *
+ * 占的话，`job.lastAt` 一写，「今天已经出过工」就提前判死了 —— 一个字段两种含义，
+ * 迟早出错。所以考证只扣精力（−20），不碰 `lastAt`。
+ * 代价是理论上她可以「考一张证再上一整天班」，但那要 20 点精力，连着来两次就动不了。
+ */
+export function applyCert(state: LifeState, name: string, now: Date): CertResult {
+  const c = certOf(name);
+  if (!c) {
+    const list = CERTS.map((x) => `${x.name}（${x.price} 元）`).join('、');
+    return { ok: false, reason: `没有这张证可考。能考的：${list}。`, paid: 0, cash: state.money.cash };
+  }
+  if (state.job.certs.includes(c.name)) {
+    return { ok: false, reason: `你已经考过${c.name}了。`, paid: 0, cash: state.money.cash };
+  }
+  if (state.money.cash < c.price) {
+    return {
+      ok: false,
+      reason: `${c.name}要 ${c.price} 元，你手上只有 ${Math.round(state.money.cash)} 元。`,
+      paid: 0,
+      cash: state.money.cash,
+    };
+  }
+  state.money.cash -= c.price;
+  state.money.spent += c.price;
+  state.job.certs.push(c.name);
+  state.vitals.energy = clamp100(state.vitals.energy - 20);
+  remember(state, `考下了${c.name}，花了 ${c.price} 元。`, now);
+  state.updatedAt = now.toISOString();
+  return { ok: true, cert: c.name, paid: c.price, cash: state.money.cash };
+}
+
+/**
+ * 收一笔外部递来的花销（旅行扩展的 `life-spend/<id>.json`）。
+ *
+ * ## 为什么抽成纯函数
+ *
+ * 这条路的错法很贵：**重复扣她的钱**。抽出来才能在冒烟里一条条试
+ * （同一张条子跑两次、数不对、钱不够），不用起一个 World。
+ *
+ * ## 三条边界
+ *
+ * 1. **判重看 `state.spendApplied`**，和扣钱在同一次 `save()` 里落盘；
+ * 2. **不扣成负数**：钱不够就扣到 0，记一条「没付清」—— 欠债是另一套系统（一期不做）；
+ * 3. **数不对的条子回 `rejected`**，不然那份文件在对面永远删不掉。
+ */
+export interface SpendSettle {
+  id: string;
+  status: 'applied' | 'rejected';
+}
+
+export function applySpend(
+  state: LifeState,
+  reqs: readonly { id: string; amount: number; note?: string }[],
+  now: Date,
+): { settled: SpendSettle[]; changed: boolean } {
+  const done = new Set(state.spendApplied);
+  const settled: SpendSettle[] = [];
+  let changed = false;
+
+  for (const r of reqs) {
+    const id = String(r?.id ?? '').trim();
+    if (!id) continue;
+    if (done.has(id)) {
+      /* 收过了 —— 仍然回 `applied`，让对面能删它那份文件。 */
+      settled.push({ id, status: 'applied' });
+      continue;
+    }
+    const amount = Math.round(Number(r?.amount));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      state.spendApplied.push(id);
+      settled.push({ id, status: 'rejected' });
+      changed = true;
+      continue;
+    }
+    const pay = Math.min(amount, Math.max(0, Math.round(state.money.cash)));
+    state.money.cash -= pay;
+    state.money.spent += pay;
+    state.spendApplied.push(id);
+    settled.push({ id, status: 'applied' });
+    changed = true;
+    const note = String(r?.note ?? '').slice(0, 60);
+    if (pay < amount) {
+      remember(state, `${note || '旅行的花销'}没付清，还差 ${amount - pay} 元。`, now);
+    } else if (note) {
+      remember(state, `${note}花了 ${amount} 元。`, now);
+    }
+  }
+
+  state.spendApplied = state.spendApplied.slice(-120);
+  if (changed) state.updatedAt = now.toISOString();
+  return { settled, changed };
 }
 
 /* ------------------------------------------------------------------ */

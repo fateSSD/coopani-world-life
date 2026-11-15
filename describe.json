@@ -119,7 +119,7 @@
     },
     {
       "name": "life_work",
-      "description": "去顶一天活，挣这一天的钱。一天一次，很累。",
+      "description": "去顶一天活，挣这一天的钱。一天一次。价钱按活分档：零工八九十、熟练活一百三四、要证的活两百多、要证又要年头的三百多。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -133,8 +133,31 @@
         "write"
       ],
       "summary": {
-        "zh": "顶一天活挣钱。",
-        "en": "Work a day for pay."
+        "zh": "顶一天活挣钱（不同活不同价）。",
+        "en": "Work a day for pay; the rate depends on the job."
+      }
+    },
+    {
+      "name": "life_cert",
+      "description": "去考一张证，花钱花精力。考下来才能接要证的活。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cert"
+        ],
+        "properties": {
+          "cert": {
+            "type": "string"
+          }
+        }
+      },
+      "tags": [
+        "write"
+      ],
+      "summary": {
+        "zh": "考一张证。",
+        "en": "Sit an exam for a certificate."
       }
     },
     {
