@@ -20,6 +20,14 @@ const TEXT = {
   zh: {
     loading: '读她的日子…',
     empty: '还没读到。',
+    helpTitle: '扩展名旁边那三盏灯怎么看？',
+    helpOn: '绿',
+    helpOnDesc: '上一次是好的，正常。',
+    helpOff: '灰',
+    helpOffDesc: '没启用，不是坏了 —— 比如没装旅行扩展。不用管。',
+    helpErr: '红',
+    helpErrDesc: '配好了但用不了，要去处理。原因和怎么办，鼠标停在灯上能看到。',
+    helpHint: '三盏灯分别是：过日子（她还在正常流逝时间吗）、本城（城名从你的服务器读到了吗）、旅行（知道她在哪座城吗）。',
     fbLead: '有 bug，或者想让她能干什么？',
     fbBug: '复制诊断信息',
     fbWant: '复制诊断信息（想加东西）',
@@ -81,6 +89,14 @@ const TEXT = {
   en: {
     loading: 'Reading her day…',
     empty: 'Nothing yet.',
+    helpTitle: 'What do the three dots next to the extension name mean?',
+    helpOn: 'Green',
+    helpOnDesc: 'last time worked. Normal.',
+    helpOff: 'Grey',
+    helpOffDesc: 'not enabled — that is not a fault. Nothing to do.',
+    helpErr: 'Red',
+    helpErrDesc: 'configured but not working. Hover the dot for the reason and the fix.',
+    helpHint: 'The three are: daily life (is time still passing for her), town (did the name load from your server), travel (do we know what city she is in).',
     fbLead: 'A bug, or something you want her to do?',
     fbBug: 'Copy diagnostics',
     fbWant: 'Copy diagnostics (feature request)',
@@ -248,6 +264,20 @@ function ensureStyle(root) {
 .lf-note-line { margin: 10px 0 0; font-size: 11.5px; color: #9ca3af; line-height: 1.7; }
 
 /*
+ * 「灯怎么看」那一块。
+ *
+ * 灯在**扩展名旁边**（宿主画的），不在这个面板里 —— 所以用户在界面上看到灰点、
+ * 想知道是什么意思时，得有个地方能查。默认折叠：不占地方，但要找得到。
+ */
+.lf-help { margin-top: 12px; font-size: 12.5px; color: #374151; }
+.lf-help summary { cursor: pointer; color: #2f6fed; font-size: 12.5px; padding: 4px 0; }
+.lf-help summary:hover { text-decoration: underline; }
+.lf-help ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.9; }
+.lf-help li b { color: #1b1e24; }
+.lf-help .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 5px; vertical-align: middle; }
+
+/*
  * 底部反馈栏。
  *
  * ## 为什么不是 mailto:
@@ -328,13 +358,14 @@ export default {
         watches.append(el('h3', null, t(lang, 'watches')));
         wants.append(el('h3', null, t(lang, 'wants')));
         cols.append(habits, watches, wants, pendingCard, pledgeCard);
+        const helpBox = el('details', 'lf-help');
         const fbBox = el('section', 'lf-fb');
         const foot = el('div', 'lf-foot');
         const reload = el('button', 'lf-btn', t(lang, 'reload'));
         const msg = el('span', 'lf-msg', '');
         foot.append(reload, msg);
 
-        app.append(head, sub, note, whoCard, vitalsCard, goalCard, moveCard, moodRow, cols, fbBox, foot);
+        app.append(head, sub, note, whoCard, vitalsCard, goalCard, moveCard, moodRow, cols, helpBox, fbBox, foot);
 
         const drawVitals = (vitals, low) => {
           vitalsCard.innerHTML = '';
@@ -691,6 +722,32 @@ export default {
           fbBox.append(el('p', 'why', t(lang, 'fbWhy')));
         };
 
+        /*
+         * 灯的说明。**只画一次** —— 它是静态的。
+         *
+         * 为什么需要这一块：那三盏灯是宿主画在扩展名旁边的，鼠标悬停能看到原因，
+         * 但**没人知道要悬停**。用户看到灰点，第一反应是「是不是坏了」，
+         * 而灰的多数情况恰恰是「没启用，不用管」。
+         */
+        const drawHelp = () => {
+          helpBox.append(el('summary', null, t(lang, 'helpTitle')));
+          const ul = el('ul');
+          const item = (color, key, desc) => {
+            const li = el('li');
+            const dot = el('span', 'dot');
+            dot.style.background = color;
+            li.append(dot);
+            li.append(el('b', null, t(lang, key)));
+            li.append(document.createTextNode('　' + t(lang, desc)));
+            return li;
+          };
+          ul.append(item('#2f855a', 'helpOn', 'helpOnDesc'));
+          ul.append(item('#9ca3af', 'helpOff', 'helpOffDesc'));
+          ul.append(item('#c0392b', 'helpErr', 'helpErrDesc'));
+          helpBox.append(ul);
+          helpBox.append(el('p', 'lf-muted', t(lang, 'helpHint')));
+        };
+
         const load = () => ctx.invoke('snapshot').then(render).catch((e) => {
           sub.textContent = t(lang, 'empty');
           msg.textContent = (e && e.message) ? e.message : '读取失败';
@@ -725,6 +782,7 @@ export default {
             .catch((e) => { msg.textContent = (e && e.message) || '失败'; });
         });
 
+        drawHelp();
         await load();
 
         /*

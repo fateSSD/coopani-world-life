@@ -34,7 +34,7 @@ export interface LifeWorldOptions {
 }
 
 /** 版本号。envPrompt 里露出来，报障时第一个要确认的数。 */
-const VERSION = '0.8.0';
+const VERSION = '0.9.0';
 
 /** 人话的时长：「3 分钟」「2 小时」。灯上的 hint 用，不要写 180000 毫秒。 */
 function fmtSpan(ms: number): string {
@@ -1019,7 +1019,8 @@ export class LifeWorld implements World {
       : {
         label: '过日子',
         state: 'error',
-        hint: `已经 ${fmtSpan(idleMs)}没有推进了 —— 她没在过日子，五条也不会再掉。去看 Core 日志`,
+        hint: `已经 ${fmtSpan(idleMs)}没有推进了 —— 她没在过日子，五条也不会再掉。`
+          + '先看 Coopani 是不是被系统挂起了；还红就重启一次',
       };
 
     /* ---- 本城 ---- */
@@ -1029,16 +1030,26 @@ export class LifeWorld implements World {
     const town: WorldLamp = this.town.source === 'server'
       ? { label: '本城', state: 'online', hint: `从 ${host} 读的：${this.town.name}` }
       : this.town.source === 'failed'
-        ? { label: '本城', state: 'error', hint: this.town.problem || '配了地址但读不到，先按内置的算' }
-        : { label: '本城', state: 'offline', hint: `用内置的${this.town.name} —— 没配服务器，这不算故障` };
+        ? {
+          label: '本城',
+          state: 'error',
+          hint: `${this.town.problem || '配了地址但读不到'}。城名暂时用内置的，不影响她过日子。`
+            + '会自己重试；一直红就检查设置里那个网址拼对了没有',
+        }
+        : { label: '本城', state: 'offline', hint: `用内置的${this.town.name}。没配服务器就是这样，**不用管** —— 想改城名才去填那个网址` };
 
     /* ---- 旅行 ---- */
     const j = readJourney(this.opts.dataDir, now);
     const staleLimitSec = 600;
     const travel: WorldLamp = !j.installed
-      ? { label: '旅行', state: 'offline', hint: '没装旅行扩展 —— 不知道她在哪座城，日子照过' }
+      ? { label: '旅行', state: 'offline', hint: '没装「大肥鱼环游世界」。不知道她在哪座城，但日子照过 —— **不用管**' }
       : j.staleSec > staleLimitSec
-        ? { label: '旅行', state: 'error', hint: `旅行那边 ${Math.round(j.staleSec / 60)} 分钟没更新了，位置可能已经过时` }
+        ? {
+          label: '旅行',
+          state: 'error',
+          hint: `旅行那边 ${Math.round(j.staleSec / 60)} 分钟没更新了，她可能已经不在你以为的那座城。`
+            + '多半是那边停了或卡住，去它的面板看一眼',
+        }
         : {
           label: '旅行',
           state: 'online',
