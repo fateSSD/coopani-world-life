@@ -88,7 +88,7 @@
     },
     {
       "name": "life_act",
-      "description": "自己做一件事：吃、睡、洗、玩、跟人说话。身体会变。",
+      "description": "自己做一件事：吃、睡、起来（wake，睡着时唯一能做的事）、洗、玩、跟人说话。身体会变。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -101,6 +101,7 @@
             "enum": [
               "eat",
               "sleep",
+              "wake",
               "wash",
               "play",
               "instant",

@@ -328,6 +328,15 @@ export interface LifeState {
   /** 今天已经提醒过哪几条 —— 用来实现「一天一次」。 */
   nagged: Record<string, string>;
   /**
+   * 她什么时候睡下的（ISO，真实时间）。空串 = 醒着。
+   *
+   * **和 `asleepUntil` 成对存在，两个都有才是一次完整的睡眠。**
+   * 它的唯一用途是算「这一觉睡了几小时」—— 精力要按睡过的钟点结算，
+   * 不能像以前那样在睡下那一瞬间就把 80 点打进去（睡十秒起来也拿满 80，
+   * 那是免费回血按钮，不是睡觉）。
+   */
+  asleepFrom: string;
+  /**
    * 她在睡，睡到什么时候（ISO，真实时间）。空串 = 醒着。
    *
    * 2026-11-15 Mr.Q：「睡眠时禁止 journey 的出发。」
@@ -368,9 +377,48 @@ export const DECAY_PER_HOUR: Record<VitalKey, number> = {
   social: 1.8,
 };
 
+/**
+ * 睡着的时候，五条按另一套速率走（2026-11-15 Mr.Q 定）。
+ *
+ * **只有饱腹照常掉** —— 饿着睡醒了更饿，这是真的，也是「睡前该吃点东西」
+ * 这个判断唯一的落点。其余四条：
+ *
+ * - 娱乐 `0` / 社交 `0`：睡着不消耗。躺八小时既不闷也不少人说话。
+ * - 清爽 `1.0`：**掉，但慢**。一夜下来身上会有点黏 —— 这个 1.0 不是拍的：
+ *   8 小时正好 −8，和原来那条「睡醒有点乱 −8」是同一件事，只是现在**按睡过的
+ *   钟点摊**，睡三小时就只掉三。顺带把一天的账对平了：醒着 16 小时 −41.6，
+ *   睡着 8 小时 −8，合计 −49.6，洗一次 +55 刚好覆盖一天。
+ * - 精力 `0`：不是锁死，是**另算回升**（见 `SLEEP_ENERGY_PER_HOUR`）。
+ *   锁死的话她睡八小时醒来还是原值，那不叫睡了一觉，叫暂停。
+ */
+export const SLEEP_DECAY_PER_HOUR: Record<VitalKey, number> = {
+  food: 3.6,
+  energy: 0,
+  clean: 1.0,
+  fun: 0,
+  social: 0,
+};
+
+/**
+ * 睡着的时候每小时回多少精力。
+ *
+ * **10 不是拍的：8 小时正好 +80** —— 和原来「睡一觉 +80」那张表对得上，
+ * 只是从「睡下瞬间一次打进去」改成「按睡过的钟点结算」。
+ * 睡两小时就起，只拿 20；睡十秒起来，拿 0。
+ */
+export const SLEEP_ENERGY_PER_HOUR = 10;
+
+/**
+ * 睡够多久算睡饱了。用来决定醒来挂哪条情绪，**不参与数值**。
+ *
+ * 6 小时：低于这个数醒来会头沉。世界卫生组织那套「七到九小时」是一般人，
+ * 这里取 6 是因为 8 小时已经是标称时长，用 8 当阈值等于「几乎永远睡不够」。
+ */
+export const SLEEP_ENOUGH_HOURS = 6;
+
 /** 低于这个数就该被注意到了。**不自动扣血、不自动生病** —— 只是阈值事件。 */
 export const LOW = 30;
-/** 低于这个数算「已经很缺了」。 */
+/** 低于这个数就算「已经很缺了」。也是**饿醒**的阈值 —— 饿到这个份上，睡着也会醒。 */
 export const CRITICAL = 15;
 /** 单次推进最多按多少小时算。见文件头「离线的那段时间怎么办」。 */
 export const MAX_CATCHUP_HOURS = 7 * 24;
@@ -404,12 +452,35 @@ export const ACTS: Record<string, ActKind> = {
   sleep: {
     id: 'sleep',
     label: '睡觉',
-    /* 8 小时（2026-11-15 起这个字段真的被读了，见 applyAct 里设 asleepUntil）。 */
+    /* 8 小时，**真的会读**：睡下时设 asleepFrom / asleepUntil，这段时间她做不了别的。 */
     minutes: 8 * 60,
     cost: 0,
-    /* 睡醒会有点乱 —— 这是真的，不是刻薄。 */
-    gain: { energy: 80, clean: -8 },
-    mood: { text: '睡够了，脑子是清的', kind: 'good', hours: 4 },
+    /*
+     * 一条都不跳（2026-11-15 改）。
+     *
+     * 原来这里是 `{energy: 80, clean: -8}` —— 睡下那一瞬间就打进去。
+     * 两个毛病：① 睡十秒起来也拿满 80；② 之后那 8 小时 tick 照常扣，
+     * 实际到手只有 43，而提醒里写着「回 80」，等于对她说了假话。
+     *
+     * 现在精力和清爽都交给 `advance()` 按时长结算：睡着每小时 +10 精力、
+     * −1.0 清爽。见 `SLEEP_DECAY_PER_HOUR`。
+     */
+    gain: {},
+    /* 情绪也不在这里挂 —— 挂上了要 8 小时才醒，4 小时的情绪早就过期了。见 advance。 */
+  },
+  /*
+   * 「起来」。
+   *
+   * **它是「睡着时唯一能干的事」**，不是可有可无的补充：如果睡着期间所有动作
+   * 都被禁，而「醒来」原本靠「做别的动作」触发，她就永远醒不过来 —— 死锁。
+   * 这个动作什么都不改，只把 asleep 清掉、按睡过的钟点结算。
+   */
+  wake: {
+    id: 'wake',
+    label: '起来',
+    minutes: 0,
+    cost: 0,
+    gain: {},
   },
   wash: {
     id: 'wash',
@@ -513,6 +584,7 @@ export function freshState(now: Date = new Date()): LifeState {
     }],
     nagged: {},
     spendApplied: [],
+    asleepFrom: '',
     asleepUntil: '',
   };
 }
@@ -627,8 +699,42 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     goals: arr(s.goals).filter((g) => g && typeof g.id === 'string'),
     nagged: (s.nagged && typeof s.nagged === 'object') ? s.nagged : {},
     spendApplied: arr(s.spendApplied).filter((x) => typeof x === 'string').slice(-120),
-    asleepUntil: typeof s.asleepUntil === 'string' ? s.asleepUntil : '',
+    asleepFrom: normAsleepFrom(s, now),
+    asleepUntil: normAsleepUntil(s, now),
   };
+}
+
+/**
+ * 老档没有 `asleepFrom`（0.10.2 以前只有 `asleepUntil`）。
+ *
+ * **不许猜一个起点。** 猜长了是白送精力，猜短了是白扣 —— 两种都比「她醒了」更糟。
+ * 能用得上的只有 `updatedAt`：旧版 `applyAct('sleep')` 也会把 `updatedAt` 写成
+ * 入睡那一刻，之后每一次 tick 又把它推到最近一次结算点。所以拿它当起点，
+ * 只会把这一觉算得**偏短**，不会偏长 —— 宁少不多。
+ */
+function normAsleepFrom(s: Partial<LifeState>, now: Date): string {
+  if (typeof s.asleepFrom === 'string' && s.asleepFrom) {
+    const f = Date.parse(s.asleepFrom);
+    const u = typeof s.asleepUntil === 'string' ? Date.parse(s.asleepUntil) : NaN;
+    /* 起点必须在终点之前，且不能晚于现在 —— 否则这次睡眠不成立。 */
+    if (Number.isFinite(f) && Number.isFinite(u) && u > f && f <= now.getTime()) return s.asleepFrom;
+    return '';
+  }
+  const u = typeof s.asleepUntil === 'string' ? Date.parse(s.asleepUntil) : NaN;
+  const up = Date.parse(s.updatedAt);
+  if (Number.isFinite(u) && u > now.getTime() && Number.isFinite(up) && up < u) {
+    return new Date(up).toISOString();
+  }
+  return '';
+}
+
+function normAsleepUntil(s: Partial<LifeState>, now: Date): string {
+  if (typeof s.asleepUntil !== 'string' || !s.asleepUntil) return '';
+  const u = Date.parse(s.asleepUntil);
+  /* 已经过点的，就是醒了 —— 留着会让「她在睡」永远为真。 */
+  if (!Number.isFinite(u) || u <= now.getTime()) return '';
+  /* 起点不成立（见上），那就别承认这次睡眠。 */
+  return normAsleepFrom(s, now) ? s.asleepUntil : '';
 }
 
 function num(v: unknown, fallback: number): number {
@@ -699,6 +805,22 @@ export interface AdvanceResult {
   recovered: Condition[];
   /** 这次新得的病。 */
   caught: Condition[];
+  /** 这一段时间里她醒了（自然醒、饿醒、或者被叫起来）。没醒就是 null。 */
+  woke: WakeResult | null;
+  /** 这一段时间里她**真的睡着**了几个小时。醒着推进时是 0。 */
+  sleptHours: number;
+}
+
+/** 她刚醒。`hours` 是这一觉**真的睡了**几个钟点。 */
+export interface WakeResult {
+  hours: number;
+  /**
+   * 为什么醒的。
+   * - `enough` 睡满八小时，睡够了
+   * - `short` 没到点就起了（她自己起来的，或者被叫起来的）
+   * - `hungry` 饿醒的 —— 饱腹掉到 `CRITICAL`
+   */
+  reason: 'enough' | 'short' | 'hungry';
 }
 
 /**
@@ -706,20 +828,93 @@ export interface AdvanceResult {
  *
  * **幂等**：`now` 比 `updatedAt` 早（时钟被拨回去、或者两次调用同一个时刻）时
  * 一动不动 —— 否则会把时间倒着扣，她越活越精神。
+ *
+ * ## 睡着的那一段要单独算（2026-11-15）
+ *
+ * 原来是整段套一套衰减率，于是「睡八小时」在她身上是：精力先跳到 100，
+ * 然后八小时里又被扣掉 36.8，实际到手 43；清爽、娱乐、社交照掉不误。
+ * 那不是睡觉，是「躺着受罪」。
+ *
+ * 现在把 `[updatedAt, now]` 切成**睡着**和**醒着**两段，各用各的速率
+ * （见 `SLEEP_DECAY_PER_HOUR`）：睡着时只有饱腹照常掉、清爽掉得很慢、
+ * 娱乐和社交不动、精力按小时回升。
+ *
+ * **跨时段必须分段** —— 一次推进跨了八小时睡眠加三天醒着，
+ * 整段套一种规则会把后面那三天也算成在睡觉。
  */
 export function advance(state: LifeState, now: Date): AdvanceResult {
   const from = Date.parse(state.updatedAt);
   const to = now.getTime();
   const rawHours = Number.isFinite(from) ? (to - from) / 3_600_000 : 0;
   if (!(rawHours > 0)) {
-    return { hours: 0, crossed: [], recovered: [], caught: [], rentMissed: false, rent: 0 };
+    return {
+      hours: 0, crossed: [], recovered: [], caught: [],
+      rentMissed: false, rent: 0, woke: null, sleptHours: 0,
+    };
   }
 
   const hours = Math.min(rawHours, MAX_CATCHUP_HOURS);
+  /** 真正的结算起点。超长离线被 7 天封顶时，它晚于 `updatedAt`。 */
+  const fromMs = to - hours * 3_600_000;
 
   const before: Vitals = { ...state.vitals };
+
+  /* ---------------- 睡着的那一段 ---------------- */
+
+  const sFrom = Date.parse(state.asleepFrom);
+  const sUntil = Date.parse(state.asleepUntil);
+  const hadSleep = Number.isFinite(sFrom) && Number.isFinite(sUntil) && sUntil > sFrom;
+
+  let sleepHours = 0;
+  let woke: WakeResult | null = null;
+
+  if (hadSleep) {
+    /*
+     * 饿醒：饱腹掉到 `CRITICAL` 的那一刻她睡不下去了。
+     *
+     * 这一条是「睡前该吃点东西」唯一的落点。不做的话，睡前饱腹 20 睡八小时，
+     * 醒来 −28.8，中间没有任何后果 —— 那睡觉就成了一个免费的时间加速器。
+     */
+    const perHour = SLEEP_DECAY_PER_HOUR.food;
+    const hungryAt = before.food > CRITICAL
+      ? from + ((before.food - CRITICAL) / perHour) * 3_600_000
+      : from;
+
+    const planEnd = Math.min(to, sUntil);
+    const sleepEnd = Math.min(planEnd, hungryAt);
+
+    const lo = Math.max(fromMs, sFrom);
+    sleepHours = Math.max(0, (sleepEnd - lo) / 3_600_000);
+    /* 7 天封顶之外的那部分睡眠不结算，按醒着算。 */
+    sleepHours = Math.min(sleepHours, hours);
+
+    /*
+     * 醒来发生在 7 天封顶窗口之内（`sleepEnd > fromMs`）才结算 `woke` ——
+     * 十天前睡醒或饿醒的事，十天后上线不该挂一条「刚醒」心情或推饿醒提醒。
+     * `enough` / `short` 按整觉实际时长（`sleepEnd - sFrom`）判，不被 7 天截断冤枉成没睡够。
+     */
+    if (sleepEnd > fromMs) {
+      const actualHours = Math.max(0, (sleepEnd - sFrom) / 3_600_000);
+      if (sleepEnd < planEnd) {
+        woke = { hours: actualHours, reason: 'hungry' };
+      } else if (to >= sUntil) {
+        woke = {
+          hours: actualHours,
+          reason: actualHours >= SLEEP_ENOUGH_HOURS ? 'enough' : 'short',
+        };
+      }
+    }
+  }
+
+  const awakeHours = hours - sleepHours;
+
+  /* ---------------- 结算 ---------------- */
+
   for (const key of Object.keys(DECAY_PER_HOUR) as VitalKey[]) {
-    state.vitals[key] = clamp100(state.vitals[key] - DECAY_PER_HOUR[key] * hours);
+    /* 精力不衰减，是**另算回升** —— 锁死的话她睡八小时醒来还是原值。 */
+    const sleepDelta = key === 'energy' ? SLEEP_ENERGY_PER_HOUR : -SLEEP_DECAY_PER_HOUR[key];
+    const v = state.vitals[key] - DECAY_PER_HOUR[key] * awakeHours + sleepDelta * sleepHours;
+    state.vitals[key] = clamp100(v);
   }
 
   /*
@@ -729,14 +924,19 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
    * 她是「有点饿、有点闷」，不是「快不行了」。
    * 只补精力 —— 吃饭、洗澡、找乐子、见人这些**不能凭空补**，
    * 补了就等于「她不在的时候你替她过了日子」，那她的日子就不算她的。
+   *
+   * **按醒着的小时数算天**（2026-11-15 改）：她真的睡过的那一段已经结算过了，
+   * 再按整段时间补一次，等于同一觉领两份。用 `awakeHours`，两边不会重叠。
    */
-  const wholeDays = Math.floor(hours / 24);
+  const wholeDays = Math.floor(awakeHours / 24);
   if (wholeDays > 0) {
     state.vitals.energy = clamp100(Math.max(state.vitals.energy, 85));
   }
 
+  /* ---------------- 住的开销 ---------------- */
+
   /*
-   * 住的开销，按天折算着扣。
+   * 按天折算着扣。
    *
    * **按天不按月**：按月的话，她 15 号搬进来、下个月 1 号才扣，
    * 中间那半个月白住；而且关机跨月再开，那次扣款会凭空消失。
@@ -759,8 +959,41 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
     }
   }
 
-  /* 过期的情绪清掉。按真实时刻判 —— 见文件头。 */
+  /*
+   * 醒了。
+   *
+   * **情绪要挂在这一刻**，不是睡下那一刻 —— 原来那条「睡够了，脑子是清的」
+   * 只活 4 小时，睡下时挂上，第 4 小时就过期了，而那时她还在睡。
+   * 「睡醒心情好」这件事在老版本里**永远不会发生**。
+   */
   const iso = now.toISOString();
+  if (woke) {
+    state.asleepFrom = '';
+    state.asleepUntil = '';
+    const w = woke;
+    const mood = w.reason === 'enough'
+      ? { text: '睡够了，脑子是清的', kind: 'good' as const }
+      : w.reason === 'hungry'
+        ? { text: '饿醒了，胃里空得慌', kind: 'bad' as const }
+        : { text: '醒了，还没睡透', kind: 'bad' as const };
+    state.moodlets = state.moodlets.filter((m) => m.source !== 'sleep');
+    state.moodlets.push({
+      id: `m-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      source: 'sleep',
+      text: mood.text,
+      kind: mood.kind,
+      expiresAt: new Date(now.getTime() + (mood.kind === 'good' ? 4 : 2) * 3_600_000).toISOString(),
+    });
+    remember(
+      state,
+      w.reason === 'hungry'
+        ? '饿醒了，没睡到点。'
+        : `睡了一觉，${Math.round(w.hours)} 小时。`,
+      now,
+    );
+  }
+
+  /* 过期的情绪清掉。按真实时刻判 —— 见文件头。 */
   state.moodlets = state.moodlets.filter((m) => Date.parse(m.expiresAt) > now.getTime());
 
   /*
@@ -816,6 +1049,9 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
    * 判据是「上一次在线上、这一次在线下」—— **不是「现在低」**。
    * 只判「现在低」的话，她饿着的那十几个小时里每一跳都会报一次，
    * 一天报上百次，那是刷屏不是提醒。
+   *
+   * ⚠ 睡着时掉过线也照记，但 `world.ts` 不推 —— 半夜被自己的饥饿叫醒很怪，
+   * 醒来仍低再说。**记录和推送是两件事**，别在记录这一层替她决定要不要说。
    */
   const crossed: VitalKey[] = [];
   for (const key of Object.keys(DECAY_PER_HOUR) as VitalKey[]) {
@@ -823,7 +1059,10 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
   }
 
   state.updatedAt = iso;
-  return { hours, crossed, recovered, caught, rentMissed, rent };
+  return {
+    hours, crossed, recovered, caught, rentMissed, rent,
+    woke, sleptHours: sleepHours,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -841,6 +1080,38 @@ export interface ActResult {
   cost: number;
   /** 花完还剩多少。 */
   cash: number;
+}
+
+/**
+ * 她现在是不是在睡。
+ *
+ * **判据是时刻，不是「上一次动作是不是 sleep」** —— 动作是瞬时的，睡是一段时间。
+ * 三个条件缺一不可：起点有、终点有、终点还没到。
+ */
+export function isAsleep(state: LifeState, now: Date): boolean {
+  const f = Date.parse(state.asleepFrom);
+  const u = Date.parse(state.asleepUntil);
+  return Number.isFinite(f) && Number.isFinite(u) && u > f && u > now.getTime();
+}
+
+/**
+ * 睡着时拦下一件事该说的话。
+ *
+ * **所有动作工具都走这一个函数。** 两处各写一句，迟早有一处变成
+ * 「你在睡」而另一处放行 —— 那就等于没有锁。
+ *
+ * 话里必须带路（和卷二那条「钱不够要说替代方案」同一个道理）：
+ * 只说「不行」她会愣着，下次再试一次还是不行。
+ */
+export function asleepRefusal(state: LifeState, now: Date, what: string): string {
+  const u = Date.parse(state.asleepUntil);
+  const mins = Math.max(0, Math.round((u - now.getTime()) / 60_000));
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  const left = h > 0 ? `${h} 小时${m ? ` ${m} 分钟` : ''}` : `${m} 分钟`;
+  return `你在睡，还有 ${left}。${what}这件事得起来才能做 —— 起得来就用 \`life_act\` 的「起来」（wake）；`
+    + '不过提前起，精力只按睡过的钟点算，没睡够的那部分不补。'
+    + '他随口一句不算叫你起来，起不起你自己定。';
 }
 
 /**
@@ -877,6 +1148,39 @@ export function applyAct(
   }
 
   /*
+   * 睡着了，只有「起来」这一件事能做（2026-11-15 Mr.Q）。
+   *
+   * 为什么要拦在 state 这一层，而不是只在工具层拦：`life_act` / `life_work` /
+   * `life_cert` / `life_move` / `life_out` 是五个不同的入口，工具层要各写一次；
+   * 写漏一个，她就多一条在梦里洗澡的路。
+   */
+  const sleeping = isAsleep(state, now);
+  if (sleeping && act.id !== 'wake') {
+    return {
+      ok: false,
+      reason: act.id === 'sleep'
+        ? `你已经在睡了，还有 ${Math.max(0, Math.round((Date.parse(state.asleepUntil) - now.getTime()) / 3_600_000))} 小时到点。`
+        : asleepRefusal(state, now, act.label),
+      vitals: state.vitals,
+      mood: null,
+      cost: 0,
+      cash: state.money.cash,
+    };
+  }
+
+  /* 醒着的时候调「起来」—— 没有这回事，但也别当成错，说清就行。 */
+  if (act.id === 'wake' && !sleeping) {
+    return {
+      ok: false,
+      reason: '你醒着呢，不用起来。',
+      vitals: state.vitals,
+      mood: null,
+      cost: 0,
+      cash: state.money.cash,
+    };
+  }
+
+  /*
    * 钱不够就不许做 —— **但要把「替代方案」说出来。**
    *
    * 只说「钱不够」她会愣在那儿，下次再试一次，还是不行。
@@ -898,16 +1202,65 @@ export function applyAct(
   }
 
   /*
-   * 睡下去 = **一段时间**的状态，不是一次性的加成（2026-11-15）。
+   * 睡下去（2026-11-15 改）。
    *
-   * 除了 sleep，任何动作都算「醒了」—— 她起来吃了东西、洗了脸，那就是真醒了，
-   * 不该还挂着「在睡」把旅行那边的出发一直拦着。
+   * **这里一条都不加** —— 精力和清爽全部交给 `advance()` 按睡过的钟点结算。
+   * 原来的写法是睡下瞬间 energy +80，睡十秒起来也拿满 —— 那不是睡觉，
+   * 是一个免费回血按钮。
    */
   if (act.id === 'sleep') {
+    state.asleepFrom = now.toISOString();
     state.asleepUntil = new Date(now.getTime() + act.minutes * 60_000).toISOString();
-  } else {
-    state.asleepUntil = '';
+    remember(state, '睡下了。', now);
+    state.updatedAt = now.toISOString();
+    return {
+      ok: true, vitals: state.vitals, mood: null, cost: act.cost, cash: state.money.cash,
+    };
   }
+
+  /*
+   * 起来（2026-11-15）。
+   *
+   * 先把 `[updatedAt, now]` 这一段结算掉 —— **不结算就清字段，等于这一觉白睡**。
+   * `advance()` 自己是幂等的，重复调用不会多补。
+   *
+   * 如果这段里她已经饿醒了，`advance` 会醒并把情绪挂好（`woke !== null`），
+   * 这里就不再挂第二条 —— 同一件事两条情绪，她说话会前后矛盾。
+   */
+  if (act.id === 'wake') {
+    const f = Date.parse(state.asleepFrom);
+    const slept = Number.isFinite(f) ? Math.max(0, (now.getTime() - f) / 3_600_000) : 0;
+    const r = advance(state, now);
+    state.asleepFrom = '';
+    state.asleepUntil = '';
+    let mood: Moodlet | null = null;
+    if (!r.woke) {
+      const good = slept >= SLEEP_ENOUGH_HOURS;
+      mood = {
+        id: `m-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        source: 'sleep',
+        text: good ? '睡够了，脑子是清的' : '没睡够就起来了，头有点沉',
+        kind: good ? 'good' : 'bad',
+        expiresAt: new Date(now.getTime() + (good ? 4 : 2) * 3_600_000).toISOString(),
+      };
+      state.moodlets = state.moodlets.filter((m) => m.source !== 'sleep');
+      state.moodlets.push(mood);
+    }
+    /* 已经被饿醒的，`advance` 已经记过一条了，这里不再补一句「起来了」。 */
+    if (!r.woke) {
+      remember(
+        state,
+        slept >= 1 ? `起来了，这一觉睡了 ${Math.round(slept)} 小时。` : '起来了。',
+        now,
+      );
+    }
+    state.updatedAt = now.toISOString();
+    return { ok: true, vitals: state.vitals, mood, cost: 0, cash: state.money.cash };
+  }
+
+  /* 醒着做了别的事 —— 兜底清掉残留的 asleep（正常情况本来就该是空的）。 */
+  state.asleepFrom = '';
+  state.asleepUntil = '';
 
   for (const [k, delta] of Object.entries(act.gain)) {
     const key = k as VitalKey;
@@ -966,6 +1319,16 @@ export interface WorkResult {
  * 这个阈值比饿肚子严，因为饿着还能走，脱力了走不了。
  */
 export function applyWork(state: LifeState, what: string, now: Date): WorkResult {
+  /* 睡着去不了 —— 出工是一整天的事，得先起来。 */
+  if (isAsleep(state, now)) {
+    return {
+      ok: false,
+      reason: asleepRefusal(state, now, '出工'),
+      earned: 0,
+      cash: state.money.cash,
+      vitals: state.vitals,
+    };
+  }
   const day = localDateKey(now);
   if (state.job.lastAt === day) {
     return {
@@ -1099,6 +1462,15 @@ export interface CertResult {
  * 代价是理论上她可以「考一张证再上一整天班」，但那要 20 点精力，连着来两次就动不了。
  */
 export function applyCert(state: LifeState, name: string, now: Date): CertResult {
+  /* 考证要出门、要上课，睡着办不了。 */
+  if (isAsleep(state, now)) {
+    return {
+      ok: false,
+      reason: asleepRefusal(state, now, '考证'),
+      paid: 0,
+      cash: state.money.cash,
+    };
+  }
   const c = certOf(name);
   if (!c) {
     const list = CERTS.map((x) => `${x.name}（${x.price} 元）`).join('、');
@@ -1322,6 +1694,14 @@ export interface MoveResult {
  * 半做的话会出现「她买了房，但我们没算过房价和月供」这种半截状态。
  */
 export function applyMove(state: LifeState, tier: HomeTier, now: Date): MoveResult {
+  /* 搬家是体力活，睡着的办不了。 */
+  if (isAsleep(state, now)) {
+    return {
+      ok: false,
+      reason: asleepRefusal(state, now, '搬家'),
+      from: state.home.tier, to: tier, deposit: 0, cash: state.money.cash,
+    };
+  }
   const from = state.home.tier;
   if (tier === from) {
     return {
@@ -1389,6 +1769,11 @@ export interface Snapshot {
   overdue: Pledge[];
   /** 7 天内他来过几天。 */
   visitedDays: number;
+  /**
+   * 她在睡的话，这里给出「还有多久」和「醒来精力大约多少」。
+   * 醒着是 null —— **不写 `{ asleep: false }`**：面板里一个恒为真的字段容易被当成开关。
+   */
+  asleep: { hoursLeft: number; energyAtWake: number } | null;
 }
 
 export const VITAL_LABEL: Record<VitalKey, string> = {
@@ -1404,6 +1789,25 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     .filter((k) => state.vitals[k] < LOW)
     .map((k) => ({ key: k, value: Math.round(state.vitals[k]), label: VITAL_LABEL[k] }))
     .sort((a, b) => a.value - b.value);
+
+  /*
+   * 「她还在睡吗」得进快照。
+   *
+   * 不进的话，`life_status` 读出来跟醒着一模一样 —— 她明明躺着，却以为自己能出门。
+   * 那是「空话问题」的另一个形态：世界里有这个状态，但她读不到。
+   *
+   * `energyAtWake` 是**算术**：现在的精力 + 剩下的钟点 × 每小时回升，封顶 100。
+   * 不是承诺 —— 中途醒了就没这么多。
+   */
+  let asleep: Snapshot['asleep'] = null;
+  if (isAsleep(state, now)) {
+    const until = Date.parse(state.asleepUntil);
+    const left = Math.max(0, (until - now.getTime()) / 3_600_000);
+    asleep = {
+      hoursLeft: Math.round(left * 10) / 10,
+      energyAtWake: Math.round(clamp100(state.vitals.energy + SLEEP_ENERGY_PER_HOUR * left)),
+    };
+  }
 
   return {
     vitals: state.vitals,
@@ -1424,5 +1828,6 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     pledges: state.pledges.filter((p) => Date.parse(p.dueAt) > now.getTime()),
     overdue: state.pledges.filter((p) => Date.parse(p.dueAt) <= now.getTime()),
     visitedDays: recentVisits(state, now, 7),
+    asleep,
   };
 }

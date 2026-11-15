@@ -9,8 +9,9 @@ import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
 import {
   ACTS, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, LOW, MAX_PENDING, MAX_PLEDGES,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL,
-  advance, applyAct, applyMove, applySpend, applyWork, applyCert, localDateKey, noteVisit, quoteMove, readyGoals,
-  recentVisits, remember, snapshot,
+  advance, applyAct, applyMove, applySpend, applyWork, applyCert, asleepRefusal, isAsleep,
+  localDateKey, noteVisit, quoteMove, readyGoals,
+  recentVisits, remember, snapshot, SLEEP_ENERGY_PER_HOUR,
   type HomeTier, type LifeState, type PendingBlock, type Snapshot, type VitalKey,
 } from './state.ts';
 import {
@@ -292,17 +293,39 @@ export class LifeWorld implements World {
       );
     }
 
-    /* 掉过线的那几条 —— 按配置的密度说。 */
-    for (const key of r.crossed) {
-      if (!this.shouldNag(key, now)) continue;
-      const label = VITAL_LABEL[key];
-      const v = Math.round(this.state.vitals[key]);
+    /*
+     * 掉过线的那几条 —— 按配置的密度说。
+     *
+     * **睡着时不推**（2026-11-15）：半夜被自己的饥饿叫醒，那不是提醒，是打扰。
+     * 记录照记（`crossed` 是事实），只是不在她睡着的时候说出来 —— 醒来仍低自然会提。
+     */
+    const sleepingNow = isAsleep(this.state, now);
+    if (!sleepingNow) {
+      for (const key of r.crossed) {
+        if (!this.shouldNag(key, now)) continue;
+        const label = VITAL_LABEL[key];
+        const v = Math.round(this.state.vitals[key]);
+        await this.push(
+          'life.low',
+          this.lowText(key, v),
+          'debounce',
+        );
+        this.state.nagged[key] = today;
+      }
+    }
+
+    /*
+     * 饿醒了要说一声 —— 这是她**在梦里被身体叫起来**的唯一一次。
+     *
+     * 自然醒不用说：她睡够了醒来，自己知道；而且每八小时推一条「她醒了」，
+     * 那是报站。只有饿醒值得占一次对话的注意力，因为它解释了「怎么才这个点就醒了」。
+     */
+    if (r.woke?.reason === 'hungry') {
       await this.push(
         'life.low',
-        this.lowText(key, v),
-        'debounce',
+        `饿醒了，才睡了 ${Math.round(r.woke.hours)} 小时。饱腹 ${Math.round(this.state.vitals.food)}。`,
+        'flush',
       );
-      this.state.nagged[key] = today;
     }
 
     if (dirty) {
@@ -311,6 +334,25 @@ export class LifeWorld implements World {
         this.log?.warn(`模拟鱼生：存档失败 ${(e as Error).message}`);
       }
     }
+  }
+
+  /**
+   * 动作工具调用前先把时间推进到 `now`。
+   * 避免两次 `tick` 之间已经自然醒或饿醒时，`applyAct`/`life_out` 覆盖 `updatedAt` 吞掉结算，
+   * 或者把已经饿醒的她误拦在「在睡」。若正好在此推进中饿醒，顺手补推 `life.low`。
+   */
+  private async settleBeforeTool(now: Date): Promise<void> {
+    const r = advance(this.state, now);
+    if (r.hours <= 0) return;
+    if (r.woke?.reason === 'hungry') {
+      await this.push(
+        'life.low',
+        `饿醒了，才睡了 ${Math.round(r.woke.hours)} 小时。饱腹 ${Math.round(this.state.vitals.food)}。`,
+        'flush',
+      );
+    }
+    this.broadcastLife(now);
+    try { this.store.save(this.state); } catch { /* 后续动作或下一跳会再存 */ }
   }
 
   /**
@@ -421,7 +463,7 @@ export class LifeWorld implements World {
    * ## 但不下命令
    *
    * 铁律一：只报事实。所以这里没有「你该去睡了」——
-   * 只给「睡一觉能回 80，而洗、玩、见人都要再扣精力」。做不做是她的事。
+   * 只给「睡一觉每小时回 10、睡满八小时回 80，而洗、玩、见人都要再扣精力」。做不做是她的事。
    */
   private lowText(key: VitalKey, v: number): string {
     const where = this.journey.installed && this.journey.phase === 'staying'
@@ -439,7 +481,7 @@ export class LifeWorld implements World {
       case 'food':
         return `饱腹 ${v}，${left}吃一顿能回 30（15 元）；钱紧就将就吃一口，回 12。${tail}`;
       case 'energy':
-        return `精力 ${v}，${left}睡一觉回 80，不花钱 —— 洗、玩、见人都要再扣精力，只有睡是往上走的。${tail}`;
+        return `精力 ${v}，${left}睡一觉，每睡一小时回 10，睡满八小时回 80，不花钱 —— 洗、玩、见人都要再扣精力，只有睡是往上走的。${tail}`;
       case 'clean':
         return `清爽 ${v}，${left}洗个澡回 55，不花钱。${tail}`;
       case 'fun':
@@ -508,9 +550,14 @@ export class LifeWorld implements World {
       name: 'life_act',
       description:
         '你自己做一件事，身体会变。'
-        + '吃（eat）、睡（sleep）、洗（wash）、玩（play）、跟人说话（meet）。'
-        + '**睡一觉是八个小时**，这八小时里旅行那边不会出发 —— 你睡着，车不会自己开。'
-        + '醒来要等这八小时过完，或者你起来做点别的（吃过东西、洗过脸，就算醒了）。'
+        + '吃（eat）、睡（sleep）、洗（wash）、玩（play）、跟人说话（meet）、起来（wake）。'
+        + '**睡一觉是八个小时**，这八小时里你什么都做不了 —— 出门、出工、见人、搬家、考证都不行，'
+        + '旅行那边也不会出发。精力按**睡过的钟点**算，每小时回 10，睡满八小时回 80；'
+        + '睡两小时就起只回 20。'
+        + '**睡着时唯一能做的动作是「起来」（wake）**，提前起就按已睡的钟点结算，没睡够的不补。'
+        + '**他跟你说话不算叫醒** —— 你只是在梦里听见有人说话，应一句就行；'
+        + '只有他明确让你起来，你才要想起不起来，而起不起还是你定。'
+        + '饱腹掉到 15 会**饿醒** —— 睡前吃没吃东西，这一觉睡不睡得完是不一样的。'
         + '**这是你自己去做，不是别人让你做** —— 他让你吃饭的时候，你现在是不是饿、'
         + '现在是不是吃饭的点，都由你自己判断；不想吃就别吃，说一句就行。',
       parameters: {
@@ -521,24 +568,41 @@ export class LifeWorld implements World {
           kind: {
             type: 'string',
             enum: Object.keys(ACTS),
-            description: 'eat 吃 / sleep 睡 / wash 洗 / play 玩 / meet 见人。',
+            description: 'eat 吃 / sleep 睡 / wash 洗 / play 玩 / meet 见人 / wake 起来（只有睡着时才用得上）。',
           },
         },
       },
       tags: ['write'],
       handler: async (args: any) => {
         const now = new Date();
-        const r = applyAct(this.state, String(args?.kind ?? ''), now);
+        await this.settleBeforeTool(now);
+        const kindId = String(args?.kind ?? '');
+        const r = applyAct(this.state, kindId, now);
         if (!r.ok) return { text: r.reason ?? '这件事做不了。' };
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
-        /* 睡下去或做别的醒来，立刻广播 —— 不等下一个 tickMs 窗口。 */
+        /* 睡下去、起来，都要立刻广播 —— 不等下一个 tickMs 窗口。 */
         this.broadcastLife(now);
-        const kind = ACTS[String(args.kind)];
-        const after = Object.entries(ACTS[String(args.kind)]?.gain ?? {})
+
+        /* 睡下了：**别写「精力 +80」** —— 那 80 是一小时后一小时攒出来的，不是现在就到手。 */
+        if (kindId === 'sleep') {
+          const until = Date.parse(this.state.asleepUntil);
+          const at = new Date(until);
+          const hh = String(at.getHours()).padStart(2, '0');
+          const mm = String(at.getMinutes()).padStart(2, '0');
+          const willBe = Math.min(100, Math.round(this.state.vitals.energy + SLEEP_ENERGY_PER_HOUR * 8));
+          return {
+            text: `睡下了，八小时后醒（大约 ${hh}:${mm}）。这会儿精力 ${Math.round(this.state.vitals.energy)}，`
+              + `睡满的话醒来大约 ${willBe}。睡着这段时间，除了「起来」，别的事都做不了。`
+              + '要是饱腹掉到 15，会饿醒。',
+          };
+        }
+
+        const kind = ACTS[kindId];
+        const after = Object.entries(kind?.gain ?? {})
           .map(([k, d]) => `${VITAL_LABEL[k as VitalKey]} ${Number(d) > 0 ? '+' : ''}${d}`)
           .join('、');
         return {
-          text: `${kind?.label ?? '做完了'}。${after}。`
+          text: `${kind?.label ?? '做完了'}。${after ? `${after}。` : ''}`
             + (r.mood ? `眼下心里：${r.mood.text}。` : '')
             + `现在五条：${this.vitalsLine(r.vitals)}`,
         };
@@ -579,6 +643,7 @@ export class LifeWorld implements World {
       tags: ['write'],
       handler: async (args: any) => {
         const now = new Date();
+        await this.settleBeforeTool(now);
         const r = applyWork(this.state, String(args?.what ?? ''), now);
         if (!r.ok) return { text: r.reason ?? '今天去不了。' };
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
@@ -619,7 +684,9 @@ export class LifeWorld implements World {
       },
       tags: ['write'],
       handler: async (args: any) => {
-        const r = applyCert(this.state, String(args?.cert ?? ''), new Date());
+        const now = new Date();
+        await this.settleBeforeTool(now);
+        const r = applyCert(this.state, String(args?.cert ?? ''), now);
         if (!r.ok) return { text: r.reason ?? '没考成。' };
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
         return { text: `考下了${r.cert}，花了 ${r.paid} 元。手上还剩 ${r.cash} 元。` };
@@ -656,6 +723,7 @@ export class LifeWorld implements World {
       tags: ['write'],
       handler: async (args: any) => {
         const now = new Date();
+        await this.settleBeforeTool(now);
         const tier = String(args?.tier ?? '');
         if (!(tier in HOME_TIER_COST)) {
           return { text: `没有「${tier}」这一档。能搬的：城中村 / 老小区 / 新小区 / 别墅区。` };
@@ -691,6 +759,11 @@ export class LifeWorld implements World {
       tags: ['write'],
       handler: async (args: any) => {
         const now = new Date();
+        await this.settleBeforeTool(now);
+        /* 睡着出不了门。这条路不在 `applyAct` 里 —— 它自己改 vitals，得单独拦。 */
+        if (isAsleep(this.state, now)) {
+          return { text: asleepRefusal(this.state, now, '出门走走') };
+        }
         const where = String(args?.where ?? '').trim() || '随便走走';
         const s = this.state;
         s.vitals.fun = Math.min(100, s.vitals.fun + 12);
@@ -1054,6 +1127,19 @@ export class LifeWorld implements World {
       }).join('；')}`);
     }
 
+    /*
+     * 「在睡」必须自己占一行。
+     *
+     * 不写的话，她读状态时跟醒着一模一样 —— 明明躺着，却以为自己能出门。
+     * 这是世界里有这个状态、但她读不到；和「说了话世界里没动作」是同一个病。
+     */
+    if (s.asleep) {
+      parts.push(
+        `在睡：还有 ${s.asleep.hoursLeft} 小时（睡满的话醒来精力约 ${s.asleep.energyAtWake}）。`
+        + '除了「起来」（wake）什么也做不了。**他跟你说话不算叫醒**，起不起由你。',
+      );
+    }
+
     parts.push(`五条：${this.vitalsLine(s.vitals)}`);
     if (s.low.length) {
       parts.push(`缺的：${s.low.map((x) => `${x.label} ${x.value}`).join('、')}（低于 ${LOW}）`);
@@ -1400,6 +1486,8 @@ export class LifeWorld implements World {
           custom: this.town.custom,
         },
         street: this.state.street,
+        /* 她在睡的话：还有多久、醒来大约多少精力。醒着是 null。 */
+        asleep: s.asleep,
         home: {
           tenure: this.state.home.tenure,
           tier: this.state.home.tier,

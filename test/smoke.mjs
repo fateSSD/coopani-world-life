@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 import {
   ACTS, DECAY_PER_HOUR, HOME_TIER_COST, LOW, MAX_CATCHUP_HOURS, MAX_PENDING, StateStore,
-  advance, applyAct, applyMove, applyWork, freshState, localDateKey, noteVisit,
+  advance, applyAct, applyMove, applyWork, freshState, localDateKey, noteVisit, normalize,
   quoteMove, recentVisits, snapshot, applyCert, applySpend,
 } from '../src/state.ts';
 import { readTown } from '../src/bridge.ts';
@@ -204,7 +204,12 @@ console.log('\n[12] 快照');
   ok(snap.low.length === 2, '两条低于阈值', String(snap.low.length));
   ok(snap.low[0].key === 'food', '缺得最狠的排前面', snap.low[0].key);
   ok(snap.unsaid.length === 1, '还没说出去的那条在');
-  ok(Object.keys(ACTS).length === 6, '六件事都能做（五件要钱的 + 将就吃一口）', String(Object.keys(ACTS).length));
+  /*
+   * 七件：五件花钱的 + 将就吃一口 + 「起来」。
+   * `wake` 不是可有可无的补充 —— 睡着时所有动作都被拦，没有它她就永远醒不过来。
+   */
+  ok(Object.keys(ACTS).length === 7, '七件事（含睡着时唯一能做的「起来」）', String(Object.keys(ACTS).length));
+  ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
 }
 
 console.log('\n[13] 钱：做事要花钱');
@@ -580,9 +585,28 @@ console.log('\n[33] 睡觉即时广播 / homeCity 热改 / 凌晨 nagged 本地�
   const pubSleep = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
   ok(Boolean(pubSleep.asleepUntil), 'life_act sleep 后立刻广播 life-public.json');
 
-  await actTool.handler({ kind: 'eat' });
+  /* 睡着时除了「起来」什么都做不了 —— 这条是 2026-11-15 定的。 */
+  const eatAsleep = await actTool.handler({ kind: 'eat' });
+  ok(/在睡/.test(eatAsleep.text), '睡着时吃东西被拦住', eatAsleep.text);
+  const pubStill = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
+  ok(Boolean(pubStill.asleepUntil), '拦住了，也还挂着在睡');
+
+  /*
+   * 她自己读状态时必须看见「在睡」。
+   * 看不见的话，她明明躺着却以为自己能出门 —— 世界里有这个状态、她读不到。
+   */
+  const statusTool = w.tools().find((x) => x.name === 'life_status');
+  const st = await statusTool.handler({});
+  ok(/在睡/.test(st.text), 'life_status 里写着在睡', st.text);
+  /*
+   * 状态里必须写明「他说话不算叫醒」。
+   * 只写「在睡」不够 —— 他一搭话，她会以为那是在叫她起来，于是睡眠形同虚设。
+   */
+  ok(/不算叫醒/.test(st.text), '状态里写明他说话不算叫醒', st.text);
+
+  await actTool.handler({ kind: 'wake' });
   const pubAwake = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
-  ok(pubAwake.asleepUntil === '', 'life_act eat 醒来后立刻清空 asleepUntil');
+  ok(pubAwake.asleepUntil === '', 'wake 之后立刻清空 asleepUntil');
 
   /* homeCity 热改：只改 cfg.homeCity，tick 应重读本城。 */
   cfg.homeCity = '杭州';
@@ -603,6 +627,112 @@ console.log('\n[33] 睡觉即时广播 / homeCity 热改 / 凌晨 nagged 本地�
   ok(w.state.nagged.food === localDay, 'nagged 写入本地日期', w.state.nagged.food);
   ok(!w.shouldNag('food', new Date(2026, 10, 16, 3, 0, 0)), '同一本地日凌晨再次检查不重复提醒');
   await w.stop();
+}
+
+console.log('\n[34] 睡觉：按时长结算、五条各有各的走法（2026-11-15）');
+{
+  const t0 = new Date('2026-11-15T23:00:00Z');
+  const s = freshState(t0);
+
+  /* ① 睡下那一刻**不能**先给 80 —— 那是免费回血按钮。 */
+  const bed = applyAct(s, 'sleep', t0);
+  ok(bed.ok && s.vitals.energy === 80, '睡下瞬间精力不动（不再一次性 +80）', String(s.vitals.energy));
+  ok(Boolean(s.asleepFrom) && Boolean(s.asleepUntil), '入睡时刻和醒来时刻都记下了');
+
+  /* ② 睡八小时：精力 +80，清爽只掉 8，娱乐社交不动。 */
+  const r8 = advance(s, new Date(t0.getTime() + 8 * 3_600_000));
+  ok(r8.sleptHours === 8, '这一觉算满 8 小时', String(r8.sleptHours));
+  ok(Math.abs(s.vitals.energy - 100) < 0.01, '精力 80 → 100（+80，封顶）', String(s.vitals.energy));
+  ok(Math.abs(s.vitals.clean - 72) < 0.01, '清爽按 1.0/小时掉，八小时 −8', String(s.vitals.clean));
+  ok(s.vitals.fun === 75, '娱乐睡着不掉', String(s.vitals.fun));
+  ok(s.vitals.social === 75, '社交睡着不掉', String(s.vitals.social));
+  ok(Math.abs(s.vitals.food - 51.2) < 0.01, '饱腹照常掉（八小时 −28.8）', String(s.vitals.food));
+  ok(r8.woke?.reason === 'enough', '八小时算睡够了', String(r8.woke?.reason));
+  ok(s.asleepUntil === '', '醒来之后不再挂着「在睡」');
+  ok(s.moodlets.some((m) => m.source === 'sleep' && m.kind === 'good'), '醒来挂上「睡够了」');
+
+  /* ③ 睡两小时就起：只拿 20。 */
+  const s2 = freshState(t0);
+  s2.vitals.energy = 40;
+  applyAct(s2, 'sleep', t0);
+  const r2 = advance(s2, new Date(t0.getTime() + 2 * 3_600_000));
+  ok(Math.abs(s2.vitals.energy - 60) < 0.01, '睡两小时只回 20', String(s2.vitals.energy));
+  ok(r2.woke === null, '两小时还没到点，仍然在睡');
+
+  /* ④ 饿醒：饱腹只剩 20，睡不到点就被身体叫起来。 */
+  const s3 = freshState(t0);
+  s3.vitals.food = 20;
+  s3.vitals.energy = 40;
+  applyAct(s3, 'sleep', t0);
+  const r3 = advance(s3, new Date(t0.getTime() + 8 * 3_600_000));
+  ok(r3.woke?.reason === 'hungry', '饿醒了', String(r3.woke?.reason));
+  ok(r3.woke.hours < 2, '只睡了一个多钟头', String(r3.woke?.hours));
+  ok(s3.asleepUntil === '', '饿醒之后不再挂着「在睡」');
+  ok(s3.moodlets.some((m) => m.source === 'sleep' && m.kind === 'bad'), '醒来心情是负的');
+
+  /* ⑤ 同一时刻推两次，第二次一动不动（幂等）。 */
+  const s4 = freshState(t0);
+  applyAct(s4, 'sleep', t0);
+  const t4 = new Date(t0.getTime() + 3 * 3_600_000);
+  const a = advance(s4, t4);
+  const before = s4.vitals.energy;
+  const b = advance(s4, t4);
+  ok(a.hours > 0 && b.hours === 0, '第二次推进没有任何时间可走', String(b.hours));
+  ok(s4.vitals.energy === before, '幂等：不会多补一次精力');
+
+  /* ⑥ 睡着时动作全禁（出工、搬家都拦）。 */
+  const s5 = freshState(t0);
+  s5.vitals.energy = 90;
+  applyAct(s5, 'sleep', t0);
+  const w = applyWork(s5, '搬货', new Date(t0.getTime() + 3_600_000));
+  ok(!w.ok && /在睡/.test(w.reason), '睡着出不了工', w.reason);
+  const mv = applyMove(s5, 'old', new Date(t0.getTime() + 3_600_000));
+  ok(!mv.ok && /在睡/.test(mv.reason), '睡着搬不了家', mv.reason);
+  const eat = applyAct(s5, 'eat', new Date(t0.getTime() + 3_600_000));
+  ok(!eat.ok && /在睡/.test(eat.reason), '睡着吃不了东西', eat.reason);
+  /* 拒绝话里要带路 —— 只说「不行」她会愣着。 */
+  ok(/起来/.test(eat.reason) && /wake/.test(eat.reason), '拒绝时说清了唯一能走的路');
+  ok(/不算叫/.test(eat.reason), '拒绝时也说明他说话不算叫醒');
+
+  /* ⑦ 起来：提前起按已睡的钟点结算。 */
+  const s6 = freshState(t0);
+  s6.vitals.energy = 40;
+  applyAct(s6, 'sleep', t0);
+  const up = applyAct(s6, 'wake', new Date(t0.getTime() + 3 * 3_600_000));
+  ok(up.ok, '能起来');
+  ok(Math.abs(s6.vitals.energy - 70) < 0.01, '睡了 3 小时 → 精力 +30', String(s6.vitals.energy));
+  ok(s6.asleepUntil === '' && s6.asleepFrom === '', '起来之后两个字段都清空');
+  ok(s6.moodlets.some((m) => m.source === 'sleep' && m.kind === 'bad'), '没睡够就起，心情是负的');
+
+  /* ⑧ 老档迁移：只有 asleepUntil、没有 asleepFrom，不能凭空补精力。 */
+  const legacy = { ...freshState(t0) } ;
+  delete legacy.asleepFrom;
+  legacy.asleepUntil = new Date(t0.getTime() + 2 * 3_600_000).toISOString();
+  const norm = normalize(legacy, t0);
+  ok(norm.asleepUntil !== '', '老档的睡眠还认');
+  ok(norm.asleepFrom !== '', '起点用 updatedAt 补上（只会算短，不会算长）');
+  ok(Date.parse(norm.asleepFrom) <= t0.getTime(), '补出来的起点不晚于现在');
+
+  /* ⑨ describe.json 里的 life_act 枚举与 ACTS 同步（含 wake）。 */
+  const desc = JSON.parse(readFileSync(new URL('../describe.json', import.meta.url), 'utf8'));
+  const actDecl = desc.tools.find((x) => x.name === 'life_act');
+  ok(actDecl?.parameters?.properties?.kind?.enum?.includes('wake'), 'describe.json 里的 life_act 含 wake');
+
+  /* ⑩ 跨 7 天封顶 + 睡眠：十天前睡满 8 小时，十天后上线不应误判成「没睡透」。 */
+  const s10d = freshState(t0);
+  s10d.vitals.energy = 50;
+  applyAct(s10d, 'sleep', t0);
+  const r10d = advance(s10d, new Date(t0.getTime() + 10 * 24 * 3_600_000));
+  ok(r10d.sleptHours === 0, '十天前那觉在 7 天封顶之外，不单独再算睡眠', String(r10d.sleptHours));
+  ok(r10d.woke === null, '十天前睡醒的不在今天上线时补挂「没睡透」');
+  ok(!s10d.moodlets.some((m) => m.source === 'sleep' && m.kind === 'bad'), '不会因为封顶截断挂负心情');
+
+  /* ⑪ 离线三天（无显式睡眠记录）：wholeDays = floor(awakeHours / 24) 与改前一致。 */
+  const s3d = freshState(t0);
+  s3d.vitals.energy = 60;
+  const r3d = advance(s3d, new Date(t0.getTime() + 72 * 3_600_000));
+  ok(r3d.sleptHours === 0, '无显式睡眠时 sleptHours = 0');
+  ok(s3d.vitals.energy === 85, '离线三天无显式睡眠，精力照旧补回 85', String(s3d.vitals.energy));
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

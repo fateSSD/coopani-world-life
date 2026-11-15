@@ -73,6 +73,8 @@ const TEXT = {
     canNow: '够攒了，去办吧',
     achieved: '已经做到了',
     vitals: '五条',
+    asleep: '在睡',
+    asleepLeft: '还有 {h} 小时（醒来精力约 {e}）',
     cond: '身上',
     mood: '心里',
     none: '没什么特别的',
@@ -150,6 +152,8 @@ const TEXT = {
     canNow: 'enough — go do it',
     achieved: 'achieved',
     vitals: 'Needs',
+    asleep: 'Asleep',
+    asleepLeft: 'about {h}h left (energy ~{e} on waking)',
     cond: 'Body',
     mood: 'Mood',
     none: 'nothing unusual',
@@ -394,9 +398,19 @@ export default {
 
         app.append(head, sub, note, whoCard, jobCard, vitalsCard, goalCard, moveCard, moodRow, cols, helpBox, fbBox, foot);
 
-        const drawVitals = (vitals, low) => {
+        const drawVitals = (vitals, low, asleep) => {
           vitalsCard.innerHTML = '';
           vitalsCard.append(el('h3', null, t(lang, 'vitals')));
+          /*
+           * 「在睡」要写在五条上面。
+           *
+           * 不写的话，面板跟她读到的状态一样 —— 看着五条正常，以为她醒着，
+           * 然后奇怪为什么「出门」她不去。这是「世界里有这个状态、面板上读不到」。
+           */
+          if (asleep) {
+            vitalsCard.append(el('p', 'lf-muted',
+              `${t(lang, 'asleep')} · ${t(lang, 'asleepLeft', { h: asleep.hoursLeft, e: asleep.energyAtWake })}`));
+          }
           const lowKeys = new Set((low || []).map((x) => x.key));
           for (const key of Object.keys(vitals || {})) {
             const it = vitals[key];
@@ -675,7 +689,7 @@ export default {
 
           drawWho(d);
           drawJob(d);
-          drawVitals(d.vitals, d.low);
+          drawVitals(d.vitals, d.low, d.asleep);
           drawGoals(d);
           drawMoves(d);
 
