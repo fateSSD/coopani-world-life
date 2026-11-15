@@ -34,7 +34,7 @@ export interface LifeWorldOptions {
 }
 
 /** 版本号。envPrompt 里露出来，报障时第一个要确认的数。 */
-const VERSION = '0.7.1';
+const VERSION = '0.7.2';
 
 export class LifeWorld implements World {
   readonly id = LIFE_ID;
