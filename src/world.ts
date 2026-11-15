@@ -1,4 +1,4 @@
-import { statSync, readFileSync, writeFileSync } from 'node:fs';
+import { statSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VersionCheck } from './version-check.ts';
@@ -247,6 +247,7 @@ export class LifeWorld implements World {
      * 过没过没有关系，不能因为「这一跳没走时间」就把条子留着不发。
      */
     this.settleSpendRequests(now);
+    this.broadcastLife(now);
     const r = advance(this.state, now);
     if (r.hours <= 0) return;
 
@@ -303,6 +304,30 @@ export class LifeWorld implements World {
         this.log?.warn(`模拟鱼生：存档失败 ${(e as Error).message}`);
       }
     }
+  }
+
+  /**
+   * 把「她在睡」广播出去（2026-11-15）。
+   *
+   * 卷二十的规矩：**只放事实、带 schema、原子写**。
+   * 只有一个字段是给对面看的 —— `asleepUntil`。五条、钱、职业都是她的私事，
+   * 旅行扩展不需要，也就不给（公开快照越小，越不会变成第二份私有状态）。
+   *
+   * 过期了就发空串：对面拿到就不用再自己算时间了。
+   */
+  private broadcastLife(now: Date): void {
+    try {
+      const until = this.state.asleepUntil;
+      const awake = !until || Date.parse(until) <= now.getTime();
+      const file = join(this.opts.dataDir, 'life-public.json');
+      const tmp = `${file}.tmp-${process.pid}`;
+      writeFileSync(tmp, JSON.stringify({
+        schema: 1,
+        asleepUntil: awake ? '' : until,
+        updatedAt: now.toISOString(),
+      }, null, 2));
+      renameSync(tmp, file);
+    } catch { /* 广播不出去不影响她过日子 */ }
   }
 
   /**
@@ -477,6 +502,8 @@ export class LifeWorld implements World {
       description:
         '你自己做一件事，身体会变。'
         + '吃（eat）、睡（sleep）、洗（wash）、玩（play）、跟人说话（meet）。'
+        + '**睡一觉是八个小时**，这八小时里旅行那边不会出发 —— 你睡着，车不会自己开。'
+        + '醒来要等这八小时过完，或者你起来做点别的（吃过东西、洗过脸，就算醒了）。'
         + '**这是你自己去做，不是别人让你做** —— 他让你吃饭的时候，你现在是不是饿、'
         + '现在是不是吃饭的点，都由你自己判断；不想吃就别吃，说一句就行。',
       parameters: {

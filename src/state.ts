@@ -328,6 +328,14 @@ export interface LifeState {
   /** 今天已经提醒过哪几条 —— 用来实现「一天一次」。 */
   nagged: Record<string, string>;
   /**
+   * 她在睡，睡到什么时候（ISO，真实时间）。空串 = 醒着。
+   *
+   * 2026-11-15 Mr.Q：「睡眠时禁止 journey 的出发。」
+   * 这是**唯一一个给别的扩展看的状态** —— 经 `life-public.json` 广播出去。
+   * 用它判，不判「当前动作是不是 sleep」：动作是瞬时的，睡是**一段时间**。
+   */
+  asleepUntil: string;
+  /**
    * 已经扣过的外部花销 id（`life-spend/<id>.json`，来自旅行扩展）。
    *
    * **判重表要落在状态文件里**，不能另存一份：加钱/扣钱和「这条扣过了」
@@ -396,7 +404,8 @@ export const ACTS: Record<string, ActKind> = {
   sleep: {
     id: 'sleep',
     label: '睡觉',
-    minutes: 7 * 60,
+    /* 8 小时（2026-11-15 起这个字段真的被读了，见 applyAct 里设 asleepUntil）。 */
+    minutes: 8 * 60,
     cost: 0,
     /* 睡醒会有点乱 —— 这是真的，不是刻薄。 */
     gain: { energy: 80, clean: -8 },
@@ -504,6 +513,7 @@ export function freshState(now: Date = new Date()): LifeState {
     }],
     nagged: {},
     spendApplied: [],
+    asleepUntil: '',
   };
 }
 
@@ -617,6 +627,7 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     goals: arr(s.goals).filter((g) => g && typeof g.id === 'string'),
     nagged: (s.nagged && typeof s.nagged === 'object') ? s.nagged : {},
     spendApplied: arr(s.spendApplied).filter((x) => typeof x === 'string').slice(-120),
+    asleepUntil: typeof s.asleepUntil === 'string' ? s.asleepUntil : '',
   };
 }
 
@@ -884,6 +895,18 @@ export function applyAct(
       cost: 0,
       cash: state.money.cash,
     };
+  }
+
+  /*
+   * 睡下去 = **一段时间**的状态，不是一次性的加成（2026-11-15）。
+   *
+   * 除了 sleep，任何动作都算「醒了」—— 她起来吃了东西、洗了脸，那就是真醒了，
+   * 不该还挂着「在睡」把旅行那边的出发一直拦着。
+   */
+  if (act.id === 'sleep') {
+    state.asleepUntil = new Date(now.getTime() + act.minutes * 60_000).toISOString();
+  } else {
+    state.asleepUntil = '';
   }
 
   for (const [k, delta] of Object.entries(act.gain)) {
