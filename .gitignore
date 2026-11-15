@@ -3,4 +3,9 @@ _icon_src/
 *.tmp
 *.bak
 life-state.json
+# 运行时产物：dataDir 指到项目根的时候（本地跑、测试）会落在这里。
+# 它们是她那一份日子的快照，不是源码 —— 进了仓库，别人 clone 下来就接着过她的日子了。
+life-public.json
+life-spend-settled.json
+life-spend/
 .tmp/

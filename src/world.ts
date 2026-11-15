@@ -12,7 +12,7 @@ import {
   advance, applyAct, applyMove, applySpend, applyWork, applyCert, asleepRefusal, isAsleep,
   localDateKey, noteVisit, quoteMove, readyGoals,
   recentVisits, remember, snapshot, SLEEP_ENERGY_PER_HOUR,
-  type HomeTier, type LifeState, type PendingBlock, type Snapshot, type VitalKey,
+  type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type Snapshot, type VitalKey,
 } from './state.ts';
 import {
   BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown,
@@ -300,33 +300,10 @@ export class LifeWorld implements World {
      * 记录照记（`crossed` 是事实），只是不在她睡着的时候说出来 —— 醒来仍低自然会提。
      */
     const sleepingNow = isAsleep(this.state, now);
-    if (!sleepingNow) {
-      for (const key of r.crossed) {
-        if (!this.shouldNag(key, now)) continue;
-        const label = VITAL_LABEL[key];
-        const v = Math.round(this.state.vitals[key]);
-        await this.push(
-          'life.low',
-          this.lowText(key, v),
-          'debounce',
-        );
-        this.state.nagged[key] = today;
-      }
-    }
+    if (!sleepingNow) await this.reportCrossed(r.crossed, now);
 
-    /*
-     * 饿醒了要说一声 —— 这是她**在梦里被身体叫起来**的唯一一次。
-     *
-     * 自然醒不用说：她睡够了醒来，自己知道；而且每八小时推一条「她醒了」，
-     * 那是报站。只有饿醒值得占一次对话的注意力，因为它解释了「怎么才这个点就醒了」。
-     */
-    if (r.woke?.reason === 'hungry') {
-      await this.push(
-        'life.low',
-        `饿醒了，才睡了 ${Math.round(r.woke.hours)} 小时。饱腹 ${Math.round(this.state.vitals.food)}。`,
-        'flush',
-      );
-    }
+    /* 饿醒了要说一声 —— 见 `reportHungryWake`。 */
+    await this.reportHungryWake(r, now);
 
     if (dirty) {
       try { this.store.save(this.state); } catch (e) {
@@ -337,20 +314,52 @@ export class LifeWorld implements World {
   }
 
   /**
+   * 这一跳里掉过线的那几条，按配置的密度说一句。
+   *
+   * **抽出来是因为现在有两个地方会推进时间**：`tick()` 和工具入口的
+   * `settleBeforeTool()`。两处各写一遍的话，工具入口那份漏掉 `crossed`，
+   * 后果是**开机后第一件事就是调工具，她饿了一夜却一句提醒都没有** ——
+   * `crossed` 判的是「这次推进跨过去的」，被工具消费掉之后 tick 再也看不到。
+   *
+   * 说完就记 `nagged`（按本地日期），所以两边不会各说一次。
+   */
+  private async reportCrossed(crossed: VitalKey[], now: Date): Promise<void> {
+    const today = localDateKey(now);
+    for (const key of crossed) {
+      if (!this.shouldNag(key, now)) continue;
+      await this.push('life.low', this.lowText(key, Math.round(this.state.vitals[key])), 'debounce');
+      this.state.nagged[key] = today;
+    }
+  }
+
+  /**
+   * 饿醒了要说一声 —— 这是她**在梦里被身体叫起来**的唯一一次。
+   *
+   * 自然醒不用说：她睡够了醒来，自己知道；而且每八小时推一条「她醒了」，
+   * 那是报站。只有饿醒值得占一次对话的注意力，因为它解释了「怎么才这个点就醒了」。
+   */
+  private async reportHungryWake(r: AdvanceResult, now: Date): Promise<void> {
+    if (r.woke?.reason !== 'hungry') return;
+    await this.push(
+      'life.low',
+      `饿醒了，才睡了 ${Math.round(r.woke.hours)} 小时。饱腹 ${Math.round(this.state.vitals.food)}。`,
+      'flush',
+    );
+  }
+
+  /**
    * 动作工具调用前先把时间推进到 `now`。
    * 避免两次 `tick` 之间已经自然醒或饿醒时，`applyAct`/`life_out` 覆盖 `updatedAt` 吞掉结算，
-   * 或者把已经饿醒的她误拦在「在睡」。若正好在此推进中饿醒，顺手补推 `life.low`。
+   * 或者把已经饿醒的她误拦在「在睡」。
+   *
+   * **推进出来的话一样要说**（阈值、饿醒），否则「开机第一件事就调工具」会把它们吞掉。
    */
   private async settleBeforeTool(now: Date): Promise<void> {
     const r = advance(this.state, now);
     if (r.hours <= 0) return;
-    if (r.woke?.reason === 'hungry') {
-      await this.push(
-        'life.low',
-        `饿醒了，才睡了 ${Math.round(r.woke.hours)} 小时。饱腹 ${Math.round(this.state.vitals.food)}。`,
-        'flush',
-      );
-    }
+    /* 工具能调，说明她已经醒了 —— 不用再判 `isAsleep`。 */
+    await this.reportCrossed(r.crossed, now);
+    await this.reportHungryWake(r, now);
     this.broadcastLife(now);
     try { this.store.save(this.state); } catch { /* 后续动作或下一跳会再存 */ }
   }

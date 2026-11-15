@@ -735,5 +735,39 @@ console.log('\n[34] 睡觉：按时长结算、五条各有各的走法（2026-1
   ok(s3d.vitals.energy === 85, '离线三天无显式睡眠，精力照旧补回 85', String(s3d.vitals.energy));
 }
 
+console.log('\n[35] 工具入口先推进时间：掉过线的提醒不能被吞掉');
+{
+  /*
+   * 真实场景：关机一夜，早上开机第一件事就是调工具。
+   *
+   * 如果工具入口自己调 `advance()` 却不处理 `crossed`，那一夜的「饿过线」
+   * 就被工具消费掉了 —— `tick` 之后再也看不到（它判的是「上次在线上下次在线下」）。
+   * 结果是她饿了一夜、一句提醒都没有。
+   */
+  const dir = mkdtempSync(join(tmpdir(), 'life-settle-'));
+  const pushed = [];
+  const cfg = { ...LIFE_DEFAULTS(), enabled: true, homeCity: '成都', notify: 'once' };
+  const w = new LifeWorld({ cfg, dataDir: dir, botName: '大肥鱼' });
+  await w.start({
+    log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+    pushEvent: async (e) => { pushed.push(e); return { ...e, blobs: [] }; },
+  });
+  pushed.length = 0;
+
+  /* 六小时前饱腹 35 —— 这会儿已经掉到 30 以下，但她第一件事是去吃饭。 */
+  const sixHoursAgo = new Date(Date.now() - 6 * 3_600_000);
+  w.state.vitals.food = 35;
+  w.state.updatedAt = sixHoursAgo.toISOString();
+
+  const actTool = w.tools().find((x) => x.name === 'life_act');
+  await actTool.handler({ kind: 'eat' });
+
+  const low = pushed.filter((e) => e.type === 'life.low');
+  ok(low.length > 0, '工具推进时把掉过线的说了', low.map((x) => x.text).join(' | '));
+  ok(low.some((x) => /饱腹/.test(x.text)), '说的是饱腹那条', low.map((x) => x.text).join(' | '));
+  ok(w.state.vitals.food > 30, '然后她吃了，饱腹回来了', String(w.state.vitals.food));
+  await w.stop();
+}
+
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);
 process.exit(fail ? 1 : 0);
