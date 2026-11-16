@@ -9,13 +9,16 @@ import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
 import {
   ACTS, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, LOW, MAX_PENDING, MAX_PLEDGES,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL,
-  advance, applyAct, applyMove, applySpend, applyWork, applyCert, asleepRefusal, isAsleep,
+  advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyGift, asleepRefusal, isAsleep,
   localDateKey, noteVisit, quoteMove, readyGoals,
   recentVisits, remember, snapshot, SLEEP_ENERGY_PER_HOUR,
+  appendLedger, readLedger, marketPrices, weatherOf,
   type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type Snapshot, type VitalKey,
 } from './state.ts';
+import { JOBS, jobAllowedAt } from './jobs.ts';
 import {
   BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown,
+  readPendingRequests, archivePendingRequest, fetchTownStalls, buyTownStall,
   type JourneyView, type TownView,
 } from './bridge.ts';
 
@@ -300,7 +303,7 @@ export class LifeWorld implements World {
      * 记录照记（`crossed` 是事实），只是不在她睡着的时候说出来 —— 醒来仍低自然会提。
      */
     const sleepingNow = isAsleep(this.state, now);
-    if (!sleepingNow) await this.reportCrossed(r.crossed, now);
+    if (!sleepingNow) await this.reportCrossed(r.crossed, now, r.bottomed);
 
     /* 饿醒了要说一声 —— 见 `reportHungryWake`。 */
     await this.reportHungryWake(r, now);
@@ -323,10 +326,18 @@ export class LifeWorld implements World {
    *
    * 说完就记 `nagged`（按本地日期），所以两边不会各说一次。
    */
-  private async reportCrossed(crossed: VitalKey[], now: Date): Promise<void> {
+  private async reportCrossed(crossed: VitalKey[], now: Date, bottomed: VitalKey[] = []): Promise<void> {
     const today = localDateKey(now);
+    const seen = new Set<VitalKey>();
+    for (const key of bottomed) {
+      const zeroKey = `zero:${key}`;
+      if (!this.shouldNag(zeroKey, now)) continue;
+      await this.push('life.low', `见底了：${this.lowText(key, 0)}`, 'flush');
+      this.state.nagged[zeroKey] = today;
+      seen.add(key);
+    }
     for (const key of crossed) {
-      if (!this.shouldNag(key, now)) continue;
+      if (seen.has(key) || !this.shouldNag(key, now)) continue;
       await this.push('life.low', this.lowText(key, Math.round(this.state.vitals[key])), 'debounce');
       this.state.nagged[key] = today;
     }
@@ -358,7 +369,7 @@ export class LifeWorld implements World {
     const r = advance(this.state, now);
     if (r.hours <= 0) return;
     /* 工具能调，说明她已经醒了 —— 不用再判 `isAsleep`。 */
-    await this.reportCrossed(r.crossed, now);
+    await this.reportCrossed(r.crossed, now, r.bottomed);
     await this.reportHungryWake(r, now);
     this.broadcastLife(now);
     try { this.store.save(this.state); } catch { /* 后续动作或下一跳会再存 */ }
@@ -373,16 +384,26 @@ export class LifeWorld implements World {
    *
    * 过期了就发空串：对面拿到就不用再自己算时间了。
    */
+  private recentSettled: { id: string; status: 'applied' | 'rejected' }[] = [];
+
   private broadcastLife(now: Date): void {
     try {
       const until = this.state.asleepUntil;
       const awake = !until || Date.parse(until) <= now.getTime();
       const file = join(this.opts.dataDir, 'life-public.json');
       const tmp = `${file}.tmp-${process.pid}`;
+      const allowance = Math.max(0, Math.round(this.state.money.cash * .5));
+      const w = weatherOf(this.town.name, now);
       writeFileSync(tmp, JSON.stringify({
-        schema: 1,
+        schema: 2,
         asleepUntil: awake ? '' : until,
         updatedAt: now.toISOString(),
+        ledger: {
+          cash: this.state.money.cash,
+          travelAllowance: allowance,
+        },
+        settled: this.recentSettled.slice(-40),
+        town: { id: this.town.id, name: this.town.name, weather: w.sky },
       }, null, 2));
       renameSync(tmp, file);
     } catch { /* 广播不出去不影响她过日子 */ }
@@ -405,13 +426,95 @@ export class LifeWorld implements World {
    * 3. **看不懂的条子也要回执**：用文件名当 id 回 `rejected`，否则那份文件在那边永远删不掉。
    */
   private settleSpendRequests(now: Date): void {
-    const reqs = readSpendRequests(this.opts.dataDir);
-    if (!reqs.length) return;
-    const { settled, changed } = applySpend(this.state, reqs, now);
-    if (changed) {
-      try { this.store.save(this.state); } catch { /* 下一跳再存 —— 判重表已经进内存了 */ }
+    const legacy = readSpendRequests(this.opts.dataDir);
+    const pending = readPendingRequests(this.opts.dataDir);
+    if (!legacy.length && !pending.length) return;
+    const allSettled: { id: string; status: 'applied' | 'rejected' }[] = [];
+    let anyChanged = false;
+
+    if (legacy.length) {
+      const { settled, changed } = applySpend(this.state, legacy, now);
+      if (changed) anyChanged = true;
+      for (const s of settled) {
+        allSettled.push(s);
+        if (s.status === 'applied') {
+          const req = legacy.find((x) => x.id === s.id);
+          if (req && req.amount > 0) {
+            appendLedger(this.opts.dataDir, {
+              id: `spend-${s.id}`,
+              ts: now.toISOString(),
+              kind: 'expense',
+              amount: req.amount,
+              source: 'journey',
+              payee: '途中花费',
+              note: req.note || '出行花销',
+            });
+          }
+        }
+      }
+      this.writeSpendSettled(settled);
     }
-    this.writeSpendSettled(settled);
+
+    for (const req of pending) {
+      /* 每个分支都走这里：回执之外再把条子归档，已结算的不会被第二次读到。 */
+      const settle = (status: 'applied' | 'rejected') => {
+        allSettled.push({ id: req.id, status });
+        archivePendingRequest(this.opts.dataDir, req.file);
+      };
+      if (req.invalid) {
+        settle('rejected');
+        continue;
+      }
+      if (this.state.spendApplied.includes(req.id)) {
+        settle('applied');
+        continue;
+      }
+      this.state.spendApplied.push(req.id);
+      if (this.state.spendApplied.length > 120) this.state.spendApplied = this.state.spendApplied.slice(-120);
+      if (req.amount > 0) {
+        const take = Math.min(this.state.money.cash, req.amount);
+        this.state.money.cash -= take;
+        this.state.money.spent += take;
+        appendLedger(this.opts.dataDir, {
+          id: `pending-out-${req.id}`,
+          ts: now.toISOString(),
+          kind: 'expense',
+          amount: take,
+          source: req.source,
+          payee: req.payee || req.source,
+          note: req.note || req.kind,
+        });
+      }
+      if (req.earned > 0) {
+        this.state.money.cash += req.earned;
+        this.state.money.earned += req.earned;
+        appendLedger(this.opts.dataDir, {
+          id: `pending-in-${req.id}`,
+          ts: now.toISOString(),
+          kind: 'income',
+          amount: req.earned,
+          source: req.source,
+          payee: '自己',
+          note: req.note || req.kind,
+        });
+      }
+      if (req.worldHours > 0) {
+        /* 打包折算：每世界小时只折轻微体力与饱腹，保底不扣成负数。 */
+        const wh = Math.min(req.worldHours, 72);
+        this.state.vitals.energy = Math.max(10, this.state.vitals.energy - wh * .35);
+        this.state.vitals.food = Math.max(10, this.state.vitals.food - wh * .3);
+      }
+      anyChanged = true;
+      settle('applied');
+    }
+
+    if (anyChanged) {
+      this.state.updatedAt = now.toISOString();
+      try { this.store.save(this.state); } catch { /* 下一跳再存 */ }
+    }
+    if (allSettled.length) {
+      this.recentSettled = [...this.recentSettled, ...allSettled].slice(-40);
+    }
   }
 
   /**
@@ -443,7 +546,7 @@ export class LifeWorld implements World {
    * 那就不是过日子，是报站。方案的判据原文是「一天一次是同一条需求一天最多提一次
    * —— 这是给她留余地，不是替她定规矩」。
    */
-  private shouldNag(key: VitalKey, now: Date): boolean {
+  private shouldNag(key: string, now: Date): boolean {
     const mode = this.cfg.notify;
     if (mode === 'off') return false;
     if (mode === 'always') return true;
@@ -531,6 +634,8 @@ export class LifeWorld implements World {
       this.toolWant(),
       this.toolAsk(),
       this.toolPledge(),
+      this.toolGift(),
+      this.toolBuy(),
     ];
   }
 
@@ -546,6 +651,7 @@ export class LifeWorld implements World {
       tags: ['read'],
       handler: async () => {
         const now = new Date();
+        await this.settleBeforeTool(now);
         const j = readJourney(this.opts.dataDir, now);
         this.journey = j;
         const s = snapshot(this.state, now);
@@ -588,6 +694,17 @@ export class LifeWorld implements World {
         const kindId = String(args?.kind ?? '');
         const r = applyAct(this.state, kindId, now);
         if (!r.ok) return { text: r.reason ?? '这件事做不了。' };
+        if (r.cost > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `act-${kindId}-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.cost,
+            source: 'life_act',
+            payee: ACTS[kindId]?.label ?? kindId,
+            note: ACTS[kindId]?.label ?? kindId,
+          });
+        }
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
         /* 睡下去、起来，都要立刻广播 —— 不等下一个 tickMs 窗口。 */
         this.broadcastLife(now);
@@ -653,8 +770,29 @@ export class LifeWorld implements World {
       handler: async (args: any) => {
         const now = new Date();
         await this.settleBeforeTool(now);
-        const r = applyWork(this.state, String(args?.what ?? ''), now);
+        const j = readJourney(this.opts.dataDir, now);
+        this.journey = j;
+        const phase = j.installed && (j.phase === 'staying' || j.phase === 'traveling') ? j.phase : 'home';
+        const what = String(args?.what ?? '').trim();
+        if (!what && !this.state.job.what) {
+          const avail = JOBS.filter((job) => jobAllowedAt(job, phase)).slice(0, 5);
+          return {
+            text: `现在可接的活（挑一个填进 what）：${avail.map((a) => `${a.name}（${a.pay}元）`).join('、')}。`,
+          };
+        }
+        const r = applyWork(this.state, what, now, phase);
         if (!r.ok) return { text: r.reason ?? '今天去不了。' };
+        if (r.earned > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `work-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'income',
+            amount: r.earned,
+            source: 'life_work',
+            payee: '自己',
+            note: this.state.job.what || '出工',
+          });
+        }
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
         return {
           text: `干完了，挣了 ${r.earned} 元。手上现在 ${r.cash} 元。`
@@ -697,6 +835,17 @@ export class LifeWorld implements World {
         await this.settleBeforeTool(now);
         const r = applyCert(this.state, String(args?.cert ?? ''), now);
         if (!r.ok) return { text: r.reason ?? '没考成。' };
+        if (r.paid > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `cert-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paid,
+            source: 'life_cert',
+            payee: '考证中心',
+            note: `考证：${r.cert}`,
+          });
+        }
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
         return { text: `考下了${r.cert}，花了 ${r.paid} 元。手上还剩 ${r.cash} 元。` };
       },
@@ -739,6 +888,17 @@ export class LifeWorld implements World {
         }
         const r = applyMove(this.state, tier as HomeTier, now);
         if (!r.ok) return { text: r.reason ?? '搬不了。' };
+        if (r.deposit > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `move-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.deposit,
+            source: 'life_move',
+            payee: HOME_TIER_LABEL[r.to],
+            note: `搬家押金（${HOME_TIER_LABEL[r.from]} → ${HOME_TIER_LABEL[r.to]}）`,
+          });
+        }
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
         return {
           text: `搬完了：${HOME_TIER_LABEL[r.from]} → ${HOME_TIER_LABEL[r.to]}。`
@@ -787,7 +947,15 @@ export class LifeWorld implements World {
          * 给满就等于编造了一次不存在的相遇。
          */
         s.vitals.social = Math.min(100, s.vitals.social + 6);
-        remember(s, `去${where}转了一圈。`, now);
+        const w = weatherOf(this.town.name, now);
+        const extraNote = w.sky === '小雨'
+          ? `下雨天去${where}转了一圈，路边积水映着灯。`
+          : where.includes('鱼市')
+            ? `去${where}转了一圈，摊主阿姨随手多塞了两根小葱。`
+            : w.sky === '起风'
+              ? `起风了，去${where}走了走，塘边芦花飘了一身。`
+              : `去${where}转了一圈。`;
+        remember(s, extraNote, now);
         s.updatedAt = now.toISOString();
         try { this.store.save(s); } catch { /* 同上 */ }
         return {
@@ -1079,6 +1247,115 @@ export class LifeWorld implements World {
     };
   }
 
+  private toolGift(): ToolDef {
+    return {
+      name: 'life_gift',
+      description:
+        '记下他今天给你留下的一样东西（比如一袋水果、一把伞、一张唱片）。'
+        + '一天最多一件，只记这件东西本身，不换算成钱。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['what'],
+        properties: {
+          what: { type: 'string', description: '留下了什么。' },
+          from: { type: 'string', description: '谁留的，不填默认「他」。' },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const now = new Date();
+        await this.settleBeforeTool(now);
+        const r = applyGift(this.state, String(args?.what ?? ''), String(args?.from ?? '他'), now);
+        if (!r.ok) return { text: r.reason ?? '今天留不下了。' };
+        try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
+        return { text: `收下了：${r.gift?.what}。放在屋里了。` };
+      },
+    };
+  }
+
+  private toolBuy(): ToolDef {
+    return {
+      name: 'life_buy',
+      description:
+        '去芦花塘鱼市街或早市看看今天有什么可买的（不传参数看摊位与菜价，传 stall_id 或菜名就买下来）。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          stall_id: { type: 'string', description: '摊位 id 或早市菜名；不填则先逛逛看看价。' },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const now = new Date();
+        await this.settleBeforeTool(now);
+        if (isAsleep(this.state, now)) return { text: asleepRefusal(this.state, now, '去买菜') };
+        const pick = String(args?.stall_id ?? '').trim();
+        const url = String(this.cfg.townUrl ?? '').trim();
+        if (!pick) {
+          const remote = url ? await fetchTownStalls(url) : { ok: false, stalls: [] };
+          if (remote.ok && remote.stalls.length) {
+            return {
+              text: `鱼市街今天摆出来的摊位：${remote.stalls.map((st) => `${st.item} ${st.price}元（${st.seller}，id:${st.id}）`).join('；')}。`,
+            };
+          }
+          const local = marketPrices(now);
+          return {
+            text: `早市今天菜价：${local.map((p) => `${p.item} ${p.price}元/${p.unit}`).join('；')}。想买哪个把名字写进 stall_id。`,
+          };
+        }
+
+        let item = '';
+        let price = 0;
+        let seller = '早市摊主';
+        if (url) {
+          const remote = await fetchTownStalls(url);
+          const match = remote.ok ? remote.stalls.find((st) => st.id === pick || st.item === pick) : null;
+          if (match) {
+            if (this.state.money.cash < match.price) {
+              return { text: `「${match.item}」要 ${match.price} 元，手上只有 ${this.state.money.cash} 元。` };
+            }
+            const bought = await buyTownStall(url, match.id, this.opts.botName || 'fish', {});
+            if (!bought.ok) return { text: bought.reason ?? '没买成。' };
+            item = bought.item || match.item;
+            price = bought.price || match.price;
+            seller = bought.seller || match.seller;
+          }
+        }
+        if (!item) {
+          const local = marketPrices(now);
+          const hit = local.find((p) => p.item === pick || p.item.includes(pick));
+          if (!hit) {
+            return { text: `没找着「${pick}」，今天早市有：${local.map((p) => p.item).join('、')}。` };
+          }
+          if (this.state.money.cash < hit.price) {
+            return { text: `「${hit.item}」要 ${hit.price} 元，手上只有 ${this.state.money.cash} 元。` };
+          }
+          item = hit.item;
+          price = hit.price;
+        }
+
+        this.state.money.cash -= price;
+        this.state.money.spent += price;
+        this.state.vitals.food = Math.min(100, this.state.vitals.food + 28);
+        this.state.vitals.fun = Math.min(100, this.state.vitals.fun + 6);
+        remember(this.state, `在${seller}那儿买了${item}（${price} 元）。`, now);
+        appendLedger(this.opts.dataDir, {
+          id: `buy-${now.getTime().toString(36)}`,
+          ts: now.toISOString(),
+          kind: 'expense',
+          amount: price,
+          source: 'life_buy',
+          payee: seller,
+          note: `买菜：${item}`,
+        });
+        try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
+        return { text: `买了${item}，花了 ${price} 元（${seller}）。手上还剩 ${this.state.money.cash} 元。` };
+      },
+    };
+  }
+
   /* ---------------- 读数拼装 ---------------- */
 
   private vitalsLine(v: Snapshot['vitals']): string {
@@ -1284,6 +1561,7 @@ export class LifeWorld implements World {
       'life.tellable': s.unsaid.length
         ? s.unsaid.map((t) => `- ${t.text}`).join('\n')
         : '（这会儿没有攒着想说的）',
+      'life.weather': `${s.weather.sky}　·　${s.weather.seasonNote}`,
     };
   }
 
@@ -1557,6 +1835,9 @@ export class LifeWorld implements World {
         watches: s.watches,
         wants: s.wants,
         tellable: s.unsaid,
+        gifts: s.gifts,
+        weather: s.weather,
+        ledger: readLedger(this.opts.dataDir, 30),
         pending: s.pending.map((x) => ({
           id: x.id,
           what: x.what,

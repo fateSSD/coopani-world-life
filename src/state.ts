@@ -27,9 +27,9 @@
  * 精力回到 85（她睡了），并且总时长封顶 7 天。超过 7 天按 7 天算：
  * 再长的那段，她该是「一直在等你」，不是「快饿死了」。
  */
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { type JobDef, findJob, certOf, CERTS } from './jobs.ts';
+import { type JobDef, findJob, certOf, CERTS, jobAllowedAt } from './jobs.ts';
 
 /* ------------------------------------------------------------------ */
 /* 类型                                                                */
@@ -65,11 +65,36 @@ export interface Moodlet {
 
 /** 得过一阵的状态。有起止，不是布尔开关。 */
 export interface Condition {
-  id: 'cold' | 'overwork';
+  id: 'cold' | 'overwork' | 'stomach' | 'injury' | 'hangover';
   since: string;
   /** 预计什么时候好。到时由 tick 判退，**不是硬写一个日期就完了** —— 恢复期还要看条。 */
   until: string;
   text: string;
+}
+
+/** 他伸手留下的东西（一天最多一件，不刷好感数值）。 */
+export interface Gift {
+  id: string;
+  what: string;
+  from: string;
+  at: string;
+}
+
+/** 连着做同一件事的计数，用来触发「小脾气/肠胃/宿醉」。 */
+export interface ActStreak {
+  act: string;
+  count: number;
+}
+
+/** 统一账本流水（写入 life-ledger.jsonl）。 */
+export interface LedgerEntry {
+  id: string;
+  ts: string;
+  kind: 'income' | 'expense';
+  amount: number;
+  source: string;
+  payee: string;
+  note: string;
 }
 
 /**
@@ -315,6 +340,12 @@ export interface LifeState {
   pledges: Pledge[];
   tellable: Tellable[];
   presence: Presence[];
+  /** 他留下的东西。 */
+  gifts: Gift[];
+  /** 连续动作计数（不破坏老档，缺省按空处理）。 */
+  streak?: ActStreak;
+  /** 已触发过「生活回声」的 want id，避免同一条反复念。 */
+  echoedWants?: string[];
   /**
    * 她住哪条街。空 = 还没决定。**由她自己选，不是设置项**（方案 §4.17）。
    * 留在顶层而不是塞进 `home`，是因为它是「城的街名」而不是「房子的属性」——
@@ -521,6 +552,22 @@ export const ACTS: Record<string, ActKind> = {
     gain: { social: 30, fun: 8, energy: -5 },
     mood: { text: '有人说话，心里踏实', kind: 'good', hours: 5 },
   },
+  cook: {
+    id: 'cook',
+    label: '买菜自己做',
+    minutes: 55,
+    cost: 10,
+    gain: { food: 36, fun: 8, energy: -4 },
+    mood: { text: '自己开火煮了一顿热乎的', kind: 'good', hours: 3 },
+  },
+  drink: {
+    id: 'drink',
+    label: '喝两口小酒',
+    minutes: 60,
+    cost: 28,
+    gain: { fun: 26, energy: -10 },
+    mood: { text: '微醺，脑子轻了一点', kind: 'good', hours: 2 },
+  },
 };
 
 /* ------------------------------------------------------------------ */
@@ -545,6 +592,9 @@ export function freshState(now: Date = new Date()): LifeState {
     pledges: [],
     tellable: [],
     presence: [],
+    gifts: [],
+    streak: { act: '', count: 0 },
+    echoedWants: [],
     street: '',
     /*
      * 她一开始住城中村、租的。**不是随机分的。**
@@ -692,6 +742,11 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     pledges: arr(s.pledges).filter((x) => x && typeof x.id === 'string'),
     tellable: arr(s.tellable).filter((t) => t && typeof t.id === 'string'),
     presence: arr(s.presence).filter((p) => p && typeof p.date === 'string'),
+    gifts: arr(s.gifts).filter((g) => g && typeof g.id === 'string'),
+    streak: (s.streak && typeof s.streak === 'object' && typeof s.streak.act === 'string')
+      ? { act: s.streak.act, count: Math.max(0, Number(s.streak.count) || 0) }
+      : { act: '', count: 0 },
+    echoedWants: arr(s.echoedWants).filter((x) => typeof x === 'string').slice(-40),
     street: typeof s.street === 'string' ? s.street : '',
     home: normHome(s.home, now),
     job: normJob(s.job),
@@ -801,6 +856,8 @@ export interface AdvanceResult {
   rent: number;
   /** 这一次推进里，哪几条从「够」掉进了「低」。按需求分，同一条一小时只报一次。 */
   crossed: VitalKey[];
+  /** 这一次推进里，哪几条从「大于 0」掉到了「见底（0）」。单独算一次紧急提醒额度。 */
+  bottomed: VitalKey[];
   /** 这次推进里自己好起来的病。 */
   recovered: Condition[];
   /** 这次新得的病。 */
@@ -848,7 +905,7 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
   const rawHours = Number.isFinite(from) ? (to - from) / 3_600_000 : 0;
   if (!(rawHours > 0)) {
     return {
-      hours: 0, crossed: [], recovered: [], caught: [],
+      hours: 0, crossed: [], bottomed: [], recovered: [], caught: [],
       rentMissed: false, rent: 0, woke: null, sleptHours: 0,
     };
   }
@@ -1054,13 +1111,15 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
    * 醒来仍低再说。**记录和推送是两件事**，别在记录这一层替她决定要不要说。
    */
   const crossed: VitalKey[] = [];
+  const bottomed: VitalKey[] = [];
   for (const key of Object.keys(DECAY_PER_HOUR) as VitalKey[]) {
     if (before[key] >= LOW && state.vitals[key] < LOW) crossed.push(key);
+    if (before[key] > 0 && state.vitals[key] <= 0) bottomed.push(key);
   }
 
   state.updatedAt = iso;
   return {
-    hours, crossed, recovered, caught, rentMissed, rent,
+    hours, crossed, bottomed, recovered, caught, rentMissed, rent,
     woke, sleptHours: sleepHours,
   };
 }
@@ -1262,9 +1321,39 @@ export function applyAct(
   state.asleepFrom = '';
   state.asleepUntil = '';
 
+  const hasStomach = state.conditions.some((c) => c.id === 'stomach');
+  const hasHangover = state.conditions.some((c) => c.id === 'hangover');
   for (const [k, delta] of Object.entries(act.gain)) {
     const key = k as VitalKey;
-    state.vitals[key] = clamp100(state.vitals[key] + Number(delta));
+    let d = Number(delta);
+    if (key === 'food' && d > 0 && hasStomach) d = Math.round(d * .5);
+    if (d > 0 && hasHangover) d = Math.round(d * .75);
+    state.vitals[key] = clamp100(state.vitals[key] + d);
+  }
+
+  /* 连续行为追踪：同一件事连做 3 次出小脾气，连吃 3 次将就饭出肠胃不适，连喝 2 次小酒出宿醉。 */
+  const prevStreak = state.streak ?? { act: '', count: 0 };
+  const nextCount = prevStreak.act === act.id ? prevStreak.count + 1 : 1;
+  state.streak = { act: act.id, count: nextCount };
+
+  const hasCond = (id: Condition['id']) => state.conditions.some((c) => c.id === id);
+  if (act.id === 'instant' && nextCount >= 3 && !hasCond('stomach')) {
+    state.conditions.push({
+      id: 'stomach',
+      since: now.toISOString(),
+      until: new Date(now.getTime() + 24 * 3_600_000).toISOString(),
+      text: '肠胃不太舒服，吃正餐只能慢慢吸收。',
+    });
+    remember(state, '连吃了几顿将就饭，胃有点闹脾气。', now);
+  }
+  if (act.id === 'drink' && nextCount >= 2 && !hasCond('hangover')) {
+    state.conditions.push({
+      id: 'hangover',
+      since: now.toISOString(),
+      until: new Date(now.getTime() + 12 * 3_600_000).toISOString(),
+      text: '有点宿醉，脑袋沉，干什么都慢半拍。',
+    });
+    remember(state, '多喝了两杯，今天有点宿醉。', now);
   }
 
   let mood: Moodlet | null = null;
@@ -1279,6 +1368,52 @@ export function applyAct(
     /* 同一件事连着做，只留最新那条 —— 不然「吃得舒服」会攒成一串。 */
     state.moodlets = state.moodlets.filter((m) => m.source !== act.id);
     state.moodlets.push(mood);
+  }
+
+  /* 小脾气与偏执（§6.6 ①）：连续 4 次同件事生出一条念叨。 */
+  if (nextCount === 4 && act.id !== 'sleep' && act.id !== 'wake') {
+    const quirk = `连着三次「${act.label}」了，有点腻，想换点别的。`;
+    state.moodlets = state.moodlets.filter((m) => m.source !== 'quirk');
+    state.moodlets.push({
+      id: `m-q-${now.getTime().toString(36)}`,
+      source: 'quirk',
+      text: quirk,
+      kind: 'bad',
+      expiresAt: new Date(now.getTime() + 6 * 3_600_000).toISOString(),
+    });
+    remember(state, quirk, now);
+  }
+
+  /* 雨天开火煮面 extra 小确幸（§6.6 ③）。 */
+  if (act.id === 'cook' && weatherOf(state.street || '芦花塘', now).sky === '小雨') {
+    state.moodlets = state.moodlets.filter((m) => m.source !== 'weather-cook');
+    state.moodlets.push({
+      id: `m-wc-${now.getTime().toString(36)}`,
+      source: 'weather-cook',
+      text: '外面下着小雨，屋里热汤面特别香',
+      kind: 'good',
+      expiresAt: new Date(now.getTime() + 4 * 3_600_000).toISOString(),
+    });
+  }
+
+  /* 生活里的回声（§6.6 ④）：如果之前在 wants 里记过相关想头，触发一次专属回声。 */
+  const echoed = new Set(state.echoedWants ?? []);
+  const actKeywords: Record<string, string[]> = {
+    cook: ['做饭', '煮面', '下厨', '炒菜', '做菜'],
+    play: ['玩', '乐子', '拍照', '听歌', '散心'],
+    eat: ['吃', '馆子', '美食'],
+    wash: ['洗', '澡'],
+    meet: ['见', '朋友', '聊天', '说话'],
+    drink: ['酒', '喝'],
+  };
+  const kws = actKeywords[act.id] ?? [];
+  if (kws.length) {
+    const hitWant = state.wants.find((w) => !echoed.has(w.id) && kws.some((k) => w.what.includes(k)));
+    if (hitWant) {
+      echoed.add(hitWant.id);
+      state.echoedWants = [...echoed].slice(-40);
+      remember(state, `还记得之前惦记过「${hitWant.what}」，今天真去做了。`, now);
+    }
   }
 
   if (act.cost > 0) {
@@ -1318,7 +1453,12 @@ export interface WorkResult {
  * 这不是替她判断「该不该去」，是**身体真的动不了**。
  * 这个阈值比饿肚子严，因为饿着还能走，脱力了走不了。
  */
-export function applyWork(state: LifeState, what: string, now: Date): WorkResult {
+export function applyWork(
+  state: LifeState,
+  what: string,
+  now: Date,
+  phase: 'home' | 'staying' | 'traveling' = 'home',
+): WorkResult {
   /* 睡着去不了 —— 出工是一整天的事，得先起来。 */
   if (isAsleep(state, now)) {
     return {
@@ -1364,14 +1504,28 @@ export function applyWork(state: LifeState, what: string, now: Date): WorkResult
   let load: JobDef['load'];
 
   if (def) {
-    const gate = jobGate(state, def);
+    const gate = jobGate(state, def, phase);
     if (gate) {
       return { ok: false, reason: gate, earned: 0, cash: state.money.cash, vitals: state.vitals };
     }
-    pay = def.pay;
+    const mat = def.materialCost ?? 0;
+    if (mat > 0 && state.money.cash < mat) {
+      return {
+        ok: false,
+        reason: `「${def.name}」需要先垫付 ${mat} 元成本（材料/油电），你手上只有 ${state.money.cash} 元。`,
+        earned: 0,
+        cash: state.money.cash,
+        vitals: state.vitals,
+      };
+    }
+    pay = def.pay - mat;
     label = def.name;
     load = def.load;
     state.job.id = def.id;
+    if (mat > 0) {
+      state.money.cash -= mat;
+      state.money.spent += mat;
+    }
   } else {
     /*
      * 表里没有 —— 她自己说的活，按零工算，**价格沿用 `daily`**。
@@ -1385,11 +1539,24 @@ export function applyWork(state: LifeState, what: string, now: Date): WorkResult
     state.job.id = '';
   }
 
+  const grossPay = def ? def.pay : pay;
   state.job.what = label;
-  state.job.daily = pay;
+  state.job.daily = grossPay;
 
-  state.money.cash += pay;
-  state.money.earned += pay;
+  state.money.cash += grossPay;
+  state.money.earned += grossPay;
+
+  /* 扭伤/割伤触发：低精力（< 28）仍接体力活（零工/熟练工）时触发 36h 扭伤。 */
+  const tier = def?.tier ?? 'odd';
+  if ((tier === 'odd' || tier === 'skilled') && state.vitals.energy < 28 && !state.conditions.some((c) => c.id === 'injury')) {
+    state.conditions.push({
+      id: 'injury',
+      since: now.toISOString(),
+      until: new Date(now.getTime() + 36 * 3_600_000).toISOString(),
+      text: '干活闪了腰（轻度扭伤），重体力活接不了。',
+    });
+    remember(state, '没歇够就硬出工，干活时把腰闪了一下。', now);
+  }
 
   /*
    * 一天的代价。比一件「事」重得多 —— 这是整天。
@@ -1425,7 +1592,19 @@ export function applyWork(state: LifeState, what: string, now: Date): WorkResult
  * 拒绝的话要把「差什么、怎么补」说出来 —— 只说「你不行」，
  * 她下一步还是不知道往哪走（跟卷二那条「钱不够要说替代方案」同一个道理）。
  */
-export function jobGate(state: LifeState, def: JobDef): string | null {
+export function jobGate(
+  state: LifeState,
+  def: JobDef,
+  phase: 'home' | 'staying' | 'traveling' = 'home',
+): string | null {
+  if (!jobAllowedAt(def, phase)) {
+    return phase === 'traveling'
+      ? `还在路上呢，「${def.name}」没法在车上干。只有随身能接的活才行。`
+      : `你现在不在芦花塘家里，「${def.name}」只能在家那头接。`;
+  }
+  if (state.conditions.some((c) => c.id === 'injury') && (def.tier === 'odd' || def.tier === 'skilled')) {
+    return `身上还挂着扭伤，像「${def.name}」这种体力活暂时接不了，先歇一两天或干点轻省的。`;
+  }
   if (def.cert && !state.job.certs.includes(def.cert)) {
     const c = certOf(def.cert);
     return `「${def.name}」要${def.cert}，你手上没有。`
@@ -1769,11 +1948,123 @@ export interface Snapshot {
   overdue: Pledge[];
   /** 7 天内他来过几天。 */
   visitedDays: number;
+  gifts: Gift[];
+  weather: WeatherInfo;
   /**
    * 她在睡的话，这里给出「还有多久」和「醒来精力大约多少」。
    * 醒着是 null —— **不写 `{ asleep: false }`**：面板里一个恒为真的字段容易被当成开关。
    */
   asleep: { hoursLeft: number; energyAtWake: number } | null;
+}
+
+export interface WeatherInfo {
+  sky: '晴' | '多云' | '小雨' | '起风';
+  seasonNote: string;
+}
+
+/**
+ * 确定性本地天气与芦花塘物候（§6.6 ③）：不靠随机数，同一天同一个时段大家看到一样。
+ */
+export function weatherOf(city: string, now: Date): WeatherInfo {
+  const key = `${city || '芦花塘'}-${localDateKey(now)}-${Math.floor(now.getHours() / 8)}`;
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  const skies: WeatherInfo['sky'][] = ['晴', '多云', '晴', '小雨', '起风', '多云'];
+  const sky = skies[h % skies.length];
+  const m = now.getMonth() + 1;
+  const seasonNote = (m >= 9 && m <= 11)
+    ? (sky === '起风' ? '秋天起风了，芦花塘边的芦花白了一片' : '秋凉，早晚风里带着水汽')
+    : (m >= 6 && m <= 8)
+      ? '夏水涨得高，傍晚塘边风凉'
+      : (m >= 3 && m <= 5)
+        ? '春水微暖，巷口早市摊子摆得早'
+        : '冬塘水静，屋里热汤最顶用';
+  return { sky, seasonNote };
+}
+
+/** 他伸手给她留一样东西（一天最多一件，不进金额、不刷好感数值）。 */
+export interface GiftResult {
+  ok: boolean;
+  reason?: string;
+  gift?: Gift;
+}
+
+export function applyGift(state: LifeState, what: string, from: string, now: Date): GiftResult {
+  const text = String(what || '').trim().slice(0, 60);
+  if (!text) return { ok: false, reason: '没写是什么东西。' };
+  const today = localDateKey(now);
+  const already = state.gifts.some((g) => localDateKey(new Date(g.at)) === today);
+  if (already) {
+    return { ok: false, reason: '今天已经留过一样东西了，一天最多一件。' };
+  }
+  const gift: Gift = {
+    id: `gift-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    what: text,
+    from: String(from || '他').trim() || '他',
+    at: now.toISOString(),
+  };
+  state.gifts.push(gift);
+  if (state.gifts.length > 30) state.gifts = state.gifts.slice(-30);
+  state.moodlets = state.moodlets.filter((m) => m.source !== 'gift');
+  state.moodlets.push({
+    id: `m-g-${now.getTime().toString(36)}`,
+    source: 'gift',
+    text: `收到他留下的「${text}」`,
+    kind: 'good',
+    expiresAt: new Date(now.getTime() + 6 * 3_600_000).toISOString(),
+  });
+  remember(state, `他留下了一样东西：${text}。`, now);
+  state.updatedAt = now.toISOString();
+  return { ok: true, gift };
+}
+
+/** 原子追加一笔账本流水到 life-ledger.jsonl（按 id 去重）。 */
+export function appendLedger(dataDir: string, entry: LedgerEntry): boolean {
+  if (!dataDir || !entry.id || !(entry.amount > 0)) return false;
+  const file = join(dataDir, 'life-ledger.jsonl');
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    if (existsSync(file)) {
+      const existing = readFileSync(file, 'utf8');
+      if (existing.includes(`"id":"${entry.id}"`)) return false;
+    }
+    appendFileSync(file, `${JSON.stringify(entry)}\n`, 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 读取最近 N 笔流水（倒序，最新的在前）。 */
+export function readLedger(dataDir: string, limit = 30): LedgerEntry[] {
+  const file = join(dataDir, 'life-ledger.jsonl');
+  try {
+    if (!existsSync(file)) return [];
+    const lines = readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
+    const out: LedgerEntry[] = [];
+    for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
+      try {
+        const obj = JSON.parse(lines[i]);
+        if (obj && typeof obj.id === 'string') out.push(obj as LedgerEntry);
+      } catch { /* 跳过坏行 */ }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** 本地早市当日确定性物价表（三期买菜用，服务端市集不可达时的兜底）。 */
+export function marketPrices(now: Date): { item: string; price: number; unit: string }[] {
+  const d = localDateKey(now);
+  let h = 0;
+  for (let i = 0; i < d.length; i++) h = (h * 33 + d.charCodeAt(i)) >>> 0;
+  const delta = (offset: number) => ((h + offset) % 5) - 2; // -2 ~ +2
+  return [
+    { item: '青菜豆腐', price: Math.max(4, 7 + delta(1)), unit: '一份' },
+    { item: '番茄鸡蛋面料', price: Math.max(6, 10 + delta(2)), unit: '一份' },
+    { item: '小鱼干配菜', price: Math.max(8, 12 + delta(3)), unit: '一份' },
+  ];
 }
 
 export const VITAL_LABEL: Record<VitalKey, string> = {
@@ -1828,6 +2119,8 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     pledges: state.pledges.filter((p) => Date.parse(p.dueAt) > now.getTime()),
     overdue: state.pledges.filter((p) => Date.parse(p.dueAt) <= now.getTime()),
     visitedDays: recentVisits(state, now, 7),
+    gifts: state.gifts,
+    weather: weatherOf(state.street || '芦花塘', now),
     asleep,
   };
 }

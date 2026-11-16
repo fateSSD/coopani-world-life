@@ -81,6 +81,8 @@ const TEXT = {
     habits: '她的常态',
     watches: '在留意',
     wants: '想买什么',
+    gifts: '你留下的',
+    ledger: '最近流水',
     noneYet: '还没给自己定过什么。',
     town: '住',
     server: '读服务器',
@@ -385,10 +387,12 @@ export default {
         const wishCard = el('div', 'lf-card');
         const pendingCard = el('div', 'lf-card');
         const pledgeCard = el('div', 'lf-card');
+        const giftsCard = el('div', 'lf-card');
+        const ledgerCard = el('div', 'lf-card');
         habits.append(el('h3', null, t(lang, 'habits')));
         watches.append(el('h3', null, t(lang, 'watches')));
         wants.append(el('h3', null, t(lang, 'wants')));
-        cols.append(habits, watches, wants, wishCard, pendingCard, pledgeCard);
+        cols.append(habits, watches, wants, wishCard, pendingCard, pledgeCard, giftsCard, ledgerCard);
         const helpBox = el('details', 'lf-help');
         const fbBox = el('section', 'lf-fb');
         const foot = el('div', 'lf-foot');
@@ -653,6 +657,7 @@ export default {
             d.town.source === 'server' ? 'server' : d.town.source === 'own' ? 'townOwn' : 'builtin');
           const bits = [];
           bits.push(`${d.dayPart} ${d.clock}`);
+          if (d.weather && d.weather.sky) bits.push(d.weather.sky);
           if (d.street) bits.push(d.street);
           sub.textContent = bits.join('　·　');
 
@@ -739,6 +744,10 @@ export default {
             (w) => `${w.what}${w.scale === 'big' ? '（得攒一攒）' : ''}`);
           drawList(wishCard, t(lang, 'wishes'), allWants.filter((w) => w.kind === 'place'),
             (w) => w.what);
+          drawList(giftsCard, t(lang, 'gifts'), d.gifts || [],
+            (g) => `${g.what}（${g.from || '他'}）`);
+          drawList(ledgerCard, t(lang, 'ledger'), (d.ledger || []).slice(0, 12),
+            (e) => `${e.kind === 'income' ? '+' : '-'}${e.amount}　${e.note || e.source}（${e.payee || ''}）`);
         };
 
         /** 复制到剪贴板。宿主的 webview 里 clipboard API 未必有，要有降级。 */

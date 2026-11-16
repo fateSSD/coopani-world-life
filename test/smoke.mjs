@@ -7,16 +7,17 @@
  * 跑法（用宿主自带那份 tsx，扩展目录里没有 node_modules）：
  *   node "<Coopani>/resources/app/node_modules/tsx/dist/cli.mjs" test/smoke.mjs
  */
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   ACTS, DECAY_PER_HOUR, HOME_TIER_COST, LOW, MAX_CATCHUP_HOURS, MAX_PENDING, StateStore,
-  advance, applyAct, applyMove, applyWork, freshState, localDateKey, noteVisit, normalize,
-  quoteMove, recentVisits, snapshot, applyCert, applySpend,
+  advance, applyAct, applyGift, applyMove, applyWork, freshState, localDateKey, noteVisit, normalize,
+  quoteMove, recentVisits, snapshot, applyCert, applySpend, appendLedger, readLedger, marketPrices, weatherOf,
 } from '../src/state.ts';
-import { readTown } from '../src/bridge.ts';
+import { readTown, fetchTownStalls, buyTownStall } from '../src/bridge.ts';
 import { LifeWorld } from '../src/world.ts';
 import { LIFE_DEFAULTS } from '../src/config.ts';
 
@@ -208,7 +209,7 @@ console.log('\n[12] 快照');
    * 七件：五件花钱的 + 将就吃一口 + 「起来」。
    * `wake` 不是可有可无的补充 —— 睡着时所有动作都被拦，没有它她就永远醒不过来。
    */
-  ok(Object.keys(ACTS).length === 7, '七件事（含睡着时唯一能做的「起来」）', String(Object.keys(ACTS).length));
+  ok(Object.keys(ACTS).length === 9, '九件事（含睡着时唯一能做的「起来」与做饭/小酌）', String(Object.keys(ACTS).length));
   ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
 }
 
@@ -767,6 +768,139 @@ console.log('\n[35] 工具入口先推进时间：掉过线的提醒不能被吞
   ok(low.some((x) => /饱腹/.test(x.text)), '说的是饱腹那条', low.map((x) => x.text).join(' | '));
   ok(w.state.vitals.food > 30, '然后她吃了，饱腹回来了', String(w.state.vitals.food));
   await w.stop();
+}
+
+console.log('\n[36] 二期：需求见底破例提醒（zero:key 独立额度）');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'life-zero-'));
+  const pushed = [];
+  const cfg = { ...LIFE_DEFAULTS(), enabled: true, notify: 'once' };
+  const w = new LifeWorld({ cfg, dataDir: dir, botName: '大肥鱼' });
+  await w.start({
+    log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+    pushEvent: async (e) => { pushed.push(e); return { ...e, blobs: [] }; },
+  });
+  pushed.length = 0;
+
+  const today = localDateKey(new Date());
+  /* 模拟今天已经跨过 30 提醒过一次，现在娱乐掉到 1，再过 1 小时见底。 */
+  w.state.nagged.fun = today;
+  w.state.vitals.fun = 1.5;
+  w.state.updatedAt = new Date(Date.now() - 3_600_000).toISOString();
+
+  await w.tools().find((x) => x.name === 'life_status').handler({});
+  const zeroMsg = pushed.filter((e) => e.type === 'life.low' && /见底了/.test(e.text));
+  ok(zeroMsg.length === 1, '今天报过 30 后，掉到 0 仍破例推一次见底提醒', zeroMsg.map((x) => x.text).join(' | '));
+  ok(w.state.nagged['zero:fun'] === today, '记下了 zero:fun 独立防打扰标记');
+  await w.stop();
+}
+
+console.log('\n[37] 二期：统一账本流水与 life-pending 结算 + 公共快照 schema 2');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'life-ledger-'));
+  const t0 = new Date('2026-11-16T10:00:00.000Z');
+  ok(appendLedger(dir, { id: 'l1', ts: t0.toISOString(), kind: 'expense', amount: 15, source: 'life_act', payee: '吃东西', note: '午饭' }), '写入第一笔流水');
+  ok(!appendLedger(dir, { id: 'l1', ts: t0.toISOString(), kind: 'expense', amount: 15, source: 'life_act', payee: '吃东西', note: '午饭' }), '同 id 不重复记账');
+  const rows = readLedger(dir, 10);
+  ok(rows.length === 1 && rows[0].amount === 15, '读回流水数量与金额正确');
+
+  mkdirSync(join(dir, 'life-pending'), { recursive: true });
+  writeFileSync(join(dir, 'life-pending', 'trip-1.json'), JSON.stringify({
+    schema: 1, id: 'journey-trip-1', source: 'journey', kind: 'trip-settle',
+    worldHours: 10, amount: 200, earned: 50, payee: '旅途', note: '西安三日',
+  }));
+  const cfg = { ...LIFE_DEFAULTS(), enabled: true };
+  const w = new LifeWorld({ cfg, dataDir: dir, botName: '大肥鱼' });
+  await w.start({
+    log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+    pushEvent: async (e) => ({ ...e, blobs: [] }),
+  });
+  await w.tick();
+  await w.tools().find((x) => x.name === 'life_act').handler({ kind: 'eat' });
+  const pub = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
+  ok(pub.schema === 2 && pub.ledger && pub.ledger.travelAllowance > 0, 'life-public.json 已升级 schema 2 并带 travelAllowance');
+  ok(w.state.money.cash === 3000 - 200 + 50 - 15, 'pending 与吃东西扣钱全部对账正确', String(w.state.money.cash));
+
+  /* 归档是判重的第二道保险：文件一旦离开 pending 目录，就算判重表被截断也读不到它。 */
+  ok(!existsSync(join(dir, 'life-pending', 'trip-1.json')), '结算后条子已离开 pending 目录');
+  ok(existsSync(join(dir, 'life-pending', 'done', 'trip-1.json')), '条子归档进 done/，还能查账');
+  const cashAfterSettle = w.state.money.cash;
+  w.state.spendApplied = []; // 模拟 120 条截断：老 id 被挤出判重表
+  w.settleSpendRequests(new Date('2026-11-16T11:00:00.000Z'));
+  ok(w.state.money.cash === cashAfterSettle, '判重表被清空也不重复扣款（条子已归档）', String(w.state.money.cash));
+  await w.stop();
+}
+
+console.log('\n[38] 二期：礼物防签到 + §6.6 生活回声 + 物候天气');
+{
+  const s = freshState(new Date('2026-10-15T10:00:00.000Z'));
+  const g1 = applyGift(s, '一袋橘子', 'Mr.Q', new Date('2026-10-15T10:00:00.000Z'));
+  const g2 = applyGift(s, '另一袋', 'Mr.Q', new Date('2026-10-15T12:00:00.000Z'));
+  ok(g1.ok && s.gifts.length === 1, '收到第一件礼物');
+  ok(!g2.ok, '同一天第二件礼物被拦（防签到）');
+
+  s.wants.push({ id: 'w-cook', what: '想自己煮面吃', scale: 'small', kind: 'thing', since: s.updatedAt, note: '' });
+  applyAct(s, 'cook', new Date('2026-10-15T13:00:00.000Z'));
+  ok(s.tellable.some((t) => /还记得之前惦记过「想自己煮面吃」/.test(t.text)), '命中 wants 触发生活回声');
+  const wInfo = weatherOf('芦花塘', new Date('2026-10-15T13:00:00.000Z'));
+  ok(['晴', '多云', '小雨', '起风'].includes(wInfo.sky) && Boolean(wInfo.seasonNote), '物候天气有效');
+}
+
+console.log('\n[39] 三期：完整五状态链（肠胃 / 宿醉 / 扭伤）');
+{
+  const t = new Date('2026-11-16T10:00:00.000Z');
+  const s = freshState(t);
+  applyAct(s, 'instant', t);
+  applyAct(s, 'instant', t);
+  applyAct(s, 'instant', t);
+  ok(s.conditions.some((c) => c.id === 'stomach'), '连吃 3 次将就饭触发肠胃不适');
+
+  const s2 = freshState(t);
+  applyAct(s2, 'drink', t);
+  applyAct(s2, 'drink', t);
+  ok(s2.conditions.some((c) => c.id === 'hangover'), '连喝 2 次小酒触发宿醉');
+
+  const s3 = freshState(t);
+  s3.vitals.energy = 24;
+  const wr = applyWork(s3, '搬货', t, 'home');
+  ok(wr.ok && s3.conditions.some((c) => c.id === 'injury'), '低精力强行干体力活触发扭伤');
+  s3.vitals.energy = 60;
+  const wr2 = applyWork(s3, '看店', new Date('2026-11-17T10:00:00.000Z'), 'home');
+  ok(!wr2.ok && /扭伤/.test(wr2.reason || ''), '扭伤期间拦住体力活');
+}
+
+console.log('\n[40] 三期：职业 place 过滤 + 材料成本 + L2 市集买卖');
+{
+  const t = new Date('2026-11-16T10:00:00.000Z');
+  const s = freshState(t);
+  const travelBlocked = applyWork(s, '看店', t, 'traveling');
+  ok(!travelBlocked.ok && /在路上/.test(travelBlocked.reason || ''), '在路上不能接 home 活');
+  const deliv = applyWork(s, '送外卖', t, 'home');
+  ok(deliv.ok && s.money.cash === 3000 - 8 + 95, '送外卖先扣 8 元成本再入账 95 元', String(s.money.cash));
+
+  const prices = marketPrices(t);
+  ok(prices.length === 3 && prices.every((p) => p.price > 0), '本地早市物价表正常');
+
+  const srv = createServer((req, res) => {
+    if (req.url === '/town/stalls' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ stalls: [{ id: 'st-1', seller: '阿青', item: '葱油面', price: 14, stock: 2 }] }));
+      return;
+    }
+    if (req.url === '/town/buy' && req.method === 'POST') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, item: '葱油面', price: 14, seller: '阿青' }));
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const port = srv.address().port;
+  const stRes = await fetchTownStalls(`http://127.0.0.1:${port}`);
+  ok(stRes.ok && stRes.stalls.length === 1 && stRes.stalls[0].item === '葱油面', 'L2 GET /town/stalls 正常');
+  const buyRes = await buyTownStall(`http://127.0.0.1:${port}`, 'st-1', 'u1');
+  ok(buyRes.ok && buyRes.price === 14 && buyRes.seller === '阿青', 'L2 POST /town/buy 正常');
+  srv.close();
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

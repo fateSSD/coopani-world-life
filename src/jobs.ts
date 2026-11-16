@@ -40,6 +40,8 @@ export const TIER_LABEL: Record<JobTier, string> = {
   professional: '专业',
 };
 
+export type JobPlace = 'home' | 'anywhere' | 'destination';
+
 export interface JobDef {
   id: string;
   /** 她在话里怎么说这件事。也是 `life_work` 认的第二个名字。 */
@@ -51,6 +53,10 @@ export interface JobDef {
   cert?: string;
   /** 要出过多少天工才有资格。0 = 不要求。 */
   days?: number;
+  /** 在哪儿能干：只在芦花塘家这边、随身带着走、还是外地也能接的短活。 */
+  place: JobPlace;
+  /** 材料/出车前垫付成本（元）。干完再结，不够垫付接不了。 */
+  materialCost?: number;
   /** 一天的代价。老版本是 −34 / −16 / −10 三样，这里按档加重，并加了社交。 */
   load: { energy: number; clean: number; fun: number; social: number };
 }
@@ -73,42 +79,48 @@ const def = (
   name: string,
   tier: JobTier,
   pay: number,
-  extra: Partial<Pick<JobDef, 'cert' | 'days'>> = {},
-): JobDef => ({ id, name, tier, pay, load: LOAD[tier], ...extra });
+  extra: Partial<Pick<JobDef, 'cert' | 'days' | 'place' | 'materialCost'>> = {},
+): JobDef => ({ id, name, tier, pay, place: 'home', load: LOAD[tier], ...extra });
 
 /**
- * 十八种，四档。**不是 66 种** —— 方案里那个数字是三四期的事，
- * 先把「门槛决定工资」这件事立住，新的往里加一行就够。
+ * 十八种，四档 + 三档地点过滤（home / anywhere / destination）。
  *
  * 城规有一条是「鱼不吃鱼」：没有渔业、没有鱼市、没有屠宰。
  * 加任何职业之前先拿这一条判一次。
  */
 export const JOBS: readonly JobDef[] = [
   // 零工：谁都能干，说走就走
-  def('porter', '搬货', 'odd', 90),
-  def('shopkeeper', '看店', 'odd', 85),
-  def('waiter', '端盘子', 'odd', 90),
-  def('delivery', '送外卖', 'odd', 95),
-  def('flyer', '发传单', 'odd', 80),
+  def('porter', '搬货', 'odd', 90, { place: 'anywhere' }),
+  def('shopkeeper', '看店', 'odd', 85, { place: 'home' }),
+  def('waiter', '端盘子', 'odd', 90, { place: 'destination' }),
+  def('delivery', '送外卖', 'odd', 95, { place: 'home', materialCost: 8 }),
+  def('flyer', '发传单', 'odd', 80, { place: 'destination' }),
 
   // 熟练工：干满一个月，或者有人介绍
-  def('kitchen', '后厨帮工', 'skilled', 140, { days: 30 }),
-  def('renovation', '装修队小工', 'skilled', 150, { days: 30 }),
-  def('errand', '跑腿代办', 'skilled', 130, { days: 30 }),
-  def('stall', '早市摆摊', 'skilled', 145, { days: 30 }),
+  def('kitchen', '后厨帮工', 'skilled', 140, { days: 30, place: 'destination' }),
+  def('renovation', '装修队小工', 'skilled', 150, { days: 30, place: 'home' }),
+  def('errand', '跑腿代办', 'skilled', 130, { days: 30, place: 'home', materialCost: 10 }),
+  def('stall', '早市摆摊', 'skilled', 145, { days: 30, place: 'home', materialCost: 25 }),
 
   // 有证：一天的钱够她吃住两天，但那张证要一笔投入
-  def('caregiver', '护工', 'certified', 210, { cert: '护工证' }),
-  def('driver', '网约车司机', 'certified', 230, { cert: '驾照' }),
-  def('cook', '厨师', 'certified', 240, { cert: '厨师证' }),
-  def('electrician', '电工', 'certified', 220, { cert: '电工证' }),
+  def('caregiver', '护工', 'certified', 210, { cert: '护工证', place: 'home' }),
+  def('driver', '网约车司机', 'certified', 230, { cert: '驾照', place: 'home', materialCost: 45 }),
+  def('cook', '厨师', 'certified', 240, { cert: '厨师证', place: 'destination' }),
+  def('electrician', '电工', 'certified', 220, { cert: '电工证', place: 'home', materialCost: 15 }),
 
   // 专业：证 + 经验，两个都要
-  def('nurse', '社区护士', 'professional', 330, { cert: '护士执业证', days: 30 }),
-  def('teacher', '小学代课老师', 'professional', 320, { cert: '教师资格证', days: 30 }),
-  def('accountant', '会计', 'professional', 340, { cert: '会计证', days: 30 }),
-  def('socialworker', '社区社工', 'professional', 300, { cert: '社工证', days: 30 }),
+  def('nurse', '社区护士', 'professional', 330, { cert: '护士执业证', days: 30, place: 'home' }),
+  def('teacher', '小学代课老师', 'professional', 320, { cert: '教师资格证', days: 30, place: 'home' }),
+  def('accountant', '会计', 'professional', 340, { cert: '会计证', days: 30, place: 'anywhere' }),
+  def('socialworker', '社区社工', 'professional', 300, { cert: '社工证', days: 30, place: 'home' }),
 ];
+
+/** 判断某份活在当前位置阶段能否接：在路上只能接 anywhere；在外地可接 anywhere+destination；在家可接 home+anywhere。 */
+export function jobAllowedAt(job: JobDef, phase: 'home' | 'staying' | 'traveling'): boolean {
+  if (phase === 'traveling') return job.place === 'anywhere';
+  if (phase === 'staying') return job.place === 'anywhere' || job.place === 'destination';
+  return job.place === 'home' || job.place === 'anywhere';
+}
 
 /**
  * 考证：一张证要多少钱、要几天。

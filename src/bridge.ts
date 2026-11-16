@@ -5,7 +5,7 @@
  * 生活层是读者不是作者。这个约束不是洁癖 —— 一旦这边也开始写位置，
  * 两个扩展就会各说一套，而她到底是「在佛山」还是「在家」会变成一个谜。
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 
 /* ------------------------------------------------------------------ */
@@ -341,4 +341,170 @@ export function readSpendRequests(dataDir: string): SpendRequest[] {
     }
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* 二期通用账本上报目录：`life-pending/`                                */
+/* ------------------------------------------------------------------ */
+
+export const PENDING_DIR = 'life-pending';
+
+export interface PendingRequest {
+  id: string;
+  /** 条子文件名（含 `.json`）。结算完按它归档 —— 见 `archivePendingRequest`。 */
+  file: string;
+  source: string;
+  kind: string;
+  amount: number;
+  earned: number;
+  worldHours: number;
+  payee: string;
+  note: string;
+  invalid?: boolean;
+}
+
+/**
+ * 读各扩展写进 `life-pending/*.json` 的结算条子。
+ * 读不出来或数不对的标 `invalid: true`，调用方回 `rejected` 好让对面删文件。
+ */
+export function readPendingRequests(dataDir: string): PendingRequest[] {
+  const dir = join(dataDir, PENDING_DIR);
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const out: PendingRequest[] = [];
+  for (const name of names) {
+    const fallbackId = name.replace(/\.json$/, '');
+    try {
+      const raw = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+      const id = typeof raw?.id === 'string' && raw.id.trim() ? raw.id.trim() : fallbackId;
+      const amount = Math.round(Number(raw?.amount ?? 0));
+      const earned = Math.round(Number(raw?.earned ?? 0));
+      const worldHours = Math.max(0, Number(raw?.worldHours ?? 0));
+      if (!Number.isFinite(amount) || amount < 0 || !Number.isFinite(earned) || earned < 0 || (amount === 0 && earned === 0)) {
+        out.push({ id, file: name, source: 'unknown', kind: 'invalid', amount: 0, earned: 0, worldHours: 0, payee: '', note: '数不对', invalid: true });
+        continue;
+      }
+      out.push({
+        id,
+        file: name,
+        source: typeof raw?.source === 'string' && raw.source ? raw.source : 'external',
+        kind: typeof raw?.kind === 'string' && raw.kind ? raw.kind : 'spend',
+        amount,
+        earned,
+        worldHours: Number.isFinite(worldHours) ? worldHours : 0,
+        payee: typeof raw?.payee === 'string' ? raw.payee.slice(0, 40) : '',
+        note: typeof raw?.note === 'string' ? raw.note.slice(0, 60) : '',
+      });
+    } catch {
+      out.push({ id: fallbackId, file: name, source: 'unknown', kind: 'invalid', amount: 0, earned: 0, worldHours: 0, payee: '', note: '这文件读不出来', invalid: true });
+    }
+  }
+  return out;
+}
+
+/**
+ * 结算完把条子从 `life-pending/` 挪进 `life-pending/done/`。
+ *
+ * ## 为什么不能只靠 `spendApplied` 判重
+ *
+ * 那张表只留 120 条，广播给对面删文件用的回执只留 40 条 —— 两个窗口都会截断。
+ * 对面扩展停一阵再回来，老条子它不知道该不该删，文件就长期留在目录里；
+ * 等结算次数超过 120，最早的 id 被挤出判重表，**同一张条子会被再扣一次钱**，
+ * 而且 `appendLedger` 判重拦的是记账、拦不住扣款，流水里还看不出来（2026-11-16 审查）。
+ *
+ * 归档之后 `readPendingRequests` 只读 `.json`，已结算的条子**根本读不到**，
+ * 判重表截不截断都无所谓。文件本身留在 `done/` 里，还能查账。
+ */
+export function archivePendingRequest(dataDir: string, file: string): void {
+  if (!file || file.includes('/') || file.includes('\\')) return;
+  try {
+    const dir = join(dataDir, PENDING_DIR);
+    mkdirSync(join(dir, 'done'), { recursive: true });
+    renameSync(join(dir, file), join(dir, 'done', file));
+  } catch { /* 归档失败不挡这一跳：判重表还在，下次再试 */ }
+}
+
+/* ------------------------------------------------------------------ */
+/* 三期 L2 市集买方半场：`GET /town/stalls` & `POST /town/buy`        */
+/* ------------------------------------------------------------------ */
+
+export interface TownStall {
+  id: string;
+  seller: string;
+  item: string;
+  price: number;
+  stock: number;
+}
+
+export async function fetchTownStalls(
+  townUrl: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<{ ok: boolean; stalls: TownStall[] }> {
+  const base = String(townUrl || '').trim();
+  if (!base) return { ok: false, stalls: [] };
+  const root = base.replace(/\/+$/, '').replace(/\/town\/info$/, '');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 2500);
+  try {
+    const res = await fetch(`${root}/town/stalls`, {
+      signal: ctrl.signal,
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) return { ok: false, stalls: [] };
+    const j: any = await res.json();
+    const list = Array.isArray(j?.stalls) ? j.stalls : [];
+    const stalls: TownStall[] = list
+      .filter((x: any) => x && typeof x.id === 'string' && typeof x.item === 'string' && Number(x.price) > 0 && Number(x.stock) > 0)
+      .map((x: any) => ({
+        id: String(x.id),
+        seller: typeof x.seller === 'string' ? x.seller : '街坊',
+        item: String(x.item),
+        price: Math.round(Number(x.price)),
+        stock: Math.round(Number(x.stock)),
+      }));
+    return { ok: true, stalls };
+  } catch {
+    return { ok: false, stalls: [] };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function buyTownStall(
+  townUrl: string,
+  stallId: string,
+  buyer: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<{ ok: boolean; item?: string; price?: number; seller?: string; reason?: string }> {
+  const base = String(townUrl || '').trim();
+  if (!base) return { ok: false, reason: '没配城服务器地址' };
+  const root = base.replace(/\/+$/, '').replace(/\/town\/info$/, '');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 2500);
+  try {
+    const res = await fetch(`${root}/town/buy`, {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ stallId, buyer }),
+    });
+    const j: any = await res.json().catch(() => ({}));
+    if (!res.ok || !j?.ok) {
+      return { ok: false, reason: typeof j?.error === 'string' ? j.error : `市集返回 ${res.status}` };
+    }
+    return {
+      ok: true,
+      item: typeof j?.item === 'string' ? j.item : '一份吃食',
+      price: Math.round(Number(j?.price ?? 0)),
+      seller: typeof j?.seller === 'string' ? j.seller : '街坊',
+    };
+  } catch {
+    return { ok: false, reason: '市集连不上' };
+  } finally {
+    clearTimeout(timer);
+  }
 }
