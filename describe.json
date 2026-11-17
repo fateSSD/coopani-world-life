@@ -88,7 +88,7 @@
     },
     {
       "name": "life_act",
-      "description": "自己做一件事：吃、睡、起来（wake，睡着时唯一能做的事）、洗、玩、跟人说话。身体会变。",
+      "description": "自己做一件事：吃（三档：吃顿好的 feast / 吃一顿 eat / 随便吃点 instant）、睡、起来（wake，睡着时唯一能做的事）、洗、玩、跟人说话、买菜自己做、喝两口。身体会变。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -99,13 +99,17 @@
           "kind": {
             "type": "string",
             "enum": [
+              "feast",
               "eat",
+              "instant",
               "sleep",
               "wake",
               "wash",
               "play",
-              "instant",
-              "meet"
+              "meet",
+              "cook",
+              "drink",
+              "study"
             ]
           }
         }

@@ -50,6 +50,8 @@ const TEXT = {
     job: '在做什么',
     certs: '手上的证',
     noCert: '还没有证',
+    knowledge: '见识',
+    knowledgeHint: '考证能不能过看它，读书涨',
     wishes: '想去哪',
     noWish: '还没记下想去的地方。',
     verSelf: 'v{v}',
@@ -131,6 +133,8 @@ const TEXT = {
     job: 'Doing',
     certs: 'Certificates',
     noCert: 'no certificates yet',
+    knowledge: 'Knowledge',
+    knowledgeHint: 'it decides whether a certificate exam passes',
     wishes: 'Want to go',
     noWish: 'No place on her list yet.',
     verSelf: 'v{v}',
@@ -458,6 +462,13 @@ export default {
           const certs = jb.certs || [];
           jobCard.append(el('p', 'lf-muted',
             certs.length ? `${t(lang, 'certs')}：${certs.join('、')}` : t(lang, 'noCert')));
+          /*
+           * 见识（2026-11-17）。它是考证通过率的唯一变量 —— 面板上看不到，
+           * 用户就只能从「她考砸了」倒推，而那是猜。
+           */
+          const kn = typeof d.knowledge === 'number' ? d.knowledge : 0;
+          jobCard.append(el('p', 'lf-muted',
+            `${t(lang, 'knowledge')}：${kn}　·　${t(lang, 'knowledgeHint')}`));
         };
 
         const drawWho = (d) => {

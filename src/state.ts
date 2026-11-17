@@ -186,6 +186,35 @@ export const HOME_TIER_COST: Record<HomeTier, number> = {
  */
 export const MOVING_DEPOSIT_MONTHS = 2;
 
+/**
+ * 住处对五条衰减的减免系数（2026-11-17 Mr.Q）。
+ *
+ * 原话：「好房子我觉得可以减少她五维的损失，越好的房子损失越少，除了疲劳值。」
+ *
+ * 所以：**四条按档打折，精力一分不减**。房子能挡住潮气、油烟、吵闹、孤独，
+ * 挡不住「今天干了十小时活，累了」。
+ *
+ * 系数不是随便挑的 —— 城中村是 1（基准，不改老档体感），往上每档少掉一成上下：
+ * 别墅区 0.75 意味着一天下来饱腹只掉 65 而不是 86，两顿正常饭就能补住；
+ * 而房租是城中村的 17 倍（450 → 7800）。**贵得离谱是有意的**：
+ * 减免只能省下麻烦，不能省下干活，所以它永远是一笔「划算但吃力」的账。
+ */
+export const HOME_TIER_RELIEF: Record<HomeTier, number> = {
+  'urban-village': 1,
+  old: 0.92,
+  new: 0.84,
+  villa: 0.75,
+};
+
+/** 四档的先后顺序。搬家的方向、兜底目标的指向都靠它。 */
+export const TIER_ORDER: readonly HomeTier[] = ['urban-village', 'old', 'new', 'villa'];
+
+/** 比现在这档好一级的那一档。已经是别墅区就返回 null（没得搬了）。 */
+export function nextHomeTier(t: HomeTier): HomeTier | null {
+  const i = TIER_ORDER.indexOf(t);
+  return i >= 0 && i < TIER_ORDER.length - 1 ? TIER_ORDER[i + 1] : null;
+}
+
 export interface Home {
   /** 租的，还是买下来的。只影响说法和「搬走要不要押金」，不影响每月开销怎么扣。 */
   tenure: 'rent' | 'own';
@@ -376,6 +405,24 @@ export interface LifeState {
    */
   asleepUntil: string;
   /**
+   * 见识（0–100）。**只增不减，不进「五条」。**
+   *
+   * 2026-11-17 Mr.Q：「加娱乐，娱乐的同时还能增长见识（考证的前提，
+   * 见识越高考过的概率就越大）」。
+   *
+   * 为什么不塞进 `vitals`：五条是会掉、会触阈值、每回合被念一遍的需求；
+   * 见识是**积累**，掉下去就等于知识忘光了，那是另一种东西。
+   * 它更像 `job.days` —— 只往上走，走慢一点。
+   */
+  knowledge: number;
+  /**
+   * 每张证最后一次去考是哪天（`YYYY-MM-DD`，本地日期）。
+   *
+   * 一天一张只考一次。不加这道闸，模型会在考砸之后连着再考 ——
+   * 钱照扣，几次就把 3000 烧光，而用户看到的是「她在考证中心反复刷卡」。
+   */
+  certLast: Record<string, string>;
+  /**
    * 已经扣过的外部花销 id（`life-spend/<id>.json`，来自旅行扩展）。
    *
    * **判重表要落在状态文件里**，不能另存一份：加钱/扣钱和「这条扣过了」
@@ -383,6 +430,17 @@ export interface LifeState {
    * 按条数滚，不按时间 —— 世界时刻在倍速下没有稳定含义。
    */
   spendApplied: string[];
+  /**
+   * 她睡着时跨过线、但没提的那几条（2026-11-17 修）。
+   *
+   * 原来睡着时 `crossed` 直接丢掉 —— 一句「半夜别吵她」的实现方式，
+   * 顺手把**这八小时里的事实也扔了**：跨线只判「上一次在线上、这一次在线下」，
+   * 醒来那一下 crossed 早就是空的，于是那几条永远没人提。
+   * 她每天睡八小时，等于一天里有三分之一的越线事故被静音。
+   *
+   * 现在先记在这儿，醒来第一件事补发，补完清空。
+   */
+  deferred: VitalKey[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -454,6 +512,33 @@ export const CRITICAL = 15;
 /** 单次推进最多按多少小时算。见文件头「离线的那段时间怎么办」。 */
 export const MAX_CATCHUP_HOURS = 7 * 24;
 
+/**
+ * 读一次书涨多少见识（2026-11-17 Mr.Q；0.13.0 时是 4）。
+ *
+ * 4 是「只增不减」时的数。加了衰减之后必须往上抬 —— 否则「读一天 +4、放四天掉 4.8」
+ * 等于白读，读书变成一件**连维持都做不到**的事，那就没人会去读。
+ *
+ * 6 的账：每小时掉 0.05（一天 1.2），读一次抵消五天。
+ * 一天读一次净 +4.8，八天够一张 40 的证；放着不读，一个月退 36。
+ */
+export const KNOWLEDGE_PER_STUDY = 6;
+
+/**
+ * 见识每小时掉多少（2026-11-17 Mr.Q：「书你不看不学的话还是见识会降」）。
+ *
+ * **0.05 是有意压小的。** 见识不是饱腹 —— 一顿不吃就饿，一天不读书忘不掉多少。
+ * 但也不能太小：太小等于「读过一次就永久有效」，那这条需求就没落地。
+ *
+ * 0.05 × 24 = 1.2/天：三天不读退 3.6（有感觉），一个月退 36（够让「考完证就荒废」有代价），
+ * 而一天读一次净赚 4.8（读书仍然是划算的）。**三个数同时成立，这个值才站得住。**
+ *
+ * 不按住处减免（`HOME_TIER_RELIEF` 只管五条）：好房子挡得住潮气，挡不住脑子生锈。
+ */
+export const KNOWLEDGE_DECAY_PER_HOUR = 0.05;
+
+/** 见识封顶。到顶之后再读只补娱乐，不再涨 —— 读成专家就没意思了。 */
+export const KNOWLEDGE_MAX = 100;
+
 /** 她的行为表。她「做」一件事，就跳一下对应的条。 */
 export interface ActKind {
   id: string;
@@ -472,13 +557,34 @@ export interface ActKind {
 }
 
 export const ACTS: Record<string, ActKind> = {
+  /*
+   * 吃，分三档（2026-11-17 Mr.Q）。
+   *
+   * 原来只有「吃」（30 元档）和「将就吃一口」，中间少一档、上面也少一档，
+   * 于是 2880 块和 200 块吃的是同一顿饭 —— 钱多钱少在吃上没差别，
+   * 「挣得多一点就能吃好一点」这条最直接的因果就断了。
+   *
+   * 三档的分法照他的话：好的回 50、普通的回 30、随便的回 15。
+   * 情绪也跟着分：好的是好事，普通的不往心里去（不挂情绪），随便的心里不痛快。
+   */
+  feast: {
+    id: 'feast',
+    label: '吃顿好的',
+    minutes: 60,
+    cost: 40,
+    gain: { food: 50, fun: 6 },
+    mood: { text: '吃得舒服，心里也顺', kind: 'good', hours: 3 },
+  },
   eat: {
     id: 'eat',
-    label: '吃东西',
+    label: '吃一顿',
     minutes: 40,
     cost: 15,
-    gain: { food: 30, fun: 4 },
-    mood: { text: '吃得挺舒服', kind: 'good', hours: 2 },
+    gain: { food: 30 },
+    /*
+     * **不挂情绪** —— 「心情一般」不是一条情绪，是没起波澜。
+     * 原来这里是 good「吃得挺舒服」，那等于把普通一顿说得比实际好。
+     */
   },
   sleep: {
     id: 'sleep',
@@ -538,11 +644,33 @@ export const ACTS: Record<string, ActKind> = {
    */
   instant: {
     id: 'instant',
-    label: '将就吃一口',
+    label: '随便吃点',
     minutes: 15,
     cost: 0,
-    gain: { food: 12 },
-    mood: { text: '凑合吃了点，不太顶饱', kind: 'bad', hours: 2 },
+    /*
+     * 12 → 15（2026-11-17）：三档拉开之后，12 和普通的 30 差得太远，
+     * 变成「吃与不吃」而不是「吃得好不好」。15 刚好是「能活着，但心里不痛快」。
+     */
+    gain: { food: 15 },
+    mood: { text: '凑合一口，心里有点不是滋味', kind: 'bad', hours: 2 },
+  },
+  /*
+   * 读书（2026-11-17 Mr.Q）。
+   *
+   * 「加娱乐，娱乐的同时还能增长见识」。所以它是**两用**：补娱乐（比「找点乐子」少
+   * 一半多：那是玩，这是啃），并涨见识。**免费** —— 一个要花钱才能长见识的世界，
+   * 穷的时候就被锁死在这条路外面，那不是取舍，是门槛。
+   *
+   * 代价是时间和精力（一小时、−3 精力）。一小时换 4 点见识：
+   * 一张要 40 的证，得读十天。
+   */
+  study: {
+    id: 'study',
+    label: '看会儿书',
+    minutes: 60,
+    cost: 0,
+    gain: { fun: 20, energy: -3 },
+    mood: { text: '看进去一段，脑子亮了一下', kind: 'good', hours: 3 },
   },
   meet: {
     id: 'meet',
@@ -634,6 +762,9 @@ export function freshState(now: Date = new Date()): LifeState {
     }],
     nagged: {},
     spendApplied: [],
+    deferred: [],
+    knowledge: 0,
+    certLast: {},
     asleepFrom: '',
     asleepUntil: '',
   };
@@ -720,6 +851,29 @@ export class StateStore {
 export function normalize(s: Partial<LifeState>, now: Date): LifeState {
   const base = freshState(now);
   const v = (s.vitals ?? {}) as Partial<Vitals>;
+  const home = normHome(s.home, now);
+  /*
+   * 目标兜底（2026-11-17 修）。
+   *
+   * 实测：她的存档里 `goals` 是空数组，于是 `{{life.goal}}` 空着、
+   * 提示词里「手上想攒到的」那一行什么都没有 —— **攒钱这件事在她的世界里不存在**，
+   * 也就没有任何理由去出工（现存记录：出工 0 天、进项 0 元）。
+   *
+   * 空就按当前住处指向上一档重新立一条。已经有目标的不动；
+   * 已经住到别墅区的也不再立（没得搬了，立了就是个永远做不完的条）。
+   */
+  const goals = arr<Goal>(s.goals).filter((g) => g && typeof g.id === 'string');
+  const fallbackGoal = (): Goal[] => {
+    const next = nextHomeTier(home.tier);
+    if (!next) return [];
+    const need = HOME_TIER_COST[next] * MOVING_DEPOSIT_MONTHS;
+    return [{
+      id: `g-home-${next}`,
+      what: `攒够 ${need}，搬到${HOME_TIER_LABEL[next]}`,
+      need,
+      since: now.toISOString(),
+    }];
+  };
   return {
     version: STATE_VERSION,
     updatedAt: typeof s.updatedAt === 'string' ? s.updatedAt : now.toISOString(),
@@ -748,12 +902,21 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
       : { act: '', count: 0 },
     echoedWants: arr(s.echoedWants).filter((x) => typeof x === 'string').slice(-40),
     street: typeof s.street === 'string' ? s.street : '',
-    home: normHome(s.home, now),
+    home,
     job: normJob(s.job),
     money: normMoney(s.money, now),
-    goals: arr(s.goals).filter((g) => g && typeof g.id === 'string'),
+    goals: goals.length ? goals : fallbackGoal(),
     nagged: (s.nagged && typeof s.nagged === 'object') ? s.nagged : {},
     spendApplied: arr(s.spendApplied).filter((x) => typeof x === 'string').slice(-120),
+    deferred: arr<unknown>(s.deferred).filter((k): k is VitalKey => typeof k === 'string' && k in DECAY_PER_HOUR),
+    knowledge: Number.isFinite(Number(s.knowledge)) ? clamp100(Number(s.knowledge)) : 0,
+    certLast: (s.certLast && typeof s.certLast === 'object' && !Array.isArray(s.certLast))
+      ? Object.fromEntries(
+        Object.entries(s.certLast as Record<string, unknown>)
+          .filter(([, v]) => typeof v === 'string')
+          .map(([k, v]) => [k, v as string]),
+      )
+      : {},
     asleepFrom: normAsleepFrom(s, now),
     asleepUntil: normAsleepUntil(s, now),
   };
@@ -967,11 +1130,34 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
 
   /* ---------------- 结算 ---------------- */
 
+  /*
+   * 住处的减免（2026-11-17）：越好的房子，四条掉得越慢；**精力不减**。
+   * 见 `HOME_TIER_RELIEF`。睡着那段的清爽也一起受它影响 ——
+   * 潮气和通风不因为她躺着就绕道。
+   */
+  const reliefOf = (key: VitalKey): number =>
+    key === 'energy' ? 1 : (HOME_TIER_RELIEF[state.home.tier] ?? 1);
+
   for (const key of Object.keys(DECAY_PER_HOUR) as VitalKey[]) {
     /* 精力不衰减，是**另算回升** —— 锁死的话她睡八小时醒来还是原值。 */
     const sleepDelta = key === 'energy' ? SLEEP_ENERGY_PER_HOUR : -SLEEP_DECAY_PER_HOUR[key];
-    const v = state.vitals[key] - DECAY_PER_HOUR[key] * awakeHours + sleepDelta * sleepHours;
+    const relief = reliefOf(key);
+    const v = state.vitals[key]
+      - DECAY_PER_HOUR[key] * relief * awakeHours
+      + sleepDelta * relief * sleepHours;
     state.vitals[key] = clamp100(v);
+  }
+
+  /*
+   * 见识也掉（2026-11-17 Mr.Q）。
+   *
+   * **按总时长算，不按醒着的小时** —— 睡着的时候同样在忘。这一点和「娱乐/社交
+   * 睡着不消耗」不同：那两条是活动，见识是痕迹。
+   *
+   * 也不乘住处减免：好房子挡得住潮气，挡不住脑子生锈。
+   */
+  if (state.knowledge > 0) {
+    state.knowledge = Math.max(0, state.knowledge - KNOWLEDGE_DECAY_PER_HOUR * hours);
   }
 
   /*
@@ -1331,6 +1517,17 @@ export function applyAct(
     state.vitals[key] = clamp100(state.vitals[key] + d);
   }
 
+  /*
+   * 读书涨见识（2026-11-17）。
+   *
+   * 放在 `gain` 之外，因为**见识不是五条之一**：它不衰减、不触阈值、
+   * 不进 `vitalsLine`。混进去会让「五条」变成六条，而那一整套阈值提醒、
+   * 存档、面板都是按五条写的。
+   */
+  if (act.id === 'study' && state.knowledge < KNOWLEDGE_MAX) {
+    state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + KNOWLEDGE_PER_STUDY);
+  }
+
   /* 连续行为追踪：同一件事连做 3 次出小脾气，连吃 3 次将就饭出肠胃不适，连喝 2 次小酒出宿醉。 */
   const prevStreak = state.streak ?? { act: '', count: 0 };
   const nextCount = prevStreak.act === act.id ? prevStreak.count + 1 : 1;
@@ -1402,6 +1599,7 @@ export function applyAct(
     cook: ['做饭', '煮面', '下厨', '炒菜', '做菜'],
     play: ['玩', '乐子', '拍照', '听歌', '散心'],
     eat: ['吃', '馆子', '美食'],
+    study: ['书', '读书', '看书', '学', '课', '考试'],
     wash: ['洗', '澡'],
     meet: ['见', '朋友', '聊天', '说话'],
     drink: ['酒', '喝'],
@@ -1535,7 +1733,7 @@ export function applyWork(
      */
     label = told || state.job.what || '打零工';
     pay = state.job.daily;
-    load = { energy: 34, clean: 16, fun: 10, social: 0 };
+    load = { energy: 34, clean: 16, fun: 10, social: 0, food: 12, know: 0 };
     state.job.id = '';
   }
 
@@ -1567,7 +1765,16 @@ export function applyWork(
   state.vitals.energy = clamp100(state.vitals.energy - load.energy);
   state.vitals.clean = clamp100(state.vitals.clean - load.clean);
   state.vitals.fun = clamp100(state.vitals.fun - load.fun);
+  state.vitals.food = clamp100(state.vitals.food - load.food);
   if (load.social) state.vitals.social = clamp100(state.vitals.social - load.social);
+  /*
+   * 干一天也长见识（2026-11-17 Mr.Q 第二条）。**这一格是加的，不是扣的** ——
+   * 所以它不写在 `load` 的扣减那一列里，得单独说一句，否则下一个人读代码会以为符号反了。
+   * 越高级的活长得越多（见 `LOAD`），但都比读一次书少。
+   */
+  if (load.know > 0) {
+    state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + load.know);
+  }
 
   state.job.lastAt = day;
   state.job.days += 1;
@@ -1621,9 +1828,27 @@ export interface CertResult {
   ok: boolean;
   reason?: string;
   cert?: string;
-  /** 花掉多少。 */
+  /** 花掉多少。**考砸了也照花** —— 报名费不退。 */
   paid: number;
   cash: number;
+  /** 考过了没有。`ok` 是「去考了」，这个是「过了」。两件事分开。 */
+  passed?: boolean;
+  /** 这一次的通过概率（0–1），给回执用。 */
+  chance?: number;
+}
+
+/**
+ * 这张证她现在考得过的概率（2026-11-17）。
+ *
+ * `0.15` 起步：见识为零也不是零 —— 有人就是蒙得过去，而 0 概率会让她
+ * 「明知道考不过还非要去」变成一个纯亏的按钮。
+ * `need` 那一档到 `0.9`，**封顶不封 1** —— 考试永远有一成失手，
+ * 这样「读过书」是提高胜算，不是买通。
+ */
+export function certChance(knowledge: number, need: number): number {
+  if (!(need > 0)) return 0.9;
+  const p = 0.15 + 0.75 * (knowledge / need);
+  return Math.max(0.15, Math.min(0.9, p));
 }
 
 /**
@@ -1634,13 +1859,20 @@ export interface CertResult {
  * 不然「我有护工证」只是一句话。花了钱，它就是一个真的取舍：
  * 手上有 3000，是去考一张 600 的驾照（之后日薪从 90 变 230），还是先搬去老小区？
  *
+ * ## 为什么现在还要考得过（2026-11-17）
+ *
+ * 加了「见识」之后，`life_cert` 从「交钱就发证」变成**真的考试**：
+ * 通过率由见识和这张证的难度决定（`certChance`）。考砸了报名费照扣 ——
+ * 这是这条路上唯一的风险，也是「先读书还是先攒钱」这个取舍成立的原因。
+ *
  * ## 为什么只花一天、不占出工日
  *
  * 占的话，`job.lastAt` 一写，「今天已经出过工」就提前判死了 —— 一个字段两种含义，
  * 迟早出错。所以考证只扣精力（−20），不碰 `lastAt`。
- * 代价是理论上她可以「考一张证再上一整天班」，但那要 20 点精力，连着来两次就动不了。
+ *
+ * `roll` 是给测试用的：不传就真掷骰子。**别在业务代码里传它。**
  */
-export function applyCert(state: LifeState, name: string, now: Date): CertResult {
+export function applyCert(state: LifeState, name: string, now: Date, roll?: number): CertResult {
   /* 考证要出门、要上课，睡着办不了。 */
   if (isAsleep(state, now)) {
     return {
@@ -1652,11 +1884,26 @@ export function applyCert(state: LifeState, name: string, now: Date): CertResult
   }
   const c = certOf(name);
   if (!c) {
-    const list = CERTS.map((x) => `${x.name}（${x.price} 元）`).join('、');
+    const list = CERTS.map((x) => `${x.name}（${x.price} 元，要见识 ${x.need}）`).join('、');
     return { ok: false, reason: `没有这张证可考。能考的：${list}。`, paid: 0, cash: state.money.cash };
   }
   if (state.job.certs.includes(c.name)) {
     return { ok: false, reason: `你已经考过${c.name}了。`, paid: 0, cash: state.money.cash };
+  }
+  /*
+   * 一天一张只考一次。
+   *
+   * 不加这道闸，考砸之后会连着再考 —— 钱照扣，几次就烧光 3000，
+   * 而用户看到的是「她在考证中心反复刷卡」。一天，是给她一个「明天再说」的间隔。
+   */
+  const day = localDateKey(now);
+  if (state.certLast?.[c.name] === day) {
+    return {
+      ok: false,
+      reason: `今天已经考过一次${c.name}了，没过的话明天再来。`,
+      paid: 0,
+      cash: state.money.cash,
+    };
   }
   if (state.money.cash < c.price) {
     return {
@@ -1666,13 +1913,39 @@ export function applyCert(state: LifeState, name: string, now: Date): CertResult
       cash: state.money.cash,
     };
   }
+
+  const chance = certChance(state.knowledge, c.need);
+  /* 先扣钱再掷骰子 —— 报名费是去考之前就交的，不是考过才交。 */
   state.money.cash -= c.price;
   state.money.spent += c.price;
-  state.job.certs.push(c.name);
   state.vitals.energy = clamp100(state.vitals.energy - 20);
-  remember(state, `考下了${c.name}，花了 ${c.price} 元。`, now);
+  state.certLast = { ...(state.certLast ?? {}), [c.name]: day };
+
+  const dice = typeof roll === 'number' && Number.isFinite(roll) ? roll : Math.random();
+  const passed = dice < chance;
+
+  if (passed) {
+    state.job.certs.push(c.name);
+    remember(state, `考下了${c.name}，花了 ${c.price} 元。`, now);
+    state.updatedAt = now.toISOString();
+    return { ok: true, passed: true, chance, cert: c.name, paid: c.price, cash: state.money.cash };
+  }
+
+  /*
+   * 考砸了。**钱和精力不退，情绪要挂** ——
+   * 不挂情绪的话，这件事在她心里等于没发生，第二天会原样再来一次。
+   */
+  state.moodlets = state.moodlets.filter((m) => m.source !== 'cert-fail');
+  state.moodlets.push({
+    id: `m-cert-${now.getTime().toString(36)}`,
+    source: 'cert-fail',
+    text: `${c.name}没考过，白花了 ${c.price} 块`,
+    kind: 'bad',
+    expiresAt: new Date(now.getTime() + 6 * 3_600_000).toISOString(),
+  });
+  remember(state, `${c.name}没考过，${c.price} 元的报名费也没了。`, now);
   state.updatedAt = now.toISOString();
-  return { ok: true, cert: c.name, paid: c.price, cash: state.money.cash };
+  return { ok: true, passed: false, chance, cert: c.name, paid: c.price, cash: state.money.cash };
 }
 
 /**
@@ -1950,11 +2223,12 @@ export interface Snapshot {
   visitedDays: number;
   gifts: Gift[];
   weather: WeatherInfo;
-  /**
-   * 她在睡的话，这里给出「还有多久」和「醒来精力大约多少」。
+  /** 她在睡的话，这里给出「还有多久」和「醒来精力大约多少」。
    * 醒着是 null —— **不写 `{ asleep: false }`**：面板里一个恒为真的字段容易被当成开关。
    */
   asleep: { hoursLeft: number; energyAtWake: number } | null;
+  /** 见识（0–100）。考证的通过率由它决定。**不是第六条需求** —— 它只增不减。 */
+  knowledge: number;
 }
 
 export interface WeatherInfo {
@@ -2122,5 +2396,6 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     gifts: state.gifts,
     weather: weatherOf(state.street || '芦花塘', now),
     asleep,
+    knowledge: Math.round(state.knowledge),
   };
 }

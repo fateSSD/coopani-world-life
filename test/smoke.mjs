@@ -16,6 +16,7 @@ import {
   ACTS, DECAY_PER_HOUR, HOME_TIER_COST, LOW, MAX_CATCHUP_HOURS, MAX_PENDING, StateStore,
   advance, applyAct, applyGift, applyMove, applyWork, freshState, localDateKey, noteVisit, normalize,
   quoteMove, recentVisits, snapshot, applyCert, applySpend, appendLedger, readLedger, marketPrices, weatherOf,
+  certChance,
 } from '../src/state.ts';
 import { readTown, fetchTownStalls, buyTownStall } from '../src/bridge.ts';
 import { LifeWorld } from '../src/world.ts';
@@ -97,19 +98,57 @@ console.log('\n[6] 做一件事');
   const r = applyAct(s, 'eat', t0);
   ok(r.ok, '吃了');
   ok(near(s.vitals.food, 70, 0.01), '饱腹 40 → 70', String(s.vitals.food));
-  ok(r.mood && r.mood.kind === 'good', '吃了一般是好事');
+  /*
+   * 2026-11-17 改：普通一顿**不挂情绪**。
+   * 「心情一般」不是一条情绪，是没起波澜 —— 挂 good 等于把普通一顿说得比实际好。
+   */
+  ok(r.mood === null, '普通一顿不挂情绪', String(r.mood));
   ok(s.tellable.length === 1, '记进 tellable 了 —— 她事后才有素材可讲', String(s.tellable.length));
-  ok(near(Date.parse(r.mood.expiresAt), t0.getTime() + 2 * 3_600_000, 1000),
-    '情绪 2 小时后过期（真实时刻）');
+}
+
+console.log('\n[6b] 三档饭：好的回 50，随便的回 15');
+{
+  const t0 = new Date('2026-11-15T12:00:00Z');
+  const s = freshState(t0);
+  s.vitals.food = 20;
+  const r = applyAct(s, 'feast', t0);
+  ok(r.ok, '吃了顿好的');
+  ok(near(s.vitals.food, 70, 0.01), '好的回 50', String(s.vitals.food));
+  ok(r.mood && r.mood.kind === 'good', '吃好的心情是好的');
+  ok(near(Date.parse(r.mood.expiresAt), t0.getTime() + 3 * 3_600_000, 1000),
+    '好的一顿情绪 3 小时后过期');
+
+  const s2 = freshState(t0);
+  s2.vitals.food = 20;
+  const r2 = applyAct(s2, 'instant', t0);
+  ok(r2.ok, '随便吃点了');
+  ok(near(s2.vitals.food, 35, 0.01), '随便的回 15', String(s2.vitals.food));
+  ok(r2.mood && r2.mood.kind === 'bad', '随便吃心里不痛快');
+}
+
+console.log('\n[6c] 住处越好，四条掉得越慢，精力不掉慢');
+{
+  const t0 = new Date('2026-11-15T12:00:00Z');
+  const days = (tier) => {
+    const s = freshState(t0);
+    s.home.tier = tier;
+    s.vitals = { food: 100, energy: 100, clean: 100, fun: 100, social: 100 };
+    advance(s, new Date(t0.getTime() + 10 * 3_600_000));
+    return s.vitals;
+  };
+  const a = days('urban-village');
+  const b = days('villa');
+  ok(b.food > a.food, '别墅区饱腹掉得慢', `${a.food.toFixed(1)} vs ${b.food.toFixed(1)}`);
+  ok(near(a.energy, b.energy, 0.01), '精力一分不减', `${a.energy.toFixed(1)} vs ${b.energy.toFixed(1)}`);
 }
 
 console.log('\n[7] 同一件事连着做，情绪不攒串');
 {
   const t0 = new Date('2026-11-15T12:00:00Z');
   const s = freshState(t0);
-  applyAct(s, 'eat', t0);
-  applyAct(s, 'eat', new Date(t0.getTime() + 60_000));
-  applyAct(s, 'eat', new Date(t0.getTime() + 120_000));
+  applyAct(s, 'feast', t0);
+  applyAct(s, 'feast', new Date(t0.getTime() + 60_000));
+  applyAct(s, 'feast', new Date(t0.getTime() + 120_000));
   ok(s.moodlets.length === 1, '只留最新那条', String(s.moodlets.length));
   /*
    * tellable 是另一回事：吃了三次就该记三条。
@@ -206,10 +245,12 @@ console.log('\n[12] 快照');
   ok(snap.low[0].key === 'food', '缺得最狠的排前面', snap.low[0].key);
   ok(snap.unsaid.length === 1, '还没说出去的那条在');
   /*
-   * 七件：五件花钱的 + 将就吃一口 + 「起来」。
+   * 十件：三档吃（feast / eat / instant）+ 睡 / 洗 / 玩 / 见人 / 做饭 / 小酌 + 「起来」。
    * `wake` 不是可有可无的补充 —— 睡着时所有动作都被拦，没有它她就永远醒不过来。
    */
-  ok(Object.keys(ACTS).length === 9, '九件事（含睡着时唯一能做的「起来」与做饭/小酌）', String(Object.keys(ACTS).length));
+  ok(Object.keys(ACTS).length === 11, '十一件事（三档吃 + 读书 + 起来 + 做饭/小酌）', String(Object.keys(ACTS).length));
+  ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
+  ok(ACTS.feast.cost > ACTS.eat.cost && ACTS.eat.cost > ACTS.instant.cost, '三档饭价依次递减');
   ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
 }
 
@@ -468,9 +509,10 @@ console.log('\n[28] 职业：门槛决定工资（2026-11-15）');
   ok(/护工证/.test(String(noCert.reason)) && /400/.test(String(noCert.reason)),
     '拒绝时说了缺哪张证、多少钱', String(noCert.reason));
 
-  /* 考下来就能接，价钱按表 */
-  const c = applyCert(s, '护工证', t1);
-  ok(c.ok && c.paid === 400, '考护工证花 400', String(c.paid));
+  /* 考下来就能接，价钱按表。2026-11-17 起考证有概率 —— 这里给足见识 + 固定骰子 */
+  s.knowledge = 40;
+  const c = applyCert(s, '护工证', t1, 0);
+  ok(c.ok && c.passed === true && c.paid === 400, '考护工证花 400 且考过了', String(c.paid));
   ok(s.job.certs.includes('护工证'), '证记在她身上');
   const t2 = new Date(t0.getTime() + 2 * 86_400_000);
   s.vitals.energy = 90;
@@ -478,7 +520,7 @@ console.log('\n[28] 职业：门槛决定工资（2026-11-15）');
   ok(care.ok && care.earned === 210, '有证之后护工一天 210', String(care.earned));
 
   /* 同一张证不用考两遍 */
-  const again = applyCert(s, '护工证', t2);
+  const again = applyCert(s, '护工证', t2, 0);
   ok(!again.ok, '同一张证考不了第二遍');
 
   /* 经验门槛：专业档要证 + 30 天工 */
@@ -901,6 +943,119 @@ console.log('\n[40] 三期：职业 place 过滤 + 材料成本 + L2 市集买�
   const buyRes = await buyTownStall(`http://127.0.0.1:${port}`, 'st-1', 'u1');
   ok(buyRes.ok && buyRes.price === 14 && buyRes.seller === '阿青', 'L2 POST /town/buy 正常');
   srv.close();
+}
+
+console.log('\n[41] 出工消耗五条（含饱腹）');
+{
+  const t0 = new Date('2026-11-15T08:00:00Z');
+  const s = freshState(t0);
+  s.vitals = { food: 90, energy: 90, clean: 90, fun: 90, social: 90 };
+  const r = applyWork(s, '搬货', t0, 'home');
+  ok(r.ok, '今天能出工');
+  ok(s.vitals.food < 90, '出工也掉饱腹（干一天活会饿）', String(s.vitals.food));
+  ok(s.vitals.energy < 90 && s.vitals.clean < 90 && s.vitals.fun < 90, '其余四条也照扣');
+}
+
+console.log('\n[42] 睡着跨的线不会丢（deferred 落盘）');
+{
+  const t0 = new Date('2026-11-15T20:00:00Z');
+  const s = freshState(t0);
+  s.vitals.food = 34;
+  /* 睡八小时、不补饭：饱腹必然跨过 30。 */
+  s.asleepFrom = t0.toISOString();
+  s.asleepUntil = new Date(t0.getTime() + 8 * 3_600_000).toISOString();
+  const r = advance(s, new Date(t0.getTime() + 8 * 3_600_000));
+  ok(r.crossed.includes('food'), '这一觉里饱腹跨过了 30', r.crossed.join(','));
+  /* 跨线事实要能被记下来并存活一次存盘读回 —— 否则醒来那一下永远补不上。 */
+  s.deferred = [...new Set([...s.deferred, ...r.crossed])];
+  const back = normalize(JSON.parse(JSON.stringify(s)), new Date(t0.getTime() + 9 * 3_600_000));
+  ok(back.deferred.includes('food'), 'deferred 存得下来、读得回来', back.deferred.join(','));
+}
+
+console.log('\n[43] 目标兜底：老档没有 goals 时按当前住处补一条');
+{
+  const t0 = new Date('2026-11-15T12:00:00Z');
+  const s = freshState(t0);
+  const raw = JSON.parse(JSON.stringify(s));
+  raw.goals = [];
+  const back = normalize(raw, t0);
+  ok(back.goals.length === 1, '补回了一条目标', String(back.goals.length));
+  ok(back.goals[0].id === 'g-home-old', '指向上一档（城中村 → 老小区）', back.goals[0].id);
+
+  /* 已经住到别墅区的，不再立目标 —— 立了就是一个永远做不完的条。 */
+  const villa = JSON.parse(JSON.stringify(s));
+  villa.goals = [];
+  villa.home = { tenure: 'own', tier: 'villa', street: '', monthly: 7800, since: t0.toISOString() };
+  ok(normalize(villa, t0).goals.length === 0, '别墅区不补目标');
+}
+
+console.log('\n[44] 读书涨见识，见识决定考证的胜算（2026-11-17）');
+{
+  const t0 = new Date('2026-11-17T09:00:00Z');
+  const s = freshState(t0);
+  s.vitals = { food: 80, energy: 80, clean: 80, fun: 30, social: 60 };
+
+  ok(s.knowledge === 0, '新档见识从 0 起', String(s.knowledge));
+  const r = applyAct(s, 'study', t0);
+  ok(r.ok, '能读书');
+  ok(s.knowledge === 6, '读一次涨 6 点（要对抗衰减，见 KNOWLEDGE_PER_STUDY）', String(s.knowledge));
+  ok(s.vitals.fun > 30, '读书也补娱乐（Mr.Q：「加娱乐」）', String(s.vitals.fun));
+  ok(r.mood && r.mood.kind === 'good', '读进去了是好情绪');
+
+  /* 见识封顶，读成专家之后只补娱乐 */
+  s.knowledge = 100;
+  applyAct(s, 'study', new Date(t0.getTime() + 60_000));
+  ok(s.knowledge === 100, '见识封顶 100，不会溢出', String(s.knowledge));
+
+  /*
+   * 不看不学要退（2026-11-17 Mr.Q 追加）。
+   * 0.05/小时 → 一天 1.2；**按总时长算，睡觉也在忘**。
+   */
+  const s3 = freshState(t0);
+  s3.knowledge = 30;
+  advance(s3, new Date(t0.getTime() + 24 * 3_600_000));
+  ok(near(s3.knowledge, 28.8, 0.01), '一天不读掉 1.2', String(s3.knowledge));
+  const s4 = freshState(t0);
+  s4.knowledge = 5;
+  advance(s4, new Date(t0.getTime() + 30 * 24 * 3_600_000));
+  ok(s4.knowledge === 0, '一直不读掉到 0 就停，不会变负', String(s4.knowledge));
+
+  /* 干活也长见识，越高级越多；零工不长 */
+  const s5 = freshState(t0);
+  s5.vitals = { food: 90, energy: 90, clean: 90, fun: 90, social: 90 };
+  applyWork(s5, '搬货', t0, 'home');
+  ok(s5.knowledge === 0, '零工不长见识', String(s5.knowledge));
+
+  const s6 = freshState(t0);
+  s6.vitals = { food: 90, energy: 90, clean: 90, fun: 90, social: 90 };
+  s6.job.certs = ['护士执业证'];
+  s6.job.days = 40;
+  const pro = applyWork(s6, '社区护士', t0, 'home');
+  ok(pro.ok, `专业岗没接上：${pro.reason ?? ''}`);
+  ok(s6.knowledge > 0, '专业岗一天长见识', String(s6.knowledge));
+  ok(s6.knowledge < 6, '但比专心读一次书少', String(s6.knowledge));
+
+  /* 概率曲线：见识 0 一成半，达到 need 九成，封顶九成 */
+  const need = 40;
+  ok(near(certChance(0, need), 0.15, 0.001), '见识 0 → 15%', String(certChance(0, need)));
+  ok(near(certChance(20, need), 0.525, 0.001), '见识一半 → 52.5%', String(certChance(20, need)));
+  ok(near(certChance(need, need), 0.9, 0.001), '见识够了 → 90%', String(certChance(need, need)));
+  ok(near(certChance(100, need), 0.9, 0.001), '再高也不到 100%', String(certChance(100, need)));
+
+  /* 考砸：钱照扣、证没到手、情绪是坏的、当天不能再考 */
+  const s2 = freshState(t0);
+  s2.knowledge = 0;
+  s2.money.cash = 3000;
+  const fail = applyCert(s2, '厨师证', t0, 0.99);
+  ok(fail.ok && fail.passed === false, '考砸了也是一件「做过的事」', String(fail.passed));
+  ok(s2.money.cash === 2500, '报名费 500 照扣、不退', String(s2.money.cash));
+  ok(!s2.job.certs.includes('厨师证'), '没考过就没有证');
+  ok(s2.moodlets.some((m) => m.source === 'cert-fail' && m.kind === 'bad'), '考砸了要有坏情绪');
+  const sameDay = applyCert(s2, '厨师证', t0, 0);
+  ok(!sameDay.ok, '一天一张只考一次');
+  /* 第二天再来，这次骰子好 */
+  const nextDay = applyCert(s2, '厨师证', new Date(t0.getTime() + 86_400_000), 0);
+  ok(nextDay.ok && nextDay.passed === true, '第二天考过了');
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

@@ -58,7 +58,18 @@ export interface JobDef {
   /** 材料/出车前垫付成本（元）。干完再结，不够垫付接不了。 */
   materialCost?: number;
   /** 一天的代价。老版本是 −34 / −16 / −10 三样，这里按档加重，并加了社交。 */
-  load: { energy: number; clean: number; fun: number; social: number };
+  /**
+   * 一天的代价。**五条都要动**（2026-11-17 Mr.Q：「不同的工作也得消耗五维」）。
+   *
+   * 原来只有精力、清爽、娱乐、社交四条 —— 少了饱腹。
+   * 结果是「干了一整天活回来不饿」，那三顿饭跟出不出工没关系，
+   * 一天的口粮就成了纯背景开销。加上之后：干重的就多饿，得吃得好一点才补得回来。
+   *
+   * `know` 是**反向的**：这一天涨多少见识（2026-11-17 Mr.Q 第二条
+   * 「见识其实在工作的过程中也是能增长的，而且越高级的工作增长应该越多」）。
+   * 所以它不写在 `gain` 里也不带负号 —— 见 `applyWork`。
+   */
+  load: { energy: number; clean: number; fun: number; social: number; food: number; know: number };
 }
 
 /*
@@ -67,11 +78,19 @@ export interface JobDef {
  * 零工沿用老数字（−34 / −16 / −10 / 0）—— 那是 2026-11-15 之前的表现，不改它，
  * 老存档里的体感就不会突然变。
  */
+/**
+ * 一天的代价，按档分。
+ *
+ * `know`（涨多少见识）**跟着档位走** —— 越高级的活，一天里接触到的判断越多：
+ * 搬货搬一年还是搬货；带病人、算账、教课，干一天长一天的见识。
+ * 数值压得比读书低（读书一次 6）：**专心学永远比边干边学快**，
+ * 否则「读书」这条路就成了多余的。
+ */
 const LOAD: Record<JobTier, JobDef['load']> = {
-  odd: { energy: 34, clean: 16, fun: 10, social: 0 },
-  skilled: { energy: 36, clean: 18, fun: 12, social: 4 },
-  certified: { energy: 40, clean: 20, fun: 16, social: 8 },
-  professional: { energy: 44, clean: 22, fun: 20, social: 12 },
+  odd: { energy: 34, clean: 16, fun: 10, social: 0, food: 12, know: 0 },
+  skilled: { energy: 36, clean: 18, fun: 12, social: 4, food: 14, know: 0.5 },
+  certified: { energy: 40, clean: 20, fun: 16, social: 8, food: 16, know: 1 },
+  professional: { energy: 44, clean: 22, fun: 20, social: 12, food: 18, know: 1.5 },
 };
 
 const def = (
@@ -123,7 +142,7 @@ export function jobAllowedAt(job: JobDef, phase: 'home' | 'staying' | 'traveling
 }
 
 /**
- * 考证：一张证要多少钱、要几天。
+ * 考证：一张证要多少钱、要几天、**要多少见识**。
  *
  * ## 为什么证要花钱
  *
@@ -131,18 +150,26 @@ export function jobAllowedAt(job: JobDef, phase: 'home' | 'staying' | 'traveling
  * 花钱考证把门槛变成了一个**真的取舍**：手上有 3000，是去考一张 600 的驾照
  * （六天后日薪从 90 变 230），还是先搬去老小区？
  *
- * 天数一律 1 天，代价是精力 −20。不做多天培训：那要么是日程，
- * 要么是一段什么都不干的空转，两种都不好。
+ * ## 为什么加 `need`（2026-11-17 Mr.Q）
+ *
+ * 「娱乐的同时还能增长见识（考证的前提，见识越高考过的概率就越大）」。
+ *
+ * 在那之前考证是**花钱必成**：钱够、证就到手，一天一张，谁都能当护士。
+ * 现在多一道：见识不够就是考不过，报名费照扣。于是「先读书还是先攒钱」
+ * 变成了一个真问题 —— 而这是她该自己算的账。
+ *
+ * `need` 按「这张证有多难」定，不是按价格：驾照 600 只要 30（技术活，练就会），
+ * 社工证 550 要 45（要读的东西比驾照厚）。**价格是培训费，见识是门槛，两回事。**
  */
-export const CERTS: readonly { name: string; price: number; days: number }[] = [
-  { name: '护工证', price: 400, days: 1 },
-  { name: '驾照', price: 600, days: 1 },
-  { name: '厨师证', price: 500, days: 1 },
-  { name: '电工证', price: 450, days: 1 },
-  { name: '护士执业证', price: 800, days: 1 },
-  { name: '教师资格证', price: 700, days: 1 },
-  { name: '会计证', price: 750, days: 1 },
-  { name: '社工证', price: 550, days: 1 },
+export const CERTS: readonly { name: string; price: number; days: number; need: number }[] = [
+  { name: '护工证', price: 400, days: 1, need: 20 },
+  { name: '电工证', price: 450, days: 1, need: 30 },
+  { name: '驾照', price: 600, days: 1, need: 30 },
+  { name: '厨师证', price: 500, days: 1, need: 40 },
+  { name: '社工证', price: 550, days: 1, need: 45 },
+  { name: '教师资格证', price: 700, days: 1, need: 55 },
+  { name: '护士执业证', price: 800, days: 1, need: 60 },
+  { name: '会计证', price: 750, days: 1, need: 65 },
 ];
 
 export function certOf(name: string) {

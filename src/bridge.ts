@@ -28,6 +28,17 @@ export interface JourneyView {
   toName: string;
   /** 文件多久没更新了（秒）。太大说明 journey 停了。 */
   staleSec: number;
+  /**
+   * 旅行那边记账开着没有（2026-11-17）。
+   *
+   * 开着 = 这一趟的路费房费记在她账上（`life-spend` 条子）。
+   * 关着 = 他请客。两种都合法，但**她得知道是哪一种** ——
+   * 不然她会以为「出门不花钱」，然后在账上对不上。
+   */
+  moneyOn: boolean;
+  /** 这一趟累计花了多少、挣了多少（旅行那边的账）。 */
+  spent: number;
+  earned: number;
 }
 
 const EMPTY_JOURNEY: JourneyView = {
@@ -39,6 +50,9 @@ const EMPTY_JOURNEY: JourneyView = {
   speed: 1,
   toName: '',
   staleSec: 0,
+  moneyOn: false,
+  spent: 0,
+  earned: 0,
 };
 
 /**
@@ -74,7 +88,16 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
   const at = Date.parse(typeof raw.updatedAt === 'string' ? raw.updatedAt : '');
   const staleSec = Number.isFinite(at) ? Math.max(0, Math.round((now.getTime() - at) / 1000)) : 0;
 
-  return { installed: true, phase, cityId, cityName, worldNow, speed, toName, staleSec };
+  /* 记账这两格：读不到就当「不知道」（0 / false），不猜——猜错方向会让她乱花钱。 */
+  const spent = Number(raw.money?.spent);
+  const earned = Number(raw.money?.earned);
+
+  return {
+    installed: true, phase, cityId, cityName, worldNow, speed, toName, staleSec,
+    moneyOn: raw.money?.enabled === true,
+    spent: Number.isFinite(spent) ? spent : 0,
+    earned: Number.isFinite(earned) ? earned : 0,
+  };
 }
 
 /* ------------------------------------------------------------------ */

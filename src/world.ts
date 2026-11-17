@@ -7,7 +7,7 @@ import type {
 } from 'cortico/core/types.ts';
 import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
 import {
-  ACTS, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, LOW, MAX_PENDING, MAX_PLEDGES,
+  ACTS, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, LOW, MAX_PENDING, MAX_PLEDGES,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL,
   advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyGift, asleepRefusal, isAsleep,
   localDateKey, noteVisit, quoteMove, readyGoals,
@@ -15,7 +15,7 @@ import {
   appendLedger, readLedger, marketPrices, weatherOf,
   type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type Snapshot, type VitalKey,
 } from './state.ts';
-import { JOBS, jobAllowedAt } from './jobs.ts';
+import { JOBS, certOf, jobAllowedAt } from './jobs.ts';
 import {
   BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown,
   readPendingRequests, archivePendingRequest, fetchTownStalls, buyTownStall,
@@ -300,10 +300,11 @@ export class LifeWorld implements World {
      * 掉过线的那几条 —— 按配置的密度说。
      *
      * **睡着时不推**（2026-11-15）：半夜被自己的饥饿叫醒，那不是提醒，是打扰。
-     * 记录照记（`crossed` 是事实），只是不在她睡着的时候说出来 —— 醒来仍低自然会提。
+     * 但**不能连事实一起扔掉**（2026-11-17 修）：`crossed` 是一次性的，
+     * 丢掉之后醒来那一跳判的是「这一跳跨没跨」，永远不会再算到它，
+     * 于是那几条就此静音。现在先记进 `deferred`，醒来补发 —— 见 `flushCrossed`。
      */
-    const sleepingNow = isAsleep(this.state, now);
-    if (!sleepingNow) await this.reportCrossed(r.crossed, now, r.bottomed);
+    await this.flushCrossed(r, now);
 
     /* 饿醒了要说一声 —— 见 `reportHungryWake`。 */
     await this.reportHungryWake(r, now);
@@ -314,6 +315,33 @@ export class LifeWorld implements World {
         this.log?.warn(`模拟鱼生：存档失败 ${(e as Error).message}`);
       }
     }
+  }
+
+  /**
+   * 越线提醒的闸门：睡着先记账，醒着才开口。
+   *
+   * 和 `reportCrossed` 分两层的原因：那边只管「怎么把话说完」，
+   * 这边管「什么时候该说」。合成一个函数的话，「在睡」这个判断会被
+   * 复制到 tick 和工具入口两处 —— 漏一处就是半夜被吵。
+   */
+  private async flushCrossed(r: AdvanceResult, now: Date): Promise<void> {
+    if (isAsleep(this.state, now)) {
+      /*
+       * 在睡：只记不说。`bottomed` 也一起记 —— 见底比越线更该提，
+       * 只是同样不该在半夜提。醒来时按当时的真实值重算正文，
+       * 所以这里只存 key，不存「那会儿是多少」。
+       */
+      for (const k of [...r.crossed, ...r.bottomed]) {
+        if (!this.state.deferred.includes(k)) this.state.deferred.push(k);
+      }
+      return;
+    }
+    const carry = this.state.deferred ?? [];
+    this.state.deferred = [];
+    /* 昨夜欠下的和这一跳新跨的合并去重：同一条只提一次。 */
+    const merged = [...new Set([...carry, ...r.crossed])];
+    if (!merged.length && !r.bottomed.length) return;
+    await this.reportCrossed(merged, now, r.bottomed);
   }
 
   /**
@@ -368,8 +396,8 @@ export class LifeWorld implements World {
   private async settleBeforeTool(now: Date): Promise<void> {
     const r = advance(this.state, now);
     if (r.hours <= 0) return;
-    /* 工具能调，说明她已经醒了 —— 不用再判 `isAsleep`。 */
-    await this.reportCrossed(r.crossed, now, r.bottomed);
+    /* 工具能调，说明她已经醒了 —— `flushCrossed` 会走醒着那一支，昨夜欠的一起补。 */
+    await this.flushCrossed(r, now);
     await this.reportHungryWake(r, now);
     this.broadcastLife(now);
     try { this.store.save(this.state); } catch { /* 后续动作或下一跳会再存 */ }
@@ -392,7 +420,17 @@ export class LifeWorld implements World {
       const awake = !until || Date.parse(until) <= now.getTime();
       const file = join(this.opts.dataDir, 'life-public.json');
       const tmp = `${file}.tmp-${process.pid}`;
-      const allowance = Math.max(0, Math.round(this.state.money.cash * .5));
+      /*
+       * 旅行能动用多少：现金的 70%（2026-11-17 由 50% 上调）。
+       *
+       * 50% 那档是「留一半过日子」的保守写法，但它让「想去洛杉矶」这类念头
+       * 几乎永远算不起 —— 跨洲来回加住宿要几千，现金 2880 只放出 1440，
+       * 于是一个本来只需要多干十天活的计划变成了「永远差一半」。
+       *
+       * 70% 的账：留三成在家吃饭交房租（一天 60，够二十天），
+       * 剩下的才是真能拿去走远的。仍然是「能动用的」，不是「全部」。
+       */
+      const allowance = Math.max(0, Math.round(this.state.money.cash * .7));
       const w = weatherOf(this.town.name, now);
       writeFileSync(tmp, JSON.stringify({
         schema: 2,
@@ -584,22 +622,45 @@ export class LifeWorld implements World {
         ? `在去${this.journey.toName}的路上`
         : '';
     const tail = where ? `　·　${where}` : '';
-    /* 见底时间 = 现在的值 ÷ 每小时掉多少。除出来的，不是估的。 */
-    const hours = v / DECAY_PER_HOUR[key];
+    /*
+     * 见底时间 = 现在的值 ÷ 每小时掉多少。**除的必须是实际速率** ——
+     * 住处有减免之后还按基准速率算，别墅区说「2 小时见底」而实际是 3 小时，
+     * 那就是对她说了假话（2026-11-17 加减免时一并改的）。
+     * 精力不减，见 `HOME_TIER_RELIEF`。
+     */
+    const relief = key === 'energy' ? 1 : (HOME_TIER_RELIEF[this.state.home.tier] ?? 1);
+    const hours = v / (DECAY_PER_HOUR[key] * relief);
     const left = hours >= 1
       ? `按现在的掉法，${Math.round(hours)} 小时左右见底。`
       : '按现在的掉法，撑不到一小时。';
+    /*
+     * 「那时候你会怎么样」这句是 2026-11-17 Mr.Q 加的。
+     *
+     * 原来只给数字和「哪个动作能回多少」，她读得懂算术，却不知道**急不急** ——
+     * 19 点是「还能撑一晚」还是「一小时后动不了」，光看数算不出来。
+     * 补一句体感（腿软、发闷、屋里太静），数字才变成一个她能从身体上认出来的处境。
+     *
+     * 三档饭价照 `ACTS` 的实价写：好的 50/40 元、普通 30/15 元、随便 15/0 元。
+     * **文案不许跑得比实现快** —— 这里写什么价，`ACTS` 就得真是那个价。
+     */
     switch (key) {
       case 'food':
-        return `饱腹 ${v}，${left}吃一顿能回 30（15 元）；钱紧就将就吃一口，回 12。${tail}`;
+        return `饱腹 ${v}，${left}那时候你就饿得心里发慌了 —— 吃一顿好的回 50（40 元），吃得舒服，`
+          + '心里也顺；吃一顿普通的回 30（15 元），不饿了，也就那样；实在没钱就随便吃点，回 15，'
+          + `不饿了，但心里不痛快。手头宽就吃好的，紧才往下走一档。${tail}`;
       case 'energy':
-        return `精力 ${v}，${left}睡一觉，每睡一小时回 10，睡满八小时回 80，不花钱 —— 洗、玩、见人都要再扣精力，只有睡是往上走的。${tail}`;
+        return `精力 ${v}，${left}那时候你连抬手都嫌沉，坐着都想往下出溜。睡一觉每小时回 10，`
+          + '睡满八小时回 80，不花钱 —— 洗、玩、见人都要再扣精力，只有睡是往上走的。'
+          + `${tail}`;
       case 'clean':
-        return `清爽 ${v}，${left}洗个澡回 55，不花钱。${tail}`;
+        return `清爽 ${v}，${left}那时候身上发黏，自己都嫌弃自己。洗个澡回 55，不花钱，`
+          + `半小时的事。${tail}`;
       case 'fun':
-        return `娱乐 ${v}，${left}找点乐子回 38（22 元，要花 6 点精力）。${tail}`;
+        return `娱乐 ${v}，${left}那时候人会发闷，看什么都提不起劲，坐也不是站也不是。`
+          + `找点乐子回 38（22 元，要花 6 点精力）。${tail}`;
       case 'social':
-        return `社交 ${v}，${left}跟人说说话回 30（30 元，花 5 点精力）。${tail}`;
+        return `社交 ${v}，${left}那时候会觉得屋里太静，安静得能听见自己喘气。`
+          + `跟人说说话回 30（30 元，花 5 点精力）。${tail}`;
     }
   }
 
@@ -665,7 +726,11 @@ export class LifeWorld implements World {
       name: 'life_act',
       description:
         '你自己做一件事，身体会变。'
-        + '吃（eat）、睡（sleep）、洗（wash）、玩（play）、跟人说话（meet）、起来（wake）。'
+        + '吃分三档：**吃顿好的**（feast，40 元，最顶饱也最舒服）、**吃一顿**（eat，15 元，正常一顿）、'
+        + '**随便吃点**（instant，不花钱，能垫住但心里不痛快）；手头宽就吃好的，紧就往下走一档。'
+        + '**看会儿书**（study，不花钱，一小时，补娱乐也涨见识 6 点 —— 见识决定考证考不考得过，'
+        + '不看书它会退）。'
+        + '还有睡（sleep）、洗（wash）、玩（play）、跟人说话（meet）、起来（wake）。'
         + '**睡一觉是八个小时**，这八小时里你什么都做不了 —— 出门、出工、见人、搬家、考证都不行，'
         + '旅行那边也不会出发。精力按**睡过的钟点**算，每小时回 10，睡满八小时回 80；'
         + '睡两小时就起只回 20。'
@@ -683,7 +748,9 @@ export class LifeWorld implements World {
           kind: {
             type: 'string',
             enum: Object.keys(ACTS),
-            description: 'eat 吃 / sleep 睡 / wash 洗 / play 玩 / meet 见人 / wake 起来（只有睡着时才用得上）。',
+            description: '吃顿好的 feast（40 元）/ 吃一顿 eat（15 元）/ 随便吃点 instant（不花钱）/ '
+              + '看会儿书 study（涨见识，考证用得上）/ '
+              + '睡 sleep / 洗 wash / 玩 play / 见人 meet / 起来 wake（只有睡着时才用得上）。',
           },
         },
       },
@@ -729,6 +796,8 @@ export class LifeWorld implements World {
           .join('、');
         return {
           text: `${kind?.label ?? '做完了'}。${after ? `${after}。` : ''}`
+            /* 读书要报见识 —— 不然她不知道自己长进到哪儿了，下次还是瞎考。 */
+            + (kindId === 'study' ? `见识到 ${Math.round(this.state.knowledge)} 了。` : '')
             + (r.mood ? `眼下心里：${r.mood.text}。` : '')
             + `现在五条：${this.vitalsLine(r.vitals)}`,
         };
@@ -815,9 +884,13 @@ export class LifeWorld implements World {
     return {
       name: 'life_cert',
       description:
-        '去考一张证。花钱、花精力，考下来才能接要证的活。'
-        + '护工证 400 / 驾照 600 / 厨师证 500 / 电工证 450 / 护士执业证 800 / 教师资格证 700 / 会计证 750 / 社工证 550。'
-        + '钱不够就考不了，先攒。同一张证不用考两遍。',
+        '去考一张证。花钱、花精力，**考不考得过看你见识够不够**。'
+        + '护工证 400（要见识 20）/ 电工证 450（30）/ 驾照 600（30）/ 厨师证 500（40）/ '
+        + '社工证 550（45）/ 教师资格证 700（55）/ 护士执业证 800（60）/ 会计证 750（65）。'
+        + '**报名费先交，考不过不退**；见识越高，过的概率越大（见识 0 时只有一成半，够了就到九成）。'
+        + '见识靠两样涨：`life_act` 的 study（看书，一次 6 点）和出工（越高级的活长得越多）；'
+        + '**不学不看会退**，一天掉一点二。'
+        + '钱不够就考不了，先攒。同一张证不用考两遍，一天也只考一次。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -847,7 +920,23 @@ export class LifeWorld implements World {
           });
         }
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
-        return { text: `考下了${r.cert}，花了 ${r.paid} 元。手上还剩 ${r.cash} 元。` };
+        /*
+         * 过了和没过是两句话（2026-11-17）。
+         *
+         * 没过的时候**必须把胜算说出来**，否则她只知道「失败了」，
+         * 不知道下一步该干什么 —— 下一句很可能就是「那我再考一次」，
+         * 而钱就是这么烧掉的。给一个「先读几天书」的具体动作，比道歉有用。
+         */
+        if (r.passed) {
+          return { text: `考下了${r.cert}，花了 ${r.paid} 元。手上还剩 ${r.cash} 元。` };
+        }
+        const pct = Math.round((r.chance ?? 0) * 100);
+        return {
+          text: `没考过${r.cert}。报名费 ${r.paid} 元不退，手上还剩 ${r.cash} 元。`
+            + `这一次的把握本来就只有 ${pct}% —— 见识 ${Math.round(this.state.knowledge)}，`
+            + `这张证要 ${certOf(String(r.cert))?.need ?? 0}。`
+            + '想把胜算提上去，先读几天书（`life_act` 的 `study`，一次涨 4 点见识），明天再来考。',
+        };
       },
     };
   }
@@ -1397,12 +1486,43 @@ export class LifeWorld implements World {
     const ten = h.tenure === 'own' ? '买下的' : '租的';
     const stay = this.lodgingText(j);
     parts.push(`住：${stay}`);
-    parts.push(`住处：${HOME_TIER_LABEL[h.tier]}（${ten}），每月 ${h.monthly} 元`);
+    /*
+     * 住处的减免要写出来（2026-11-17）。
+     *
+     * 不写的话「越好的房子掉得越慢」只活在代码里 —— 她搬进去之后
+     * 感觉不到任何变化，那笔贵出好几倍的房租在她眼里就是白花。
+     * 说清「四条慢两成、精力照旧」，她才说得清「这钱值不值」。
+     */
+    const relief = HOME_TIER_RELIEF[h.tier] ?? 1;
+    const reliefText = relief < 1
+      ? `，除了精力，其余四条掉得慢 ${Math.round((1 - relief) * 100)}%`
+      : '，最便宜那档，四条照原速掉';
+    parts.push(`住处：${HOME_TIER_LABEL[h.tier]}（${ten}），每月 ${h.monthly} 元${reliefText}`);
     parts.push(s.job.what
       ? `做事：${s.job.what}，顶一天 ${s.job.daily} 元，一共出过 ${s.job.days} 天工`
       : '做事：现在没在做事（可以在本城里顶一天活，见 life_work）');
     if (s.job.certs.length) parts.push(`手上的证：${s.job.certs.join('、')}`);
+    /*
+     * 见识要单独一行（2026-11-17）。
+     *
+     * 它是「考证能不能过」的唯一变量，藏在代码里的数字对她等于不存在 ——
+     * 不给出来，她只知道「考砸了」，说不出「我还差多少」。
+     */
+    parts.push(`见识：${s.knowledge}（考证能不能过看它；读书和干活涨，不学还会退）`);
     parts.push(`钱：手上 ${s.money.cash} 元（累计进 ${s.money.earned} / 出 ${s.money.spent}）`);
+    /*
+     * 出门能用多少（2026-11-17）。
+     *
+     * 和 `broadcastLife` 里的 `travelAllowance` 是**同一个数**（现金七成）——
+     * 她这头看到的数必须和旅行那头扣的是同一个，不然「我想去洛杉矶」
+     * 会变成一个她自己都对不上账的念头。
+     */
+    parts.push(`出门能动用的：${Math.round(s.money.cash * .7)} 元（现金的七成，剩下三成是吃饭交房租的）`);
+    if (j.installed && j.moneyOn) {
+      parts.push(`旅行那边记账着：这一趟花了 ${j.spent} 元、挣了 ${j.earned} 元，都从上面这本账里走。`);
+    } else if (j.installed) {
+      parts.push('旅行那边没记账 —— 这一趟是他请客，不花你的钱。');
+    }
     if (s.goals.length) {
       parts.push(`目标：${s.goals.map((g) => {
         if (g.done) return `${g.what}（已经做到了）`;
@@ -1522,6 +1642,7 @@ export class LifeWorld implements World {
         `做事：${s.job.what || '现在没在做事'}`,
         `住：${this.lodgingText(j)}　${HOME_TIER_LABEL[s.home.tier]}（${s.home.tenure === 'own' ? '买下的' : '租的'}）`,
         `钱：手上 ${s.money.cash} 元`,
+        `见识：${s.knowledge}`,
       ].join('　·　'),
       'life.goal': s.goals.length
         ? s.goals.map((g) => {
@@ -1753,6 +1874,8 @@ export class LifeWorld implements World {
         versionOutdated: this.versionCheck.state().outdated,
         at: now.toISOString(),
         herNow: at.toISOString(),
+        /* 见识。面板那格读它 —— `snapshot()` 里也有，但面板走的是这一份。 */
+        knowledge: Math.round(this.state.knowledge),
         dayPart: DAYPART_LABEL[dayPart(at)],
         clock: `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
         clockGapHours: Math.round(clockGapHours(j, now) * 10) / 10,
