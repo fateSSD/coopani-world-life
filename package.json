@@ -1,6 +1,6 @@
 {
   "name": "coopani-world-life",
-  "version": "0.16.6",
+  "version": "0.16.7",
   "type": "module",
   "description": "模拟鱼生 · 给她一个小日子：会饿会困会闷、自己出门打工挣钱、看书考证、从城中村一步步攒钱搬进新家，还会用第一人称写下每天的生活日记。（需 Coopani 0.2.17+）",
   "author": {

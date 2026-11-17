@@ -859,7 +859,32 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
    * 空就按当前住处指向上一档重新立一条。已经有目标的不动；
    * 已经住到别墅区的也不再立（没得搬了，立了就是个永远做不完的条）。
    */
-  const goals = arr<Goal>(s.goals).filter((g) => g && typeof g.id === 'string');
+  const rawGoals = arr<Goal>(s.goals).filter((g) => g && typeof g.id === 'string');
+  /*
+   * **已经搬到的档位，那条住房目标就作废**（2026-11-17，Mr.Q 抓到）。
+   *
+   * 现场：面板写着「攒够 2400，搬到老小区」，而她**已经住进老小区了**。
+   * 根因是 `fallbackGoal()` 只在 `goals` 为空时才跑 —— 她一开局在城中村立的那条，
+   * 搬完家还挂在存档里，没人去动它。
+   *
+   * 住房目标只能指向「**当前档位的上一档**」。指向当前或更低档的一律剔掉，让它重算。
+   * 认不出的 id（别的版本写的、或手改的）留着 —— 不是这一版能判断的东西，别乱删。
+   */
+  const HOME_GOAL_PREFIX = 'g-home-';
+  const hereIdx = TIER_ORDER.indexOf(home.tier);
+  const hadHomeGoal = rawGoals.some((g) => g.id.startsWith(HOME_GOAL_PREFIX));
+  const goals = rawGoals.filter((g) => {
+    if (!g.id.startsWith(HOME_GOAL_PREFIX)) return true;
+    const idx = TIER_ORDER.indexOf(g.id.slice(HOME_GOAL_PREFIX.length) as HomeTier);
+    return !(idx >= 0 && idx <= hereIdx);
+  });
+  /*
+   * 剔掉之后**必须补回来**：她可能还挂着别的愿望（买台相机之类），
+   * 那就轮不到 `goals.length === 0` 那条兜底 —— 住房目标会静默消失，
+   * 攒房钱这件事又没了由头。这正是这条 bug 的第二个坑。
+   */
+  const stillHasHomeGoal = goals.some((g) => g.id.startsWith(HOME_GOAL_PREFIX));
+  const refillHome = hadHomeGoal && !stillHasHomeGoal;
   const money = normMoney(s.money, now);
   const fallbackGoal = (): Goal[] => {
     let target = nextHomeTier(home.tier);
@@ -912,7 +937,8 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     home,
     job: normJob(s.job),
     money,
-    goals: goals.length ? goals : fallbackGoal(),
+    /* 两种时候要补：一条目标都没有了，或者住房目标刚被剔掉。 */
+    goals: (goals.length === 0 || refillHome) ? [...goals, ...fallbackGoal()] : goals,
     nagged: (s.nagged && typeof s.nagged === 'object') ? s.nagged : {},
     spendApplied: arr(s.spendApplied).filter((x) => typeof x === 'string').slice(-120),
     deferred: arr<unknown>(s.deferred).filter((k): k is VitalKey => typeof k === 'string' && k in DECAY_PER_HOUR),
