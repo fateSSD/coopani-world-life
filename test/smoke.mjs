@@ -90,20 +90,21 @@ console.log('\n[5] 时间倒着走（时钟被拨回去）');
   ok(s.vitals.food === before.food, '五条一个数都没动');
 }
 
-console.log('\n[6] 做一件事');
+console.log('\n[6] 做一件事（按分钟结算）');
 {
   const t0 = new Date('2026-11-15T12:00:00Z');
   const s = freshState(t0);
   s.vitals.food = 40;
   const r = applyAct(s, 'eat', t0);
-  ok(r.ok, '吃了');
-  ok(near(s.vitals.food, 70, 0.01), '饱腹 40 → 70', String(s.vitals.food));
+  ok(r.ok && r.started, '开始吃了');
+  ok(near(s.vitals.food, 40, 0.01), '刚开吃不瞬间加满', String(s.vitals.food));
+  advance(s, new Date(t0.getTime() + ACTS.eat.minutes * 60_000));
+  ok(near(s.vitals.food, 70, 0.3), '吃满 40 分钟饱腹 40 → 70', String(s.vitals.food));
   /*
    * 2026-11-17 改：普通一顿**不挂情绪**。
-   * 「心情一般」不是一条情绪，是没起波澜 —— 挂 good 等于把普通一顿说得比实际好。
    */
-  ok(r.mood === null, '普通一顿不挂情绪', String(r.mood));
-  ok(s.tellable.length === 1, '记进 tellable 了 —— 她事后才有素材可讲', String(s.tellable.length));
+  ok(s.moodlets.length === 0, '普通一顿不挂情绪', String(s.moodlets.length));
+  ok(s.tellable.length === 1, '做完后记进 tellable 了 —— 她事后才有素材可讲', String(s.tellable.length));
 }
 
 console.log('\n[6b] 三档饭：好的回 50，随便的回 15');
@@ -112,18 +113,22 @@ console.log('\n[6b] 三档饭：好的回 50，随便的回 15');
   const s = freshState(t0);
   s.vitals.food = 20;
   const r = applyAct(s, 'feast', t0);
-  ok(r.ok, '吃了顿好的');
-  ok(near(s.vitals.food, 70, 0.01), '好的回 50', String(s.vitals.food));
-  ok(r.mood && r.mood.kind === 'good', '吃好的心情是好的');
-  ok(near(Date.parse(r.mood.expiresAt), t0.getTime() + 3 * 3_600_000, 1000),
+  ok(r.ok && r.started, '开始吃顿好的');
+  const tEnd = new Date(t0.getTime() + ACTS.feast.minutes * 60_000);
+  advance(s, tEnd);
+  ok(near(s.vitals.food, 70, 0.6), '好的 60 分钟回约 50', String(s.vitals.food));
+  const m = s.moodlets.find((x) => x.source === 'feast');
+  ok(!!m && m.kind === 'good', '吃好的心情是好的');
+  ok(m && near(Date.parse(m.expiresAt), tEnd.getTime() + 3 * 3_600_000, 1000),
     '好的一顿情绪 3 小时后过期');
 
   const s2 = freshState(t0);
   s2.vitals.food = 20;
   const r2 = applyAct(s2, 'instant', t0);
-  ok(r2.ok, '随便吃点了');
-  ok(near(s2.vitals.food, 35, 0.01), '随便的回 15', String(s2.vitals.food));
-  ok(r2.mood && r2.mood.kind === 'bad', '随便吃心里不痛快');
+  ok(r2.ok && r2.started, '开始随便吃点');
+  advance(s2, new Date(t0.getTime() + ACTS.instant.minutes * 60_000));
+  ok(near(s2.vitals.food, 35, 0.3), '随便的 15 分钟回 15', String(s2.vitals.food));
+  ok(s2.moodlets.some((x) => x.source === 'instant' && x.kind === 'bad'), '随便吃心里不痛快');
 }
 
 console.log('\n[6c] 住处越好，四条掉得越慢，精力不掉慢');
@@ -146,9 +151,15 @@ console.log('\n[7] 同一件事连着做，情绪不攒串');
 {
   const t0 = new Date('2026-11-15T12:00:00Z');
   const s = freshState(t0);
+  const dur = ACTS.feast.minutes * 60_000;
   applyAct(s, 'feast', t0);
-  applyAct(s, 'feast', new Date(t0.getTime() + 60_000));
-  applyAct(s, 'feast', new Date(t0.getTime() + 120_000));
+  advance(s, new Date(t0.getTime() + dur));
+  const t1 = new Date(t0.getTime() + dur + 60_000);
+  applyAct(s, 'feast', t1);
+  advance(s, new Date(t1.getTime() + dur));
+  const t2 = new Date(t1.getTime() + dur + 60_000);
+  applyAct(s, 'feast', t2);
+  advance(s, new Date(t2.getTime() + dur));
   ok(s.moodlets.length === 1, '只留最新那条', String(s.moodlets.length));
   /*
    * tellable 是另一回事：吃了三次就该记三条。
@@ -248,22 +259,24 @@ console.log('\n[12] 快照');
    * 十件：三档吃（feast / eat / instant）+ 睡 / 洗 / 玩 / 见人 / 做饭 / 小酌 + 「起来」。
    * `wake` 不是可有可无的补充 —— 睡着时所有动作都被拦，没有它她就永远醒不过来。
    */
-  ok(Object.keys(ACTS).length === 11, '十一件事（三档吃 + 读书 + 起来 + 做饭/小酌）', String(Object.keys(ACTS).length));
+  ok(Object.keys(ACTS).length === 28, '二十八件事（含新复合动作、wake 与 cancel）', String(Object.keys(ACTS).length));
   ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
+  ok(Boolean(ACTS.cancel) && ACTS.cancel.cost === 0, '「停下来」不花钱');
   ok(ACTS.feast.cost > ACTS.eat.cost && ACTS.eat.cost > ACTS.instant.cost, '三档饭价依次递减');
-  ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
 }
 
-console.log('\n[13] 钱：做事要花钱');
+console.log('\n[13] 钱：做事要花钱（随时间渐进扣款）');
 {
   const t0 = new Date('2026-11-15T12:00:00Z');
   const s = freshState(t0);
+  s.home.monthly = 0; // 排除日折算房租干扰，纯测动作扣款
   ok(s.money.cash === 3000, '起步 3000', String(s.money.cash));
   const r = applyAct(s, 'meet', t0);
-  ok(r.ok && r.cost === 30, '见人花 30', String(r.cost));
-  ok(s.money.cash === 2970, '余额扣了', String(s.money.cash));
+  ok(r.ok && r.started, '开始见人');
+  advance(s, new Date(t0.getTime() + ACTS.meet.minutes * 60_000));
+  ok(s.money.cash === 2970, '余额扣了 30', String(s.money.cash));
   ok(s.money.spent === 30, '记进支出', String(s.money.spent));
-  const free = applyAct(s, 'sleep', t0);
+  const free = applyAct(s, 'sleep', new Date(t0.getTime() + (ACTS.meet.minutes + 1) * 60_000));
   ok(free.cost === 0 && s.money.cash === 2970, '睡觉不花钱');
 }
 
@@ -278,24 +291,23 @@ console.log('\n[14] 钱不够：拒，但要给替代方案');
   ok(s.money.cash === 10, '拒绝了就不扣钱');
   const cheap = applyAct(s, 'instant', t0);
   ok(cheap.ok && cheap.cost === 0, '将就吃一口是免费的');
-  ok(cheap.mood && cheap.mood.kind === 'bad', '但吃完心里不痛快');
+  advance(s, new Date(t0.getTime() + ACTS.instant.minutes * 60_000));
+  ok(s.moodlets.some((m) => m.source === 'instant' && m.kind === 'bad'), '但吃完心里不痛快');
 }
 
-console.log('\n[15] 出工：一天一次');
+console.log('\n[15] 出工：一天一次（干满工时进账）');
 {
   const t0 = new Date('2026-11-15T09:00:00Z');
   const s = freshState(t0);
+  s.home.monthly = 0;
   const before = s.money.cash;
   const r = applyWork(s, '菜市场搬货', t0);
-  /*
-   * 2026-11-15：默认日薪从 120 改成 90 —— 新的 `freshState` 按零工价起步。
-   * 老存档里的 120 由 `normJob` 兜着，不会跟着降。
-   */
-  ok(r.ok && r.earned === 90, '挣了 90', String(r.earned));
-  ok(r.cash === before + 90, '到账了');
+  ok(r.ok && r.started, '开工了');
   ok(s.job.what === '菜市场搬货', '记住了干什么');
-  ok(s.job.days === 1, '计了一天工');
-  const again = applyWork(s, '再干一天', t0);
+  advance(s, new Date(t0.getTime() + (r.minutes || 240) * 60_000));
+  ok(s.money.cash === before + 90, '干满工时挣了 90 到账了', String(s.money.cash));
+  ok(s.job.days === 1, '计了一天工', String(s.job.days));
+  const again = applyWork(s, '再干一天', new Date(t0.getTime() + (r.minutes || 240) * 60_000 + 60_000));
   ok(!again.ok, '同一天不许出两次工', again.reason);
   const tomorrow = new Date(t0.getTime() + 24 * 3_600_000);
   s.vitals.energy = 80;
@@ -495,11 +507,15 @@ console.log('\n[28] 职业：门槛决定工资（2026-11-15）');
 {
   const t0 = new Date('2026-11-15T12:00:00Z');
   const s = freshState(t0);
+  s.home.monthly = 0;
   s.vitals.energy = 90;
 
   /* 零工：没有门槛，八九十 */
+  const cash0 = s.money.cash;
   const odd = applyWork(s, '搬货', t0);
-  ok(odd.ok && odd.earned === 90, '搬货一天 90', String(odd.earned));
+  ok(odd.ok && odd.started, '搬货开工');
+  advance(s, new Date(t0.getTime() + (odd.minutes || 240) * 60_000));
+  ok(s.money.cash - cash0 === 90, '搬货干完一天 90', String(s.money.cash - cash0));
 
   /* 有证的活，没证接不了，而且要说清怎么补 */
   const t1 = new Date(t0.getTime() + 86_400_000);
@@ -516,8 +532,11 @@ console.log('\n[28] 职业：门槛决定工资（2026-11-15）');
   ok(s.job.certs.includes('护工证'), '证记在她身上');
   const t2 = new Date(t0.getTime() + 2 * 86_400_000);
   s.vitals.energy = 90;
+  const cashBeforeCare = s.money.cash;
   const care = applyWork(s, '护工', t2);
-  ok(care.ok && care.earned === 210, '有证之后护工一天 210', String(care.earned));
+  ok(care.ok && care.started, '护工开工');
+  advance(s, new Date(t2.getTime() + (care.minutes || 360) * 60_000));
+  ok(s.money.cash - cashBeforeCare === 210, '有证之后护工一天 210', String(s.money.cash - cashBeforeCare));
 
   /* 同一张证不用考两遍 */
   const again = applyCert(s, '护工证', t2, 0);
@@ -531,7 +550,7 @@ console.log('\n[28] 职业：门槛决定工资（2026-11-15）');
   ok(!noDays.ok && /30 天/.test(String(noDays.reason)), '年头不够接不了护士', String(noDays.reason));
 }
 
-console.log('\n[29] 高薪的代价：档越高越累，专业那档还掉社交');
+console.log('\n[29] 高薪的代价：档越高越累，工作期间社交暂停衰减');
 {
   const t0 = new Date('2026-11-15T12:00:00Z');
   const mk = (job, certs = []) => {
@@ -539,16 +558,17 @@ console.log('\n[29] 高薪的代价：档越高越累，专业那档还掉社交
     s.vitals = { food: 90, energy: 90, clean: 90, fun: 90, social: 90 };
     s.job.certs = certs;
     s.job.days = 40;   // 年头门槛先满足，只测体力
-    applyWork(s, job, t0);
+    const r = applyWork(s, job, t0);
+    advance(s, new Date(t0.getTime() + (r.minutes || 240) * 60_000));
     return s;
   };
   const odd = mk('搬货');
   const pro = mk('会计', ['会计证']);
   ok(odd.vitals.social === 90, '零工不掉社交', String(odd.vitals.social));
-  ok(pro.vitals.social === 78, '专业岗掉 12 点社交', String(pro.vitals.social));
+  ok(pro.vitals.social === 90, '工作期间社交暂停衰减', String(pro.vitals.social));
   ok(pro.vitals.energy < odd.vitals.energy, '专业岗更耗精力',
     `${pro.vitals.energy} vs ${odd.vitals.energy}`);
-  ok(pro.vitals.fun < odd.vitals.fun, '专业岗更没力气玩');
+  ok(pro.vitals.fun < odd.vitals.fun, '专业岗娱乐微降略多于零工');
 }
 
 console.log('\n[30] 考证：钱不够就考不了');
@@ -808,7 +828,9 @@ console.log('\n[35] 工具入口先推进时间：掉过线的提醒不能被吞
   const low = pushed.filter((e) => e.type === 'life.low');
   ok(low.length > 0, '工具推进时把掉过线的说了', low.map((x) => x.text).join(' | '));
   ok(low.some((x) => /饱腹/.test(x.text)), '说的是饱腹那条', low.map((x) => x.text).join(' | '));
-  ok(w.state.vitals.food > 30, '然后她吃了，饱腹回来了', String(w.state.vitals.food));
+  /* 时间段制下：推进 40 分钟吃完，饱腹才回来 */
+  advance(w.state, new Date(Date.now() + ACTS.eat.minutes * 60_000));
+  ok(w.state.vitals.food > 30, '吃完 40 分钟后饱腹回来了', String(w.state.vitals.food));
   await w.stop();
 }
 
@@ -859,6 +881,8 @@ console.log('\n[37] 二期：统一账本流水与 life-pending 结算 + 公共�
   });
   await w.tick();
   await w.tools().find((x) => x.name === 'life_act').handler({ kind: 'eat' });
+  /* 吃一顿耗时 40 分钟，推进到结束后再读表验证 */
+  advance(w.state, new Date(Date.now() + ACTS.eat.minutes * 60_000));
   const pub = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
   ok(pub.schema === 2 && pub.ledger && pub.ledger.travelAllowance > 0, 'life-public.json 已升级 schema 2 并带 travelAllowance');
   ok(w.state.money.cash === 3000 - 200 + 50 - 15, 'pending 与吃东西扣钱全部对账正确', String(w.state.money.cash));
@@ -892,20 +916,30 @@ console.log('\n[39] 三期：完整五状态链（肠胃 / 宿醉 / 扭伤）');
 {
   const t = new Date('2026-11-16T10:00:00.000Z');
   const s = freshState(t);
-  applyAct(s, 'instant', t);
-  applyAct(s, 'instant', t);
-  applyAct(s, 'instant', t);
+  let cur = t;
+  for (let i = 0; i < 3; i++) {
+    applyAct(s, 'instant', cur);
+    cur = new Date(cur.getTime() + ACTS.instant.minutes * 60_000);
+    advance(s, cur);
+    cur = new Date(cur.getTime() + 60_000);
+  }
   ok(s.conditions.some((c) => c.id === 'stomach'), '连吃 3 次将就饭触发肠胃不适');
 
   const s2 = freshState(t);
-  applyAct(s2, 'drink', t);
-  applyAct(s2, 'drink', t);
+  let cur2 = t;
+  for (let i = 0; i < 2; i++) {
+    applyAct(s2, 'drink', cur2);
+    cur2 = new Date(cur2.getTime() + ACTS.drink.minutes * 60_000);
+    advance(s2, cur2);
+    cur2 = new Date(cur2.getTime() + 60_000);
+  }
   ok(s2.conditions.some((c) => c.id === 'hangover'), '连喝 2 次小酒触发宿醉');
 
   const s3 = freshState(t);
   s3.vitals.energy = 24;
   const wr = applyWork(s3, '搬货', t, 'home');
   ok(wr.ok && s3.conditions.some((c) => c.id === 'injury'), '低精力强行干体力活触发扭伤');
+  advance(s3, new Date(t.getTime() + (wr.minutes || 210) * 60_000));
   s3.vitals.energy = 60;
   const wr2 = applyWork(s3, '看店', new Date('2026-11-17T10:00:00.000Z'), 'home');
   ok(!wr2.ok && /扭伤/.test(wr2.reason || ''), '扭伤期间拦住体力活');
@@ -915,10 +949,13 @@ console.log('\n[40] 三期：职业 place 过滤 + 材料成本 + L2 市集买�
 {
   const t = new Date('2026-11-16T10:00:00.000Z');
   const s = freshState(t);
+  s.home.monthly = 0;
   const travelBlocked = applyWork(s, '看店', t, 'traveling');
   ok(!travelBlocked.ok && /在路上/.test(travelBlocked.reason || ''), '在路上不能接 home 活');
   const deliv = applyWork(s, '送外卖', t, 'home');
-  ok(deliv.ok && s.money.cash === 3000 - 8 + 95, '送外卖先扣 8 元成本再入账 95 元', String(s.money.cash));
+  ok(deliv.ok && s.money.cash === 3000 - 8, '送外卖开工先扣 8 元成本', String(s.money.cash));
+  advance(s, new Date(t.getTime() + (deliv.minutes || 210) * 60_000));
+  ok(s.money.cash === 3000 - 8 + 95, '干完后入账 95 元', String(s.money.cash));
 
   const prices = marketPrices(t);
   ok(prices.length === 3 && prices.every((p) => p.price > 0), '本地早市物价表正常');
@@ -945,15 +982,17 @@ console.log('\n[40] 三期：职业 place 过滤 + 材料成本 + L2 市集买�
   srv.close();
 }
 
-console.log('\n[41] 出工消耗五条（含饱腹）');
+console.log('\n[41] 出工消耗五条（含饱腹，但暂停社交和娱乐衰减）');
 {
   const t0 = new Date('2026-11-15T08:00:00Z');
   const s = freshState(t0);
   s.vitals = { food: 90, energy: 90, clean: 90, fun: 90, social: 90 };
   const r = applyWork(s, '搬货', t0, 'home');
-  ok(r.ok, '今天能出工');
-  ok(s.vitals.food < 90, '出工也掉饱腹（干一天活会饿）', String(s.vitals.food));
-  ok(s.vitals.energy < 90 && s.vitals.clean < 90 && s.vitals.fun < 90, '其余四条也照扣');
+  ok(r.ok && r.started, '今天能出工');
+  advance(s, new Date(t0.getTime() + (r.minutes || 210) * 60_000));
+  ok(s.vitals.food < 90, '出工也掉饱腹（干活会饿）', String(s.vitals.food));
+  ok(s.vitals.energy < 90 && s.vitals.clean < 90, '精力和清爽照扣');
+  ok(near(s.vitals.fun, 85, 0.2) && near(s.vitals.social, 90, 0.01), '工作期间暂停日常社交与娱乐衰减（仅按岗位 load 消耗）', `${s.vitals.fun}/${s.vitals.social}`);
 }
 
 console.log('\n[42] 睡着跨的线不会丢（deferred 落盘）');
@@ -1003,15 +1042,19 @@ console.log('\n[44] 读书涨见识，见识决定考证的胜算（2026-11-17�
 
   ok(s.knowledge === 0, '新档见识从 0 起', String(s.knowledge));
   const r = applyAct(s, 'study', t0);
-  ok(r.ok, '能读书');
-  ok(s.knowledge === 6, '读一次涨 6 点（要对抗衰减，见 KNOWLEDGE_PER_STUDY）', String(s.knowledge));
+  ok(r.ok && r.started, '能读书');
+  const tStudyEnd = new Date(t0.getTime() + ACTS.study.minutes * 60_000);
+  advance(s, tStudyEnd);
+  ok(near(s.knowledge, 6, 0.1), '读完一次涨约 6 点（见 KNOWLEDGE_PER_STUDY）', String(s.knowledge));
   ok(s.vitals.fun > 30, '读书也补娱乐（Mr.Q：「加娱乐」）', String(s.vitals.fun));
-  ok(r.mood && r.mood.kind === 'good', '读进去了是好情绪');
+  ok(s.moodlets.some((m) => m.source === 'study' && m.kind === 'good'), '读进去了是好情绪');
 
   /* 见识封顶，读成专家之后只补娱乐 */
   s.knowledge = 100;
-  applyAct(s, 'study', new Date(t0.getTime() + 60_000));
-  ok(s.knowledge === 100, '见识封顶 100，不会溢出', String(s.knowledge));
+  const t2 = new Date(tStudyEnd.getTime() + 60_000);
+  applyAct(s, 'study', t2);
+  advance(s, new Date(t2.getTime() + ACTS.study.minutes * 60_000));
+  ok(s.knowledge <= 100 && s.knowledge >= 99.9, '见识封顶 100，不会溢出', String(s.knowledge));
 
   /*
    * 不看不学要退（2026-11-17 Mr.Q 追加）。
@@ -1038,6 +1081,7 @@ console.log('\n[44] 读书涨见识，见识决定考证的胜算（2026-11-17�
   s6.job.days = 40;
   const pro = applyWork(s6, '社区护士', t0, 'home');
   ok(pro.ok, `专业岗没接上：${pro.reason ?? ''}`);
+  advance(s6, new Date(t0.getTime() + (pro.minutes || 480) * 60_000));
   ok(s6.knowledge > 0, '专业岗一天长见识', String(s6.knowledge));
   ok(s6.knowledge < 6, '但比专心读一次书少', String(s6.knowledge));
 
@@ -1091,6 +1135,7 @@ console.log('\n[46] 需求补回后解锁当日提醒 + 跨 15 紧急提醒 + �
   s.vitals.food = 25;
   s.nagged.food = localDateKey(t0);
   applyAct(s, 'eat', t0);
+  advance(s, new Date(t0.getTime() + ACTS.eat.minutes * 60_000));
   ok(s.vitals.food >= 45 && s.nagged.food === undefined, '吃回到 45 以上后清掉当日 nagged.food 锁');
 
   const s2 = freshState(t0);
@@ -1131,6 +1176,81 @@ console.log('\n[47] 生活日记、可改路径与双扩展分流 + diary 面板
   ok(/journey_diary_write/.test(tripBlock.text), '旅行期间提示用 journey_diary_write', tripBlock.text);
 
   await w.stop();
+}
+
+console.log('\n[48] 时间段制动作、新复合动作、打断惩罚与上班早退');
+{
+  const t0 = new Date('2026-11-18T10:00:00Z');
+  const s = freshState(t0);
+  s.vitals = { food: 70, energy: 80, clean: 80, fun: 40, social: 40 };
+
+  /* 1. 复合动作：找朋友逛商场（90 分钟，按分钟精力-0.01/社交+0.35/娱乐+0.35 等，总计 81 元） */
+  const mallStart = applyAct(s, 'mall', t0);
+  ok(mallStart.ok && mallStart.started && mallStart.minutes === 90, '开始逛商场 90 分钟');
+  ok(s.money.cash === 3000, '刚开局不扣光钱');
+  /* 进行中互斥拦截 */
+  ok(!applyAct(s, 'eat', new Date(t0.getTime() + 10 * 60_000)).ok, '逛商场途中不能再开吃');
+  ok(!applyWork(s, '搬货', new Date(t0.getTime() + 10 * 60_000), 'home').ok, '逛商场途中不能去上班');
+
+  /* 推进一半（45 分钟）：五维与花销大约各走一半 */
+  advance(s, new Date(t0.getTime() + 45 * 60_000));
+  ok(s.vitals.fun > 40 && s.vitals.social > 40 && s.vitals.energy < 80, '逛商场过半时娱乐社交渐增、精力微降');
+  ok(s.money.cash < 3000 && s.money.cash > 2919, '过半时按分钟累进扣了部分钱', String(s.money.cash));
+
+  /* 走完后半（90 分钟）：结清全部 */
+  advance(s, new Date(t0.getTime() + 90 * 60_000));
+  ok(!s.activity, '逛完 90 分钟后活动结束');
+  ok(s.money.cash === 3000 - 81, '逛商场 90 分钟结清 81 元', String(s.money.cash));
+
+  /* 2. 中途 cancel 打断普通动作（SPA 60m / 120元，做 20 分钟就停：扣约 40 元 + 扫兴） */
+  const s2 = freshState(t0);
+  const spaStart = applyAct(s2, 'spa', t0);
+  ok(spaStart.ok && spaStart.started, '开始做 SPA');
+  const tMid = new Date(t0.getTime() + 20 * 60_000);
+  advance(s2, tMid);
+  const cancelRes = applyAct(s2, 'cancel', tMid);
+  ok(cancelRes.ok && cancelRes.interruptedLabel === ACTS.spa.label, 'cancel 成功打断做 SPA');
+  ok(!s2.activity, '打断后活动清空');
+  ok(s2.money.cash < 3000 && cancelRes.mood?.kind === 'bad', '已花的钱不退且挂扫兴坏情绪', String(s2.money.cash));
+
+  /* 3. 上班早退：不满 30 分钟白干，满 30 分钟打 6 折，不涨 job.days 且当天不能重接 */
+  const s3 = freshState(t0);
+  s3.home.monthly = 0;
+  const wShort = applyWork(s3, '搬货', t0, 'home');
+  ok(wShort.ok && wShort.minutes && wShort.minutes >= 180 && wShort.minutes <= 240, '零工工时在 180-240 分钟', String(wShort.minutes));
+  const t15 = new Date(t0.getTime() + 15 * 60_000);
+  advance(s3, t15);
+  const cShort = applyAct(s3, 'cancel', t15);
+  ok(cShort.ok && (cShort.workEarned ?? 0) === 0, '不满 30 分钟早退白干', String(cShort.workEarned));
+  ok(s3.job.days === 0, '早退不涨工龄');
+  ok(!applyWork(s3, '搬货', new Date(t15.getTime() + 60_000), 'home').ok, '早退后当天不能重接');
+
+  const s4 = freshState(t0);
+  s4.home.monthly = 0;
+  const wHalf = applyWork(s4, '搬货', t0, 'home'); // 90 元 / 240 分钟
+  const tHalf = new Date(t0.getTime() + Math.round((wHalf.minutes || 240) / 2) * 60_000);
+  advance(s4, tHalf);
+  const cHalf = applyAct(s4, 'cancel', tHalf);
+  ok(cHalf.ok && cHalf.workEarned === 27, '干满一半早退按 6 折结算 (90 * 0.5 * 0.6 = 27)', String(cHalf.workEarned));
+  ok(s4.job.days === 0 && s4.money.cash === 3027, '不涨工龄且早退钱到账');
+
+  /* 4. 面板搬家：忙时返回明确原因，闲时搬成记流水并推 life.moved 通知肥鱼 */
+  const moveDir = mkdtempSync(join(tmpdir(), 'life-move-panel-'));
+  const movePushed = [];
+  const mw = new LifeWorld({ cfg: { ...LIFE_DEFAULTS(), enabled: true }, dataDir: moveDir, botName: '大肥鱼' });
+  await mw.start({
+    log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+    pushEvent: async (e) => { movePushed.push(e); return { ...e, blobs: [] }; },
+  });
+  await mw.tools().find((x) => x.name === 'life_act').handler({ kind: 'tea' });
+  const moveWhileBusy = await mw.panelInvoke('now', 'move', { tier: 'old' });
+  ok(moveWhileBusy.ok === false && /停下来/.test(moveWhileBusy.reason || ''), '忙时点面板搬家返回明确拦阻原因', moveWhileBusy.reason);
+  await mw.tools().find((x) => x.name === 'life_act').handler({ kind: 'cancel' });
+  const moveOk = await mw.panelInvoke('now', 'move', [{ tier: 'old' }]);
+  ok(moveOk.ok === true && mw.state.home.tier === 'old', '闲时面板搬家成功（兼容宿主数组传参 [{ tier }]）');
+  ok(movePushed.some((e) => e.type === 'life.moved' && /老小区/.test(e.text)), '面板搬家后推送 life.moved 通知肥鱼');
+  ok(readLedger(moveDir, 10).some((e) => e.source === 'life_move' && e.amount === 2400), '面板搬家押金记入账本');
+  await mw.stop();
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

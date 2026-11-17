@@ -10,7 +10,7 @@ import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
 import {
   ACTS, CRITICAL, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, LOW, MAX_PENDING, MAX_PLEDGES,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL,
-  advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyGift, asleepRefusal, isAsleep,
+  advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyGift, asleepRefusal, busyRefusal, isAsleep, isBusy,
   localDateKey, noteVisit, quoteMove, readyGoals,
   recentVisits, remember, snapshot, SLEEP_ENERGY_PER_HOUR,
   appendLedger, readLedger, marketPrices, weatherOf,
@@ -275,6 +275,7 @@ export class LifeWorld implements World {
     const r = advance(this.state, now);
     if (r.hours <= 0) return;
 
+    this.settleCompleted(r, now);
     let dirty = true;
 
     /* 病了 —— 这条要紧，用 flush。 */
@@ -331,7 +332,7 @@ export class LifeWorld implements World {
     const hr = at.getHours();
     const allOk = (Object.keys(this.state.vitals) as VitalKey[]).every((k) => this.state.vitals[k] >= LOW);
     if (
-      !isAsleep(this.state, now)
+      !isBusy(this.state, now)
       && hr >= 9 && hr <= 17
       && this.state.conditions.length === 0
       && this.state.vitals.energy >= 55
@@ -455,9 +456,36 @@ export class LifeWorld implements World {
    *
    * **推进出来的话一样要说**（阈值、饿醒），否则「开机第一件事就调工具」会把它们吞掉。
    */
+  private settleCompleted(r: AdvanceResult, now: Date): void {
+    for (const c of r.completed ?? []) {
+      if (c.kind === 'work' && c.workEarned > 0) {
+        appendLedger(this.opts.dataDir, {
+          id: `work-done-${c.id}-${now.getTime().toString(36)}`,
+          ts: now.toISOString(),
+          kind: 'income',
+          amount: c.workEarned,
+          source: 'life_work',
+          payee: '自己',
+          note: c.stoppedEarly ? `${c.label}（中途停工）` : c.label,
+        });
+      } else if (c.kind === 'act' && c.costPaid > 0) {
+        appendLedger(this.opts.dataDir, {
+          id: `act-done-${c.id}-${now.getTime().toString(36)}`,
+          ts: now.toISOString(),
+          kind: 'expense',
+          amount: c.costPaid,
+          source: 'life_act',
+          payee: c.label,
+          note: c.label,
+        });
+      }
+    }
+  }
+
   private async settleBeforeTool(now: Date): Promise<void> {
     const r = advance(this.state, now);
     if (r.hours <= 0) return;
+    this.settleCompleted(r, now);
     /* 工具能调，说明她已经醒了 —— `flushCrossed` 会走醒着那一支，昨夜欠的一起补。 */
     await this.flushCrossed(r, now);
     await this.reportHungryWake(r, now);
@@ -720,11 +748,24 @@ export class LifeWorld implements World {
         return `清爽 ${v}，${left}那时候身上发黏，自己都嫌弃自己。洗个澡回 55，不花钱，`
           + `半小时的事。${tail}`;
       case 'fun':
+        /*
+         * **补一条不花钱的退路**（2026-11-17）。原来只说「找点乐子 22 元」，
+         * 手头紧的时候这条提示等于告诉她「你现在补不起」。
+         * 同时把 38 改成 39 —— `ACTS.play` 实际是 `fun: 39`，文案写少了一个。
+         */
         return `娱乐 ${v}，${left}那时候人会发闷，看什么都提不起劲，坐也不是站也不是。`
-          + `找点乐子回 38（22 元，要花 6 点精力）。${tail}`;
+          + `找点乐子回 39（22 元，要花 6 点精力）；不想花钱就看会儿书，回 20，顺带还涨见识。${tail}`;
       case 'social':
+        /*
+         * 社交是唯一一条**免费路很慢**的：`meet` 一次回 31，而 `market` 只回 8、
+         * `pond` 只回 4。不给这两条，她看到「30 元」就只能拖到明天 ——
+         * 2026-11-17 Mr.Q 观察到的「吃饭会自动做、社交不动」就是这个造成的：
+         * 饱腹那条提示里明写了「实在没钱就随便吃点」，她有退路；
+         * 社交这条只说了付钱那一条，她没有。
+         */
         return `社交 ${v}，${left}那时候会觉得屋里太静，安静得能听见自己喘气。`
-          + `跟人说说话回 30（30 元，花 5 点精力）。${tail}`;
+          + `跟人说说话回 31（30 元，花 5 点精力）；不想花钱就逛早市集市（回 8）或望水坡（回 4）—— `
+          + `慢一点，多走两趟也上来了。${tail}`;
     }
   }
 
@@ -791,21 +832,16 @@ export class LifeWorld implements World {
     return {
       name: 'life_act',
       description:
-        '你自己做一件事，身体会变。'
-        + '吃分三档：**吃顿好的**（feast，40 元，最顶饱也最舒服）、**吃一顿**（eat，15 元，正常一顿）、'
-        + '**随便吃点**（instant，不花钱，能垫住但心里不痛快）；手头宽就吃好的，紧就往下走一档。'
-        + '**看会儿书**（study，不花钱，一小时，补娱乐也涨见识 6 点 —— 见识决定考证考不考得过，'
-        + '不看书它会退）。'
-        + '还有睡（sleep）、洗（wash）、玩（play）、跟人说话（meet）、起来（wake）。'
-        + '**睡一觉是八个小时**，这八小时里你什么都做不了 —— 出门、出工、见人、搬家、考证都不行，'
-        + '旅行那边也不会出发。精力按**睡过的钟点**算，每小时回 10，睡满八小时回 80；'
-        + '睡两小时就起只回 20。'
-        + '**睡着时唯一能做的动作是「起来」（wake）**，提前起就按已睡的钟点结算，没睡够的不补。'
-        + '**他跟你说话不算叫醒** —— 你只是在梦里听见有人说话，应一句就行；'
-        + '只有他明确让你起来，你才要想起不起来，而起不起还是你定。'
-        + '饱腹掉到 15 会**饿醒** —— 睡前吃没吃东西，这一觉睡不睡得完是不一样的。'
-        + '**这是你自己去做，不是别人让你做** —— 他让你吃饭的时候，你现在是不是饿、'
-        + '现在是不是吃饭的点，都由你自己判断；不想吃就别吃，说一句就行。',
+        '你自己开始做一件事。**除了 wake 和 cancel，所有动作都需要花一段时间** —— '
+        + '五维和花销会随着时间流逝按分钟慢慢结算，不是一调用就瞬间加满。'
+        + '正在做一件事（或睡觉、上班）时不能同时做别的；想中途打断当前动作或早退，用 `cancel`（钱不退、会扫兴，上班早退也有惩罚）。'
+        + '吃有五档：吃顿好的 feast（60m/40元）、吃一顿 eat（40m/15元）、随便吃点 instant（15m/0元）、买菜自己做 cook（55m/10元）、吃夜宵热汤面 supper（30m/18元）；'
+        + '喝的有：喝下午茶 tea（45m/28元）、小酌一杯 drink（60m/25元）、泡咖啡馆 cafe（60m/30元）；'
+        + '休息/洗护/锻炼：睡一觉 sleep（8h）、打个盹 nap（45m）、洗个澡 wash（20m）、做SPA spa（60m/120元）、晒太阳 sunbathe（30m）、整理房间 tidy（40m）、健身房 workout（60m/35元）；'
+        + '休闲/社交/见识：看会儿书 study（60m/涨见识）、玩会儿 play（45m）、找朋友逛商场 mall（90m/81元）、逛早市/夜市 market（40m/20元）、公园野餐 picnic（90m/45元）、'
+        + '看场电影 movie（120m/36元）、去KTV唱歌 karaoke（120m/96元）、逛美术馆 museum（90m/40元）、画会儿画 paint（75m/12元）、跟人说说话 meet（30m）、在池塘边发呆 pond（30m）；'
+        + '控制：睡着时起来 wake、打断当前动作/早退 cancel。'
+        + '**这是你自己去做，不是别人让你做** —— 不想做就别做，说一句就行。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -814,9 +850,8 @@ export class LifeWorld implements World {
           kind: {
             type: 'string',
             enum: Object.keys(ACTS),
-            description: '吃顿好的 feast（40 元）/ 吃一顿 eat（15 元）/ 随便吃点 instant（不花钱）/ '
-              + '看会儿书 study（涨见识，考证用得上）/ '
-              + '睡 sleep / 洗 wash / 玩 play / 见人 meet / 起来 wake（只有睡着时才用得上）。',
+            description: '动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/wash/spa/sunbathe/tidy/workout/'
+              + 'study/play/mall/market/picnic/movie/karaoke/museum/paint/meet/pond/wake/cancel。',
           },
         },
       },
@@ -834,15 +869,24 @@ export class LifeWorld implements World {
             kind: 'expense',
             amount: r.cost,
             source: 'life_act',
-            payee: ACTS[kindId]?.label ?? kindId,
-            note: ACTS[kindId]?.label ?? kindId,
+            payee: r.interruptedLabel ?? (ACTS[kindId]?.label ?? kindId),
+            note: kindId === 'cancel' ? `中途停下「${r.interruptedLabel ?? '活动'}」` : (ACTS[kindId]?.label ?? kindId),
+          });
+        }
+        if (r.workEarned && r.workEarned > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `work-early-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'income',
+            amount: r.workEarned,
+            source: 'life_work',
+            payee: '自己',
+            note: `${r.interruptedLabel ?? '出工'}（早退）`,
           });
         }
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
-        /* 睡下去、起来，都要立刻广播 —— 不等下一个 tickMs 窗口。 */
         this.broadcastLife(now);
 
-        /* 睡下了：**别写「精力 +80」** —— 那 80 是一小时后一小时攒出来的，不是现在就到手。 */
         if (kindId === 'sleep') {
           const until = Date.parse(this.state.asleepUntil);
           const at = new Date(until);
@@ -851,18 +895,37 @@ export class LifeWorld implements World {
           const willBe = Math.min(100, Math.round(this.state.vitals.energy + SLEEP_ENERGY_PER_HOUR * 8));
           return {
             text: `睡下了，八小时后醒（大约 ${hh}:${mm}）。这会儿精力 ${Math.round(this.state.vitals.energy)}，`
-              + `睡满的话醒来大约 ${willBe}。睡着这段时间，除了「起来」，别的事都做不了。`
+              + `睡满的话醒来大约 ${willBe}。睡着这段时间，除了「起来」（wake），别的事都做不了。`
               + '要是饱腹掉到 15，会饿醒。',
           };
         }
 
+        if (kindId === 'cancel') {
+          const earnTxt = r.workEarned && r.workEarned > 0 ? `早退折算拿到 ${r.workEarned} 元。` : '';
+          return {
+            text: `把「${r.interruptedLabel ?? '手头的事'}」停下了。${earnTxt}`
+              + (r.mood ? `眼下心里：${r.mood.text}。` : '')
+              + `现在五条：${this.vitalsLine(r.vitals)}`,
+          };
+        }
+
         const kind = ACTS[kindId];
+        if (r.started && this.state.activity) {
+          const at = new Date(Date.parse(this.state.activity.until));
+          const hh = String(at.getHours()).padStart(2, '0');
+          const mm = String(at.getMinutes()).padStart(2, '0');
+          const mins = r.minutes ?? kind?.minutes ?? 0;
+          return {
+            text: `开始「${kind?.label ?? kindId}」了，预计需要 ${mins} 分钟（大约 ${hh}:${mm} 做完）。`
+              + '这段时间五维和花销会慢慢结算；有急事可以用 `cancel` 中途停下，但钱不退还会扫兴。',
+          };
+        }
+
         const after = Object.entries(kind?.gain ?? {})
           .map(([k, d]) => `${VITAL_LABEL[k as VitalKey]} ${Number(d) > 0 ? '+' : ''}${d}`)
           .join('、');
         return {
           text: `${kind?.label ?? '做完了'}。${after ? `${after}。` : ''}`
-            /* 读书要报见识 —— 不然她不知道自己长进到哪儿了，下次还是瞎考。 */
             + (kindId === 'study' ? `见识到 ${Math.round(this.state.knowledge)} 了。` : '')
             + (r.mood ? `眼下心里：${r.mood.text}。` : '')
             + `现在五条：${this.vitalsLine(r.vitals)}`,
@@ -872,25 +935,18 @@ export class LifeWorld implements World {
   }
 
   /**
-   * 出工。
-   *
-   * 这是**一期的「职业」**：干什么由她自己填一句话，干一天拿一天的价。
-   * 方案的 66 种、五条通道、完成度系数都还没建 —— 但「没有进项的钱」是个死数，
-   * 一个只会变少的余额撑不过两天，所以先把「挣」这一半补上。
+   * 出工：现在也按职业工时走一段时间（零工 3-4h / 熟练 4.5-5h / 有证 6h / 专业 7-8h）。
    */
   private toolWork(): ToolDef {
     return {
       name: 'life_work',
       description:
-        '去顶一天活，挣这一天的钱。**一天一次**，按你本地的自然日算。'
-        + '价钱不一样：搬货、看店、端盘子、送外卖、发传单这类零工一天八九十；'
-        + '后厨帮工、装修小工、跑腿、摆摊这类熟练活一百三四（要干满三十天）；'
-        + '护工、网约车司机、厨师、电工要证、一天两百二到两百四；'
-        + '护士、代课老师、会计、社工要证又要有年头、一天三百到三百四。'
-        + '要证的活没证接不了 —— 证去考，用 `life_cert`。'
-        + '越贵的活越累：档越高扣得越多，专业那档一整天不在家，社交也掉。'
-        + '填表里的名字就按那个价；自己随口说的活按零工算，说了就记下，以后默认还是这个。'
-        + '精力低于 20 的时候去不了，那是身体真的动不了，不是不让你去。',
+        '去上班/出工挣钱。**一天一次**，按你本地的自然日算，**而且需要占用一段完整工时** —— '
+        + '零工约 3–4 小时（80–95 元）、熟练活约 4.5–5 小时（130–145 元，需满 30 天）、'
+        + '有证岗 6 小时（220–240 元，需考证）、专业岗 7–8 小时（300–340 元，需考证+年头）。'
+        + '干活期间社交和娱乐不会掉，但精力、清爽和饱腹会按职业强度加速消耗；干完收工才发全薪。'
+        + '中途可用 `life_act` 的 `cancel` 早退：干满 30 分钟按比例打六折、不满 30 分钟白干，都不涨工龄且当天不能重接。'
+        + '精力低于 20 或正在做别的事时去不了。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -912,23 +968,37 @@ export class LifeWorld implements World {
         if (!what && !this.state.job.what) {
           const avail = JOBS.filter((job) => jobAllowedAt(job, phase)).slice(0, 5);
           return {
-            text: `现在可接的活（挑一个填进 what）：${avail.map((a) => `${a.name}（${a.pay}元）`).join('、')}。`,
+            text: `现在可接的活（挑一个填进 what）：${avail.map((a) => `${a.name}（${a.pay}元/${a.minutes}分钟）`).join('、')}。`,
           };
         }
         const r = applyWork(this.state, what, now, phase);
         if (!r.ok) return { text: r.reason ?? '今天去不了。' };
-        if (r.earned > 0) {
+        if (r.materialPaid && r.materialPaid > 0) {
           appendLedger(this.opts.dataDir, {
-            id: `work-${now.getTime().toString(36)}`,
+            id: `work-mat-${now.getTime().toString(36)}`,
             ts: now.toISOString(),
-            kind: 'income',
-            amount: r.earned,
+            kind: 'expense',
+            amount: r.materialPaid,
             source: 'life_work',
-            payee: '自己',
-            note: this.state.job.what || '出工',
+            payee: '成本垫付',
+            note: `${this.state.job.what || '出工'}材料成本`,
           });
         }
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
+        this.broadcastLife(now);
+
+        if (r.started && this.state.activity) {
+          const at = new Date(Date.parse(this.state.activity.until));
+          const hh = String(at.getHours()).padStart(2, '0');
+          const mm = String(at.getMinutes()).padStart(2, '0');
+          const matTxt = r.materialPaid && r.materialPaid > 0 ? `已先垫付成本 ${r.materialPaid} 元。` : '';
+          return {
+            text: `去上「${this.state.job.what}」了，工时 ${r.minutes ?? 240} 分钟（预计 ${hh}:${mm} 收工），`
+              + `干完可得 ${r.expectedPay ?? 0} 元。${matTxt}`
+              + '干活期间社交和娱乐不会掉，但精力、清爽、饱腹会消耗；早退不满 30 分钟白干、满 30 分钟按比例打六折。',
+          };
+        }
+
         return {
           text: `干完了，挣了 ${r.earned} 元。手上现在 ${r.cash} 元。`
             + `现在五条：${this.vitalsLine(r.vitals)}`,
@@ -1084,9 +1154,9 @@ export class LifeWorld implements World {
       handler: async (args: any) => {
         const now = new Date();
         await this.settleBeforeTool(now);
-        /* 睡着出不了门。这条路不在 `applyAct` 里 —— 它自己改 vitals，得单独拦。 */
-        if (isAsleep(this.state, now)) {
-          return { text: asleepRefusal(this.state, now, '出门走走') };
+        /* 睡着或正在干别的事时出不了门。这条路不在 `applyAct` 里 —— 它自己改 vitals，得单独拦。 */
+        if (isBusy(this.state, now)) {
+          return { text: busyRefusal(this.state, now, '出门走走') };
         }
         const where = String(args?.where ?? '').trim() || '随便走走';
         const s = this.state;
@@ -1445,7 +1515,7 @@ export class LifeWorld implements World {
       handler: async (args: any) => {
         const now = new Date();
         await this.settleBeforeTool(now);
-        if (isAsleep(this.state, now)) return { text: asleepRefusal(this.state, now, '去买菜') };
+        if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去买菜') };
         const pick = String(args?.stall_id ?? '').trim();
         const url = String(this.cfg.townUrl ?? '').trim();
         if (!pick) {
@@ -1610,6 +1680,12 @@ export class LifeWorld implements World {
       parts.push(
         `在睡：还有 ${s.asleep.hoursLeft} 小时（睡满的话醒来精力约 ${s.asleep.energyAtWake}）。`
         + '除了「起来」（wake）什么也做不了。**他跟你说话不算叫醒**，起不起由你。',
+      );
+    } else if (s.activity) {
+      const pct = Math.round(s.activity.progress * 100);
+      parts.push(
+        `正在做：${s.activity.label}（已过 ${pct}%，还剩 ${s.activity.minutesLeft} 分钟）。`
+        + '做完前不能接别的活或做别的动作；要中途停下/早退可用 `life_act` 的 `cancel`（有惩罚）。',
       );
     }
 
@@ -1859,6 +1935,9 @@ export class LifeWorld implements World {
       'life.body': bodyText,
       'life.low': lowText,
       'life.state': [
+        s.asleep
+          ? `在睡（还有 ${s.asleep.hoursLeft} 小时）`
+          : (s.activity ? `正在「${s.activity.label}」（还剩 ${s.activity.minutesLeft} 分钟，${Math.round(s.activity.progress * 100)}%）` : ''),
         s.conditions.map((c) => c.text).join('；'),
         s.moodlets.map((m) => m.text).join('；'),
       ].filter(Boolean).join('　·　') || '没什么特别的',
@@ -2076,18 +2155,38 @@ export class LifeWorld implements World {
     }
 
     if (method === 'move') {
-      const tier = String((args as any)?.tier ?? '');
+      await this.settleBeforeTool(now);
+      const raw = Array.isArray(args) ? args[0] : args;
+      const tier = typeof raw === 'string' ? raw : String((raw as any)?.tier ?? '');
       if (!(tier in HOME_TIER_COST)) {
         return { ok: false, reason: `没有「${tier}」这一档。`, ...this.panelSnapshot(now) };
       }
       const r = applyMove(this.state, tier as HomeTier, now);
       if (r.ok) {
+        if (r.deposit > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `move-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.deposit,
+            source: 'life_move',
+            payee: HOME_TIER_LABEL[r.to],
+            note: `面板搬家押金（${HOME_TIER_LABEL[r.from]} → ${HOME_TIER_LABEL[r.to]}）`,
+          });
+        }
         try { this.store.save(this.state); } catch { /* 下一帧再存 */ }
+        this.broadcastLife(now);
+        await this.push(
+          'life.moved',
+          `他刚刚在面板上替你搬了家：${HOME_TIER_LABEL[r.from]} → ${HOME_TIER_LABEL[r.to]}（押金 ${r.deposit} 元，现在每月 ${this.state.home.monthly} 元，手上还剩 ${r.cash} 元）。`,
+          'flush',
+        );
       }
       return { ok: r.ok, reason: r.reason || '', ...this.panelSnapshot(now) };
     }
 
     if (method === 'snapshot' || method === '') {
+      await this.settleBeforeTool(now);
       return this.panelSnapshot(now);
     }
 
@@ -2137,6 +2236,8 @@ export class LifeWorld implements World {
         street: this.state.street,
         /* 她在睡的话：还有多久、醒来大约多少精力。醒着是 null。 */
         asleep: s.asleep,
+        /* 正在进行的非睡眠动作/上班，空闲或睡眠中是 null。 */
+        activity: s.activity,
         home: {
           tenure: this.state.home.tenure,
           tier: this.state.home.tier,

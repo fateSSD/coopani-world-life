@@ -77,6 +77,8 @@ const TEXT = {
     vitals: '五条',
     asleep: '在睡',
     asleepLeft: '还有 {h} 小时（醒来精力约 {e}）',
+    acting: '正在做：{label}',
+    actingLeft: '还剩 {m} 分钟（{p}%）',
     cond: '身上',
     mood: '心里',
     none: '没什么特别的',
@@ -160,6 +162,8 @@ const TEXT = {
     vitals: 'Needs',
     asleep: 'Asleep',
     asleepLeft: 'about {h}h left (energy ~{e} on waking)',
+    acting: 'Doing: {label}',
+    actingLeft: '{m} min left ({p}%)',
     cond: 'Body',
     mood: 'Mood',
     none: 'nothing unusual',
@@ -420,18 +424,29 @@ export default {
 
         app.append(head, sub, note, whoCard, jobCard, vitalsCard, goalCard, moveCard, moodRow, cols, helpBox, fbBox, foot);
 
-        const drawVitals = (vitals, low, asleep) => {
+        const drawVitals = (vitals, low, asleep, activity) => {
           vitalsCard.innerHTML = '';
           vitalsCard.append(el('h3', null, t(lang, 'vitals')));
           /*
-           * 「在睡」要写在五条上面。
-           *
-           * 不写的话，面板跟她读到的状态一样 —— 看着五条正常，以为她醒着，
-           * 然后奇怪为什么「出门」她不去。这是「世界里有这个状态、面板上读不到」。
+           * 「在睡」或「正在做什么」要写在五条上面，和状态文本对齐。
            */
           if (asleep) {
             vitalsCard.append(el('p', 'lf-muted',
               `${t(lang, 'asleep')} · ${t(lang, 'asleepLeft', { h: asleep.hoursLeft, e: asleep.energyAtWake })}`));
+          } else if (activity) {
+            const pct = Math.round((Number(activity.progress) || 0) * 100);
+            const row = el('div', 'lf-goal');
+            row.style.marginBottom = '10px';
+            const top = el('div', 'top');
+            top.append(el('span', null, t(lang, 'acting', { label: activity.label || activity.id })));
+            top.append(el('span', 'left', t(lang, 'actingLeft', { m: activity.minutesLeft ?? 0, p: pct })));
+            const track = el('div', 'track');
+            const fill = el('div', 'fill');
+            fill.style.width = Math.max(2, Math.min(100, pct)) + '%';
+            fill.style.background = '#2b6cb0';
+            track.append(fill);
+            row.append(top, track);
+            vitalsCard.append(row);
           }
           const lowKeys = new Set((low || []).map((x) => x.key));
           for (const key of Object.keys(vitals || {})) {
@@ -566,6 +581,7 @@ export default {
          * 它之所以被允许，是因为她自己也有 `life_move`（走同一个 `applyMove`），
          * 而且价先说清、按钮旁写明「这是你替她搬」。
          */
+        let moveTip = null; // { text, err, until }
         const drawMoves = (d) => {
           moveCard.innerHTML = '';
           moveCard.append(el('h3', null, t(lang, 'moves')));
@@ -574,6 +590,9 @@ export default {
             moveCard.append(el('p', 'lf-muted', t(lang, 'none')));
             return;
           }
+          const busyHint = d.asleep
+            ? '她正在睡觉，醒来后再搬'
+            : (d.activity ? `她正在「${d.activity.label}」，还剩 ${d.activity.minutesLeft} 分钟，停下来或做完后再搬` : '');
           for (const q of qs) {
             const row = el('div', 'lf-move' + (q.current ? ' now' : ''));
             row.append(el('span', 'nm', q.label));
@@ -592,12 +611,25 @@ export default {
               box.append(el('span', 'nowtag', t(lang, 'livingHere')));
             } else {
               const b = el('button', 'lf-btn', q.ok ? t(lang, 'moveTo') : t(lang, 'cantMove'));
-              b.disabled = !q.ok;
+              b.type = 'button';
+              b.disabled = !q.ok || Boolean(busyHint);
+              if (busyHint && q.ok) b.title = busyHint;
               b.setAttribute('data-move', q.tier);
               box.append(b);
             }
             row.append(box);
             moveCard.append(row);
+          }
+          if (busyHint) {
+            const p = el('p', 'lf-note-line', busyHint);
+            p.style.color = '#b45309';
+            moveCard.append(p);
+          }
+          if (moveTip && moveTip.until > Date.now()) {
+            const p = el('p', 'lf-note-line', moveTip.text);
+            p.style.color = moveTip.err ? '#c0392b' : '#2f855a';
+            p.style.fontWeight = '600';
+            moveCard.append(p);
           }
           moveCard.append(el('p', 'lf-note-line', t(lang, 'moveNote')));
         };
@@ -719,7 +751,7 @@ export default {
 
           drawWho(d);
           drawJob(d);
-          drawVitals(d.vitals, d.low, d.asleep);
+          drawVitals(d.vitals, d.low, d.asleep, d.activity);
           drawGoals(d);
           drawMoves(d);
 
@@ -881,12 +913,21 @@ export default {
           b.disabled = true;
           b.textContent = t(lang, 'moving');
           msg.textContent = '';
-          ctx.invoke('move', { tier })
+          ctx.invoke('move', [{ tier }])
             .then((r) => {
+              if (r && r.ok === false && r.reason) {
+                moveTip = { text: r.reason, err: true, until: Date.now() + 5000 };
+                msg.textContent = r.reason;
+              } else {
+                moveTip = { text: '搬过去了 ✓', err: false, until: Date.now() + 4000 };
+              }
               render(r);
-              if (r && r.ok === false && r.reason) msg.textContent = r.reason;
             })
-            .catch((e) => { msg.textContent = (e && e.message) || '没搬成'; })
+            .catch((e) => {
+              const errText = (e && e.message) || '没搬成';
+              moveTip = { text: errText, err: true, until: Date.now() + 5000 };
+              msg.textContent = errText;
+            })
             .finally(() => load());
         });
 

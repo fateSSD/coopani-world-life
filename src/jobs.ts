@@ -69,6 +69,9 @@ export interface JobDef {
    * 「见识其实在工作的过程中也是能增长的，而且越高级的工作增长应该越多」）。
    * 所以它不写在 `gain` 里也不带负号 —— 见 `applyWork`。
    */
+  /** 干完这一班需要多少分钟。 */
+  minutes: number;
+  /** 这一班干完的总代价（在工作期间按分钟分摊扣减；社交与娱乐暂停日常衰减）。 */
   load: { energy: number; clean: number; fun: number; social: number; food: number; know: number };
 }
 
@@ -86,11 +89,18 @@ export interface JobDef {
  * 数值压得比读书低（读书一次 6）：**专心学永远比边干边学快**，
  * 否则「读书」这条路就成了多余的。
  */
+const DEFAULT_MINUTES: Record<JobTier, number> = {
+  odd: 240,          // 4 小时
+  skilled: 300,      // 5 小时
+  certified: 360,    // 6 小时
+  professional: 420, // 7 小时
+};
+
 const LOAD: Record<JobTier, JobDef['load']> = {
-  odd: { energy: 34, clean: 16, fun: 10, social: 0, food: 12, know: 0 },
-  skilled: { energy: 36, clean: 18, fun: 12, social: 4, food: 14, know: 0.5 },
-  certified: { energy: 40, clean: 20, fun: 16, social: 8, food: 16, know: 1 },
-  professional: { energy: 44, clean: 22, fun: 20, social: 12, food: 18, know: 1.5 },
+  odd: { energy: 34, clean: 17, fun: 5, social: 0, food: 19, know: 0 },
+  skilled: { energy: 38, clean: 20, fun: 6, social: 0, food: 22, know: 0.5 },
+  certified: { energy: 42, clean: 22, fun: 6, social: 0, food: 25, know: 1 },
+  professional: { energy: 46, clean: 24, fun: 6, social: 0, food: 28, know: 1.5 },
 };
 
 const def = (
@@ -98,8 +108,8 @@ const def = (
   name: string,
   tier: JobTier,
   pay: number,
-  extra: Partial<Pick<JobDef, 'cert' | 'days' | 'place' | 'materialCost'>> = {},
-): JobDef => ({ id, name, tier, pay, place: 'home', load: LOAD[tier], ...extra });
+  extra: Partial<Pick<JobDef, 'cert' | 'days' | 'place' | 'materialCost' | 'minutes'>> = {},
+): JobDef => ({ id, name, tier, pay, place: 'home', minutes: DEFAULT_MINUTES[tier], load: LOAD[tier], ...extra });
 
 /**
  * 十八种，四档 + 三档地点过滤（home / anywhere / destination）。
@@ -108,30 +118,30 @@ const def = (
  * 加任何职业之前先拿这一条判一次。
  */
 export const JOBS: readonly JobDef[] = [
-  // 零工：谁都能干，说走就走
-  def('porter', '搬货', 'odd', 90, { place: 'anywhere' }),
-  def('shopkeeper', '看店', 'odd', 85, { place: 'home' }),
-  def('waiter', '端盘子', 'odd', 90, { place: 'destination' }),
-  def('delivery', '送外卖', 'odd', 95, { place: 'home', materialCost: 8 }),
-  def('flyer', '发传单', 'odd', 80, { place: 'destination' }),
+  // 零工：谁都能干，说走就走（3~4 小时）
+  def('porter', '搬货', 'odd', 90, { place: 'anywhere', minutes: 240 }),
+  def('shopkeeper', '看店', 'odd', 85, { place: 'home', minutes: 240 }),
+  def('waiter', '端盘子', 'odd', 90, { place: 'destination', minutes: 240 }),
+  def('delivery', '送外卖', 'odd', 95, { place: 'home', materialCost: 8, minutes: 210 }),
+  def('flyer', '发传单', 'odd', 80, { place: 'destination', minutes: 180 }),
 
-  // 熟练工：干满一个月，或者有人介绍
-  def('kitchen', '后厨帮工', 'skilled', 140, { days: 30, place: 'destination' }),
-  def('renovation', '装修队小工', 'skilled', 150, { days: 30, place: 'home' }),
-  def('errand', '跑腿代办', 'skilled', 130, { days: 30, place: 'home', materialCost: 10 }),
-  def('stall', '早市摆摊', 'skilled', 145, { days: 30, place: 'home', materialCost: 25 }),
+  // 熟练工：干满一个月，或者有人介绍（5 小时）
+  def('kitchen', '后厨帮工', 'skilled', 140, { days: 30, place: 'destination', minutes: 300 }),
+  def('renovation', '装修队小工', 'skilled', 150, { days: 30, place: 'home', minutes: 300 }),
+  def('errand', '跑腿代办', 'skilled', 130, { days: 30, place: 'home', materialCost: 10, minutes: 270 }),
+  def('stall', '早市摆摊', 'skilled', 145, { days: 30, place: 'home', materialCost: 25, minutes: 270 }),
 
-  // 有证：一天的钱够她吃住两天，但那张证要一笔投入
-  def('caregiver', '护工', 'certified', 210, { cert: '护工证', place: 'home' }),
-  def('driver', '网约车司机', 'certified', 230, { cert: '驾照', place: 'home', materialCost: 45 }),
-  def('cook', '厨师', 'certified', 240, { cert: '厨师证', place: 'destination' }),
-  def('electrician', '电工', 'certified', 220, { cert: '电工证', place: 'home', materialCost: 15 }),
+  // 有证：一天的钱够她吃住两天，但那张证要一笔投入（6 小时）
+  def('caregiver', '护工', 'certified', 210, { cert: '护工证', place: 'home', minutes: 360 }),
+  def('driver', '网约车司机', 'certified', 230, { cert: '驾照', place: 'home', materialCost: 45, minutes: 360 }),
+  def('cook', '厨师', 'certified', 240, { cert: '厨师证', place: 'destination', minutes: 360 }),
+  def('electrician', '电工', 'certified', 220, { cert: '电工证', place: 'home', materialCost: 15, minutes: 360 }),
 
-  // 专业：证 + 经验，两个都要
-  def('nurse', '社区护士', 'professional', 330, { cert: '护士执业证', days: 30, place: 'home' }),
-  def('teacher', '小学代课老师', 'professional', 320, { cert: '教师资格证', days: 30, place: 'home' }),
-  def('accountant', '会计', 'professional', 340, { cert: '会计证', days: 30, place: 'anywhere' }),
-  def('socialworker', '社区社工', 'professional', 300, { cert: '社工证', days: 30, place: 'home' }),
+  // 专业：证 + 经验，两个都要（7~8 小时）
+  def('nurse', '社区护士', 'professional', 330, { cert: '护士执业证', days: 30, place: 'home', minutes: 480 }),
+  def('teacher', '小学代课老师', 'professional', 320, { cert: '教师资格证', days: 30, place: 'home', minutes: 420 }),
+  def('accountant', '会计', 'professional', 340, { cert: '会计证', days: 30, place: 'anywhere', minutes: 420 }),
+  def('socialworker', '社区社工', 'professional', 300, { cert: '社工证', days: 30, place: 'home', minutes: 420 }),
 ];
 
 /** 判断某份活在当前位置阶段能否接：在路上只能接 anywhere；在外地可接 anywhere+destination；在家可接 home+anywhere。 */

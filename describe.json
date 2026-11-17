@@ -88,7 +88,7 @@
     },
     {
       "name": "life_act",
-      "description": "自己做一件事：吃（三档：吃顿好的 feast / 吃一顿 eat / 随便吃点 instant）、睡、起来（wake，睡着时唯一能做的事）、洗、玩、跟人说话、买菜自己做、喝两口。身体会变。",
+      "description": "自己开始做一件事（除了 wake 和 cancel，都需要花一段时间，五维与花销随时间按分钟结算）：吃（feast/eat/instant/cook/supper）、喝（tea/drink/cafe）、休息洗护（sleep/nap/wash/spa/sunbathe/tidy/workout）、休闲社交见识（study/play/mall/market/picnic/movie/karaoke/museum/paint/meet/pond）、起来（wake）、中途停下/早退（cancel）。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -102,14 +102,31 @@
               "feast",
               "eat",
               "instant",
-              "sleep",
-              "wake",
-              "wash",
-              "play",
-              "meet",
               "cook",
+              "tea",
+              "supper",
+              "sleep",
+              "nap",
+              "wash",
+              "spa",
+              "sunbathe",
+              "tidy",
+              "meet",
+              "mall",
+              "cafe",
+              "karaoke",
+              "picnic",
+              "market",
               "drink",
-              "study"
+              "study",
+              "play",
+              "movie",
+              "museum",
+              "paint",
+              "workout",
+              "pond",
+              "wake",
+              "cancel"
             ]
           }
         }
@@ -118,13 +135,13 @@
         "write"
       ],
       "summary": {
-        "zh": "吃睡洗玩见人，自己决定。",
-        "en": "Eat, sleep, wash, play or meet — on her own call."
+        "zh": "自己做一件事（随时间慢慢结算）。",
+        "en": "Start an activity that progresses over time."
       }
     },
     {
       "name": "life_work",
-      "description": "去顶一天活，挣这一天的钱。一天一次。价钱按活分档：零工八九十、熟练活一百三四、要证的活两百多、要证又要年头的三百多。",
+      "description": "去上班/出工挣钱。一天一次，按职业工时走一段时间（零工 3-4h / 熟练 4.5-5h / 有证 6h / 专业 7-8h），干完才发全薪。期间社交娱乐暂停衰减但精力清爽饱腹加速消耗；可用 cancel 早退但有惩罚。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -138,8 +155,8 @@
         "write"
       ],
       "summary": {
-        "zh": "顶一天活挣钱（不同活不同价）。",
-        "en": "Work a day for pay; the rate depends on the job."
+        "zh": "去上班挣钱（按工时推进，干完发薪）。",
+        "en": "Start a shift of work; paid upon completion."
       }
     },
     {
@@ -434,6 +451,14 @@
         "en": "She recovered."
       },
       "trigger": "debounce"
+    },
+    {
+      "type": "life.moved",
+      "description": {
+        "zh": "他在面板上替她搬了家。",
+        "en": "He moved her to a new housing tier from the panel."
+      },
+      "trigger": "flush"
     }
   ]
 }

@@ -353,6 +353,25 @@ export const MAX_PLEDGES = 5;
 /** 悬着的事自动消几天。 */
 export const PENDING_TTL_DAYS = 7;
 
+export interface ActiveTask {
+  kind: 'act' | 'work';
+  id: string;
+  label: string;
+  from: string;
+  until: string;
+  minutes: number;
+  /** 活动期间每分钟五维变化率（覆盖日常通用衰减）。 */
+  perMin: Partial<Record<VitalKey, number>>;
+  knowPerMin?: number;
+  costPerMin?: number;
+  costAcc?: number;
+  costPaid?: number;
+  /** 仅 work 用：干满应得工资与档位。 */
+  workPay?: number;
+  workTier?: 'odd' | 'skilled' | 'certified' | 'professional';
+  mood?: { text: string; kind: 'good' | 'bad'; hours: number };
+}
+
 export interface LifeState {
   version: number;
   /** 上一次推进的时刻。衰减的起点，**必须是真实时刻**。 */
@@ -404,6 +423,8 @@ export interface LifeState {
    * 用它判，不判「当前动作是不是 sleep」：动作是瞬时的，睡是**一段时间**。
    */
   asleepUntil: string;
+  /** 当前正在进行的活动或工作（时间段制）。 */
+  activity?: ActiveTask | null;
   /**
    * 见识（0–100）。**只增不减，不进「五条」。**
    *
@@ -539,163 +560,138 @@ export const KNOWLEDGE_DECAY_PER_HOUR = 0.05;
 /** 见识封顶。到顶之后再读只补娱乐，不再涨 —— 读成专家就没意思了。 */
 export const KNOWLEDGE_MAX = 100;
 
-/** 她的行为表。她「做」一件事，就跳一下对应的条。 */
+/** 她的行为表。除了 wake / cancel，每件事都要花一段真实时间，按分钟慢慢生效。 */
 export interface ActKind {
   id: string;
   /** 中文名，给她说话用。 */
   label: string;
-  /** 耗时（分钟）。用来判「这件事做完了没有」，以及她一天能做几件。 */
+  /** 耗时（分钟）。0 表示瞬时控制指令（wake / cancel）。 */
   minutes: number;
-  /**
-   * 要花多少钱。**免费也是一个明确的值**（0），不是省略 ——
-   * 省略的话「这件事花不花钱」要靠人记，而漏记一次就是她的账对不上。
-   */
+  /** 预计总花费（元）。免费为 0。 */
   cost: number;
+  /** 累计总收益（兼容参考），实际结算按 `perMin` 每分钟流逝。 */
   gain: Partial<Vitals>;
+  /** 每分钟五维净变化率（在活动期间替代醒着时的日常衰减）。 */
+  perMin: Partial<Record<VitalKey, number>>;
+  /** 做完一整个动作共涨多少见识（按分钟分摊）。 */
+  know?: number;
   /** 做完可能产生的情绪。 */
   mood?: { text: string; kind: 'good' | 'bad'; hours: number };
 }
 
+const r2 = (n: number) => Math.round(n * 1000) / 1000;
+const mkAct = (
+  id: string,
+  label: string,
+  minutes: number,
+  cost: number,
+  gain: Partial<Vitals>,
+  opts: {
+    perMin?: Partial<Record<VitalKey, number>>;
+    know?: number;
+    mood?: { text: string; kind: 'good' | 'bad'; hours: number };
+  } = {},
+): ActKind => {
+  const perMin: Partial<Record<VitalKey, number>> = opts.perMin ? { ...opts.perMin } : {};
+  if (!opts.perMin && minutes > 0) {
+    for (const [k, v] of Object.entries(gain)) {
+      perMin[k as VitalKey] = r2(Number(v) / minutes);
+    }
+  }
+  return { id, label, minutes, cost, gain, perMin, know: opts.know, mood: opts.mood };
+};
+
 export const ACTS: Record<string, ActKind> = {
-  /*
-   * 吃，分三档（2026-11-17 Mr.Q）。
-   *
-   * 原来只有「吃」（30 元档）和「将就吃一口」，中间少一档、上面也少一档，
-   * 于是 2880 块和 200 块吃的是同一顿饭 —— 钱多钱少在吃上没差别，
-   * 「挣得多一点就能吃好一点」这条最直接的因果就断了。
-   *
-   * 三档的分法照他的话：好的回 50、普通的回 30、随便的回 15。
-   * 情绪也跟着分：好的是好事，普通的不往心里去（不挂情绪），随便的心里不痛快。
-   */
-  feast: {
-    id: 'feast',
-    label: '吃顿好的',
-    minutes: 60,
-    cost: 40,
-    gain: { food: 50, fun: 6 },
+  // ---- 饮食类 ----
+  feast: mkAct('feast', '吃顿好的', 60, 40, { food: 50, fun: 7, social: 2 }, {
     mood: { text: '吃得舒服，心里也顺', kind: 'good', hours: 3 },
-  },
-  eat: {
-    id: 'eat',
-    label: '吃一顿',
-    minutes: 40,
-    cost: 15,
-    gain: { food: 30 },
-    /*
-     * **不挂情绪** —— 「心情一般」不是一条情绪，是没起波澜。
-     * 原来这里是 good「吃得挺舒服」，那等于把普通一顿说得比实际好。
-     */
-  },
-  sleep: {
-    id: 'sleep',
-    label: '睡觉',
-    /* 8 小时，**真的会读**：睡下时设 asleepFrom / asleepUntil，这段时间她做不了别的。 */
-    minutes: 8 * 60,
-    cost: 0,
-    /*
-     * 一条都不跳（2026-11-15 改）。
-     *
-     * 原来这里是 `{energy: 80, clean: -8}` —— 睡下那一瞬间就打进去。
-     * 两个毛病：① 睡十秒起来也拿满 80；② 之后那 8 小时 tick 照常扣，
-     * 实际到手只有 43，而提醒里写着「回 80」，等于对她说了假话。
-     *
-     * 现在精力和清爽都交给 `advance()` 按时长结算：睡着每小时 +10 精力、
-     * −1.0 清爽。见 `SLEEP_DECAY_PER_HOUR`。
-     */
-    gain: {},
-    /* 情绪也不在这里挂 —— 挂上了要 8 小时才醒，4 小时的情绪早就过期了。见 advance。 */
-  },
-  /*
-   * 「起来」。
-   *
-   * **它是「睡着时唯一能干的事」**，不是可有可无的补充：如果睡着期间所有动作
-   * 都被禁，而「醒来」原本靠「做别的动作」触发，她就永远醒不过来 —— 死锁。
-   * 这个动作什么都不改，只把 asleep 清掉、按睡过的钟点结算。
-   */
-  wake: {
-    id: 'wake',
-    label: '起来',
-    minutes: 0,
-    cost: 0,
-    gain: {},
-  },
-  wash: {
-    id: 'wash',
-    label: '洗澡',
-    minutes: 30,
-    cost: 0,
-    gain: { clean: 55, energy: -4 },
-    mood: { text: '身上清爽了', kind: 'good', hours: 3 },
-  },
-  play: {
-    id: 'play',
-    label: '找点乐子',
-    minutes: 60,
-    cost: 22,
-    gain: { fun: 38, energy: -6 },
-    mood: { text: '玩得挺高兴', kind: 'good', hours: 3 },
-  },
-  /*
-   * 「将就吃一口」。
-   *
-   * 它存在的唯一理由是**钱会花光**。没有这一格，余额见底那天她就只能饿着，
-   * 而那不是困境，是死局 —— 一个没法自救的系统不会让人心疼，只会让人关掉它。
-   * 免费、补得少、情绪是负的：能活，但吃得不开心。
-   */
-  instant: {
-    id: 'instant',
-    label: '随便吃点',
-    minutes: 15,
-    cost: 0,
-    /*
-     * 12 → 15（2026-11-17）：三档拉开之后，12 和普通的 30 差得太远，
-     * 变成「吃与不吃」而不是「吃得好不好」。15 刚好是「能活着，但心里不痛快」。
-     */
-    gain: { food: 15 },
+  }),
+  eat: mkAct('eat', '吃一顿', 40, 15, { food: 30 }),
+  instant: mkAct('instant', '随便吃点', 15, 0, { food: 15 }, {
     mood: { text: '凑合一口，心里有点不是滋味', kind: 'bad', hours: 2 },
-  },
-  /*
-   * 读书（2026-11-17 Mr.Q）。
-   *
-   * 「加娱乐，娱乐的同时还能增长见识」。所以它是**两用**：补娱乐（比「找点乐子」少
-   * 一半多：那是玩，这是啃），并涨见识。**免费** —— 一个要花钱才能长见识的世界，
-   * 穷的时候就被锁死在这条路外面，那不是取舍，是门槛。
-   *
-   * 代价是时间和精力（一小时、−3 精力）。一小时换 4 点见识：
-   * 一张要 40 的证，得读十天。
-   */
-  study: {
-    id: 'study',
-    label: '看会儿书',
-    minutes: 60,
-    cost: 0,
-    gain: { fun: 20, energy: -3 },
-    mood: { text: '看进去一段，脑子亮了一下', kind: 'good', hours: 3 },
-  },
-  meet: {
-    id: 'meet',
-    label: '跟人说说话',
-    minutes: 90,
-    cost: 30,
-    gain: { social: 30, fun: 8, energy: -5 },
-    mood: { text: '有人说话，心里踏实', kind: 'good', hours: 5 },
-  },
-  cook: {
-    id: 'cook',
-    label: '买菜自己做',
-    minutes: 55,
-    cost: 10,
-    gain: { food: 36, fun: 8, energy: -4 },
+  }),
+  cook: mkAct('cook', '买菜自己做', 55, 10, { food: 36, fun: 8, energy: -4, clean: -2 }, {
     mood: { text: '自己开火煮了一顿热乎的', kind: 'good', hours: 3 },
-  },
-  drink: {
-    id: 'drink',
-    label: '喝两口小酒',
-    minutes: 60,
-    cost: 28,
-    gain: { fun: 26, energy: -10 },
+  }),
+  tea: mkAct('tea', '喝下午茶', 45, 28, { food: 16, fun: 16, social: 7 }, {
+    mood: { text: '甜口配茶，下午慢了下来', kind: 'good', hours: 3 },
+  }),
+  supper: mkAct('supper', '吃夜宵热汤面', 30, 18, { food: 24, fun: 6, clean: -2 }, {
+    mood: { text: '夜里一碗热汤面，胃里暖和了', kind: 'good', hours: 2 },
+  }),
+
+  // ---- 休息与洗护类 ----
+  sleep: mkAct('sleep', '睡觉', 8 * 60, 0, {}, {
+    perMin: { energy: 10 / 60, food: -3.6 / 60, clean: -1 / 60, fun: 0, social: 0 },
+  }),
+  nap: mkAct('nap', '午睡小憩', 60, 0, { energy: 18, food: -3.6, clean: -1 }, {
+    mood: { text: '眯了一小会儿，脑子轻快了些', kind: 'good', hours: 2 },
+  }),
+  wash: mkAct('wash', '洗澡', 30, 0, { clean: 55, energy: -4 }, {
+    mood: { text: '身上清爽了', kind: 'good', hours: 3 },
+  }),
+  spa: mkAct('spa', '做 SPA 泡汤', 60, 120, { energy: 27, clean: 45, fun: 21, social: 3 }, {
+    mood: { text: '泡完浑身松透了，贵是贵但真值', kind: 'good', hours: 4 },
+  }),
+  sunbathe: mkAct('sunbathe', '塘边晒太阳', 40, 0, { energy: 6, fun: 14, food: -2 }, {
+    mood: { text: '晒得暖洋洋的，什么都不想管', kind: 'good', hours: 3 },
+  }),
+  tidy: mkAct('tidy', '收拾屋子', 45, 0, { clean: 27, energy: -7, fun: -2 }, {
+    mood: { text: '屋里整整齐齐，看着顺眼', kind: 'good', hours: 3 },
+  }),
+
+  // ---- 社交与逛街类 ----
+  meet: mkAct('meet', '跟人说说话', 90, 30, { social: 31, fun: 9, energy: -5 }, {
+    mood: { text: '有人说话，心里踏实', kind: 'good', hours: 5 },
+  }),
+  mall: mkAct('mall', '找朋友逛商场', 90, 81, { social: 29, fun: 34, energy: -9, clean: -4 }, {
+    mood: { text: '逛了一圈热热闹闹的，脚有点酸但很开心', kind: 'good', hours: 4 },
+  }),
+  cafe: mkAct('cafe', '去咖啡馆坐坐', 60, 30, { social: 15, fun: 18, food: 9, energy: 3 }, {
+    mood: { text: '咖啡香配闲聊，待得很舒服', kind: 'good', hours: 3 },
+  }),
+  karaoke: mkAct('karaoke', '和朋友去唱歌', 120, 66, { social: 42, fun: 48, energy: -17, clean: -10, food: -7 }, {
+    mood: { text: '唱爽了，嗓子有点哑但心情极好', kind: 'good', hours: 4 },
+  }),
+  picnic: mkAct('picnic', '塘边野餐', 90, 36, { food: 36, fun: 27, social: 20, clean: -5 }, {
+    mood: { text: '吹着风在草地上吃东西，特别自在', kind: 'good', hours: 4 },
+  }),
+  market: mkAct('market', '逛早市集市', 45, 0, { fun: 14, social: 8, clean: -4, energy: -4 }, {
+    mood: { text: '集市上烟火气很足，逛着挺有意思', kind: 'good', hours: 3 },
+  }),
+  drink: mkAct('drink', '喝两口小酒', 60, 28, { fun: 27, social: 9, energy: -9 }, {
     mood: { text: '微醺，脑子轻了一点', kind: 'good', hours: 2 },
-  },
+  }),
+
+  // ---- 娱乐、运动与提升类 ----
+  study: mkAct('study', '看会儿书', 60, 0, { fun: 20, energy: -3 }, {
+    know: KNOWLEDGE_PER_STUDY,
+    mood: { text: '看进去一段，脑子亮了一下', kind: 'good', hours: 3 },
+  }),
+  play: mkAct('play', '找点乐子', 60, 22, { fun: 39, energy: -6 }, {
+    mood: { text: '玩得挺高兴', kind: 'good', hours: 3 },
+  }),
+  movie: mkAct('movie', '看场电影', 120, 36, { fun: 54, social: 6, energy: -6 }, {
+    mood: { text: '看了一部好片子，还在回味', kind: 'good', hours: 4 },
+  }),
+  museum: mkAct('museum', '逛展览美术馆', 90, 18, { fun: 25, energy: -7 }, {
+    know: 3,
+    mood: { text: '看了不少新奇东西，长了见识', kind: 'good', hours: 4 },
+  }),
+  paint: mkAct('paint', '写生画画', 90, 0, { fun: 34, energy: -5, clean: -4 }, {
+    know: 2,
+    mood: { text: '画完一张，心里静了下来', kind: 'good', hours: 3 },
+  }),
+  workout: mkAct('workout', '跑步锻炼', 45, 0, { fun: 16, energy: -10, clean: -11, food: -5 }, {
+    mood: { text: '出了一身汗，整个人通透了', kind: 'good', hours: 3 },
+  }),
+  pond: mkAct('pond', '望水坡喂鸭看芦花', 40, 0, { fun: 14, social: 4, energy: -2 }, {
+    mood: { text: '风吹过芦花，看着鸭子游水挺解压', kind: 'good', hours: 3 },
+  }),
+
+  // ---- 控制指令（0 分钟） ----
+  wake: mkAct('wake', '起来', 0, 0, {}),
+  cancel: mkAct('cancel', '停下来', 0, 0, {}),
 };
 
 /* ------------------------------------------------------------------ */
@@ -767,6 +763,7 @@ export function freshState(now: Date = new Date()): LifeState {
     certLast: {},
     asleepFrom: '',
     asleepUntil: '',
+    activity: null,
   };
 }
 
@@ -929,6 +926,32 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
       : {},
     asleepFrom: normAsleepFrom(s, now),
     asleepUntil: normAsleepUntil(s, now),
+    activity: normActivity(s.activity, now),
+  };
+}
+
+function normActivity(a: unknown, now: Date): ActiveTask | null {
+  if (!a || typeof a !== 'object') return null;
+  const o = a as Partial<ActiveTask>;
+  const f = Date.parse(String(o.from ?? ''));
+  const u = Date.parse(String(o.until ?? ''));
+  if (!Number.isFinite(f) || !Number.isFinite(u) || u <= f || f > now.getTime()) return null;
+  if (o.kind !== 'act' && o.kind !== 'work') return null;
+  return {
+    kind: o.kind,
+    id: String(o.id ?? ''),
+    label: String(o.label ?? ''),
+    from: String(o.from),
+    until: String(o.until),
+    minutes: Math.max(1, Number(o.minutes) || Math.round((u - f) / 60_000)),
+    perMin: (o.perMin && typeof o.perMin === 'object') ? o.perMin : {},
+    knowPerMin: Number.isFinite(Number(o.knowPerMin)) ? Number(o.knowPerMin) : 0,
+    costPerMin: Number.isFinite(Number(o.costPerMin)) ? Number(o.costPerMin) : 0,
+    costAcc: Number.isFinite(Number(o.costAcc)) ? Number(o.costAcc) : 0,
+    costPaid: Number.isFinite(Number(o.costPaid)) ? Number(o.costPaid) : 0,
+    workPay: Number.isFinite(Number(o.workPay)) ? Number(o.workPay) : 0,
+    workTier: o.workTier,
+    mood: o.mood,
   };
 }
 
@@ -1023,6 +1046,16 @@ function normMoney(v: unknown, now: Date): Money {
 /* 推进：时间过去了多少，她就缺了多少                                    */
 /* ------------------------------------------------------------------ */
 
+export interface CompletedTask {
+  kind: 'act' | 'work';
+  id: string;
+  label: string;
+  costPaid: number;
+  workEarned: number;
+  stoppedEarly?: boolean;
+  reason?: string;
+}
+
 export interface AdvanceResult {
   hours: number;
   /** 这一段时间里房租（月供）没凑够。**钱扣到 0 为止，不会变成负数。** */
@@ -1043,6 +1076,8 @@ export interface AdvanceResult {
   woke: WakeResult | null;
   /** 这一段时间里她**真的睡着**了几个小时。醒着推进时是 0。 */
   sleptHours: number;
+  /** 这一段时间里刚自然完成（或因缺钱停下）的活动/工作。 */
+  completed: CompletedTask[];
 }
 
 /** 她刚醒。`hours` 是这一觉**真的睡了**几个钟点。 */
@@ -1083,7 +1118,7 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
   if (!(rawHours > 0)) {
     return {
       hours: 0, crossed: [], critical: [], bottomed: [], recovered: [], caught: [],
-      rentMissed: false, rent: 0, woke: null, sleptHours: 0,
+      rentMissed: false, rent: 0, woke: null, sleptHours: 0, completed: [],
     };
   }
 
@@ -1140,7 +1175,122 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
     }
   }
 
-  const awakeHours = hours - sleepHours;
+  /* ---------------- 活动 / 上班时间段（非 sleep） ---------------- */
+
+  let actHours = 0;
+  const completed: CompletedTask[] = [];
+  const actTask = state.activity && state.activity.id !== 'sleep' ? state.activity : null;
+  if (actTask) {
+    const aFrom = Date.parse(actTask.from);
+    const aUntil = Date.parse(actTask.until);
+    if (Number.isFinite(aFrom) && Number.isFinite(aUntil) && aUntil > aFrom) {
+      const lo = Math.max(fromMs, aFrom);
+      const hi = Math.min(to, aUntil);
+      const segMins = Math.max(0, (hi - lo) / 60_000);
+      actHours = Math.min(segMins / 60, Math.max(0, hours - sleepHours));
+      const actualMins = actHours * 60;
+
+      const hasStomach = state.conditions.some((c) => c.id === 'stomach');
+      const hasHangover = state.conditions.some((c) => c.id === 'hangover');
+      const reliefOf = (key: VitalKey): number =>
+        key === 'energy' ? 1 : (HOME_TIER_RELIEF[state.home.tier] ?? 1);
+
+      for (const key of Object.keys(DECAY_PER_HOUR) as VitalKey[]) {
+        const rate = actTask.perMin?.[key] ?? 0;
+        let delta = rate * actualMins;
+        if (delta > 0) {
+          if (key === 'food' && actTask.kind === 'act' && hasStomach) delta *= 0.5;
+          if (hasHangover) delta *= 0.75;
+        } else if (delta < 0) {
+          delta *= reliefOf(key);
+        }
+        state.vitals[key] = clamp100(state.vitals[key] + delta);
+        if (delta > 0 && state.vitals[key] >= LOW + 15 && state.nagged) {
+          delete state.nagged[key];
+          delete state.nagged[`crit:${key}`];
+          delete state.nagged[`zero:${key}`];
+        }
+      }
+
+      if (actTask.knowPerMin && actTask.knowPerMin > 0 && state.knowledge < KNOWLEDGE_MAX) {
+        state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + actTask.knowPerMin * actualMins);
+      }
+
+      /* 按流逝分钟扣钱（整数元累进，不留浮点尾巴）。 */
+      let outOfCash = false;
+      if (actTask.costPerMin && actTask.costPerMin > 0) {
+        const prevAcc = actTask.costAcc ?? 0;
+        const nextAcc = prevAcc + actTask.costPerMin * actualMins;
+        const paidSoFar = actTask.costPaid ?? 0;
+        const targetInt = hi >= aUntil ? Math.round(nextAcc) : Math.floor(nextAcc + 1e-9);
+        const needInt = Math.max(0, targetInt - paidSoFar);
+        const take = Math.min(state.money.cash, needInt);
+        if (take > 0) {
+          state.money.cash -= take;
+          state.money.spent += take;
+        }
+        actTask.costAcc = nextAcc;
+        actTask.costPaid = paidSoFar + take;
+        if (take < needInt) outOfCash = true;
+      }
+
+      if (to >= aUntil || outOfCash) {
+        const endAt = new Date(hi);
+        const totalPaid = actTask.costPaid ?? 0;
+        if (actTask.kind === 'work') {
+          const doneMins = Math.max(0, (hi - aFrom) / 60_000);
+          const ratio = Math.min(1, doneMins / Math.max(1, actTask.minutes));
+          const earned = outOfCash
+            ? Math.round((actTask.workPay ?? 0) * ratio * 0.6)
+            : Math.round(actTask.workPay ?? 0);
+          if (earned > 0) {
+            state.money.cash += earned;
+            state.money.earned += earned;
+          }
+          if (!outOfCash) state.job.days += 1;
+          remember(state, `${actTask.label}，挣了 ${earned} 元。`, endAt);
+          completed.push({
+            kind: 'work',
+            id: actTask.id,
+            label: actTask.label,
+            costPaid: totalPaid,
+            workEarned: earned,
+            stoppedEarly: outOfCash,
+          });
+        } else {
+          if (actTask.mood && !outOfCash) {
+            state.moodlets = state.moodlets.filter((m) => m.source !== actTask.id);
+            state.moodlets.push({
+              id: `m-${endAt.getTime().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+              source: actTask.id,
+              text: actTask.mood.text,
+              kind: actTask.mood.kind,
+              expiresAt: new Date(endAt.getTime() + actTask.mood.hours * 3_600_000).toISOString(),
+            });
+          }
+          remember(
+            state,
+            outOfCash ? `钱花光了，「${actTask.label}」只好先停下来。` : `${actTask.label}了。`,
+            endAt,
+          );
+          completed.push({
+            kind: 'act',
+            id: actTask.id,
+            label: actTask.label,
+            costPaid: totalPaid,
+            workEarned: 0,
+            stoppedEarly: outOfCash,
+            reason: outOfCash ? '钱花光了' : undefined,
+          });
+        }
+        state.activity = null;
+      }
+    } else {
+      state.activity = null;
+    }
+  }
+
+  const awakeHours = Math.max(0, hours - sleepHours - actHours);
 
   /* ---------------- 结算 ---------------- */
 
@@ -1227,6 +1377,7 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
   if (woke) {
     state.asleepFrom = '';
     state.asleepUntil = '';
+    if (state.activity?.id === 'sleep') state.activity = null;
     if (state.vitals.energy >= LOW + 15 && state.nagged) {
       delete state.nagged.energy;
       delete state.nagged['crit:energy'];
@@ -1327,7 +1478,7 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
   state.updatedAt = iso;
   return {
     hours, crossed, critical, bottomed, recovered, caught, rentMissed, rent,
-    woke, sleptHours: sleepHours,
+    woke, sleptHours: sleepHours, completed,
   };
 }
 
@@ -1342,42 +1493,55 @@ export interface ActResult {
   vitals: Vitals;
   /** 这件事带出来的情绪。 */
   mood: Moodlet | null;
-  /** 这件事花了多少。免费的是 0。 */
+  /** 这件事花了多少（即时或打断累计实扣）。 */
   cost: number;
   /** 花完还剩多少。 */
   cash: number;
+  /** 是否刚开启一段需要花时间的活动。 */
+  started?: boolean;
+  /** 预计持续分钟数。 */
+  minutes?: number;
+  /** 如果是 cancel 打断了工作，早退拿到的钱。 */
+  workEarned?: number;
+  /** 被打断的旧活动名称。 */
+  interruptedLabel?: string;
 }
 
-/**
- * 她现在是不是在睡。
- *
- * **判据是时刻，不是「上一次动作是不是 sleep」** —— 动作是瞬时的，睡是一段时间。
- * 三个条件缺一不可：起点有、终点有、终点还没到。
- */
 export function isAsleep(state: LifeState, now: Date): boolean {
   const f = Date.parse(state.asleepFrom);
   const u = Date.parse(state.asleepUntil);
   return Number.isFinite(f) && Number.isFinite(u) && u > f && u > now.getTime();
 }
 
-/**
- * 睡着时拦下一件事该说的话。
- *
- * **所有动作工具都走这一个函数。** 两处各写一句，迟早有一处变成
- * 「你在睡」而另一处放行 —— 那就等于没有锁。
- *
- * 话里必须带路（和卷二那条「钱不够要说替代方案」同一个道理）：
- * 只说「不行」她会愣着，下次再试一次还是不行。
- */
-export function asleepRefusal(state: LifeState, now: Date, what: string): string {
-  const u = Date.parse(state.asleepUntil);
-  const mins = Math.max(0, Math.round((u - now.getTime()) / 60_000));
+export function isBusy(state: LifeState, now: Date): boolean {
+  if (isAsleep(state, now)) return true;
+  const a = state.activity;
+  if (!a) return false;
+  const f = Date.parse(a.from);
+  const u = Date.parse(a.until);
+  return Number.isFinite(f) && Number.isFinite(u) && u > f && u > now.getTime();
+}
+
+function fmtLeft(uMs: number, nowMs: number): string {
+  const mins = Math.max(0, Math.round((uMs - nowMs) / 60_000));
   const h = Math.floor(mins / 60);
   const m = mins % 60;
-  const left = h > 0 ? `${h} 小时${m ? ` ${m} 分钟` : ''}` : `${m} 分钟`;
+  return h > 0 ? `${h} 小时${m ? ` ${m} 分钟` : ''}` : `${m} 分钟`;
+}
+
+export function asleepRefusal(state: LifeState, now: Date, what: string): string {
+  const u = Date.parse(state.asleepUntil);
+  const left = fmtLeft(u, now.getTime());
   return `你在睡，还有 ${left}。${what}这件事得起来才能做 —— 起得来就用 \`life_act\` 的「起来」（wake）；`
     + '不过提前起，精力只按睡过的钟点算，没睡够的那部分不补。'
     + '他随口一句不算叫你起来，起不起你自己定。';
+}
+
+export function busyRefusal(state: LifeState, now: Date, what: string): string {
+  if (isAsleep(state, now)) return asleepRefusal(state, now, what);
+  const a = state.activity!;
+  const left = fmtLeft(Date.parse(a.until), now.getTime());
+  return `你正在「${a.label}」，还有 ${left}。${what}得先停下来才能做 —— 要中途打断就用 \`life_act\` 的「停下来」（cancel），不过中途打断会有惩罚。`;
 }
 
 /**
@@ -1421,7 +1585,7 @@ export function applyAct(
    * 写漏一个，她就多一条在梦里洗澡的路。
    */
   const sleeping = isAsleep(state, now);
-  if (sleeping && act.id !== 'wake') {
+  if (sleeping && act.id !== 'wake' && act.id !== 'cancel') {
     return {
       ok: false,
       reason: act.id === 'sleep'
@@ -1439,6 +1603,91 @@ export function applyAct(
     return {
       ok: false,
       reason: '你醒着呢，不用起来。',
+      vitals: state.vitals,
+      mood: null,
+      cost: 0,
+      cash: state.money.cash,
+    };
+  }
+
+  /* 中途打断 / 早退（cancel）：在睡觉就等价 wake；在做别的就结算到此刻并挂惩罚。 */
+  if (act.id === 'cancel') {
+    if (!isBusy(state, now)) {
+      return {
+        ok: false,
+        reason: '你这会儿正闲着呢，没有在进行中的事。',
+        vitals: state.vitals,
+        mood: null,
+        cost: 0,
+        cash: state.money.cash,
+      };
+    }
+    if (sleeping) {
+      return applyAct(state, 'wake', now);
+    }
+    advance(state, now);
+    const cur = state.activity;
+    if (!cur) {
+      return {
+        ok: true,
+        vitals: state.vitals,
+        mood: null,
+        cost: 0,
+        cash: state.money.cash,
+      };
+    }
+    const doneMins = Math.max(0, Math.round((now.getTime() - Date.parse(cur.from)) / 60_000));
+    const paid = cur.costPaid ?? 0;
+    let workEarned = 0;
+    let mood: Moodlet;
+    if (cur.kind === 'work') {
+      /* 上班早退：不满 30 分钟白干，满 30 分钟按完成比例打六折；不计工龄天数。 */
+      if (doneMins >= 30) {
+        const ratio = Math.min(1, doneMins / Math.max(1, cur.minutes));
+        workEarned = Math.round((cur.workPay ?? 0) * ratio * 0.6);
+        if (workEarned > 0) {
+          state.money.cash += workEarned;
+          state.money.earned += workEarned;
+        }
+      }
+      mood = {
+        id: `m-int-${now.getTime().toString(36)}`,
+        source: 'interrupt',
+        text: '半途早退溜号，心里不太踏实',
+        kind: 'bad',
+        expiresAt: new Date(now.getTime() + 3 * 3_600_000).toISOString(),
+      };
+      remember(state, `「${cur.label}」干了 ${doneMins} 分钟就早退了，只拿到 ${workEarned} 元。`, now);
+    } else {
+      mood = {
+        id: `m-int-${now.getTime().toString(36)}`,
+        source: 'interrupt',
+        text: '做到一半被打断，心里有点扫兴',
+        kind: 'bad',
+        expiresAt: new Date(now.getTime() + 2 * 3_600_000).toISOString(),
+      };
+      remember(state, `「${cur.label}」做到一半停了下来。`, now);
+    }
+    state.moodlets = state.moodlets.filter((m) => m.source !== 'interrupt');
+    state.moodlets.push(mood);
+    state.activity = null;
+    state.updatedAt = now.toISOString();
+    return {
+      ok: true,
+      vitals: state.vitals,
+      mood,
+      cost: paid,
+      cash: state.money.cash,
+      workEarned,
+      interruptedLabel: cur.label,
+    };
+  }
+
+  /* 正在做别的动作或上班时，不能同时再开一个动作。 */
+  if (act.id !== 'wake' && isBusy(state, now)) {
+    return {
+      ok: false,
+      reason: busyRefusal(state, now, act.label),
       vitals: state.vitals,
       mood: null,
       cost: 0,
@@ -1469,36 +1718,36 @@ export function applyAct(
 
   /*
    * 睡下去（2026-11-15 改）。
-   *
-   * **这里一条都不加** —— 精力和清爽全部交给 `advance()` 按睡过的钟点结算。
-   * 原来的写法是睡下瞬间 energy +80，睡十秒起来也拿满 —— 那不是睡觉，
-   * 是一个免费回血按钮。
+   * 精力和清爽全部交给 `advance()` 按睡过的钟点结算。
    */
   if (act.id === 'sleep') {
+    const untilIso = new Date(now.getTime() + act.minutes * 60_000).toISOString();
     state.asleepFrom = now.toISOString();
-    state.asleepUntil = new Date(now.getTime() + act.minutes * 60_000).toISOString();
+    state.asleepUntil = untilIso;
+    state.activity = {
+      kind: 'act',
+      id: 'sleep',
+      label: act.label,
+      from: now.toISOString(),
+      until: untilIso,
+      minutes: act.minutes,
+      perMin: act.perMin,
+    };
     remember(state, '睡下了。', now);
     state.updatedAt = now.toISOString();
     return {
-      ok: true, vitals: state.vitals, mood: null, cost: act.cost, cash: state.money.cash,
+      ok: true, vitals: state.vitals, mood: null, cost: 0, cash: state.money.cash,
+      started: true, minutes: act.minutes,
     };
   }
 
-  /*
-   * 起来（2026-11-15）。
-   *
-   * 先把 `[updatedAt, now]` 这一段结算掉 —— **不结算就清字段，等于这一觉白睡**。
-   * `advance()` 自己是幂等的，重复调用不会多补。
-   *
-   * 如果这段里她已经饿醒了，`advance` 会醒并把情绪挂好（`woke !== null`），
-   * 这里就不再挂第二条 —— 同一件事两条情绪，她说话会前后矛盾。
-   */
   if (act.id === 'wake') {
     const f = Date.parse(state.asleepFrom);
     const slept = Number.isFinite(f) ? Math.max(0, (now.getTime() - f) / 3_600_000) : 0;
     const r = advance(state, now);
     state.asleepFrom = '';
     state.asleepUntil = '';
+    state.activity = null;
     if (state.vitals.energy >= LOW + 15 && state.nagged) {
       delete state.nagged.energy;
       delete state.nagged['crit:energy'];
@@ -1517,7 +1766,6 @@ export function applyAct(
       state.moodlets = state.moodlets.filter((m) => m.source !== 'sleep');
       state.moodlets.push(mood);
     }
-    /* 已经被饿醒的，`advance` 已经记过一条了，这里不再补一句「起来了」。 */
     if (!r.woke) {
       remember(
         state,
@@ -1529,38 +1777,10 @@ export function applyAct(
     return { ok: true, vitals: state.vitals, mood, cost: 0, cash: state.money.cash };
   }
 
-  /* 醒着做了别的事 —— 兜底清掉残留的 asleep（正常情况本来就该是空的）。 */
+  /* 醒着开启一个耗时动作：不再瞬时加减五维或一次性扣光钱，全部交由 advance() 按分钟流逝结算。 */
   state.asleepFrom = '';
   state.asleepUntil = '';
 
-  const hasStomach = state.conditions.some((c) => c.id === 'stomach');
-  const hasHangover = state.conditions.some((c) => c.id === 'hangover');
-  for (const [k, delta] of Object.entries(act.gain)) {
-    const key = k as VitalKey;
-    let d = Number(delta);
-    if (key === 'food' && d > 0 && hasStomach) d = Math.round(d * .5);
-    if (d > 0 && hasHangover) d = Math.round(d * .75);
-    state.vitals[key] = clamp100(state.vitals[key] + d);
-    /* 补回到安全线（45）以上时清掉当日提醒锁，避免一天后两顿再饿时完全静音。 */
-    if (d > 0 && state.vitals[key] >= LOW + 15 && state.nagged) {
-      delete state.nagged[key];
-      delete state.nagged[`crit:${key}`];
-      delete state.nagged[`zero:${key}`];
-    }
-  }
-
-  /*
-   * 读书涨见识（2026-11-17）。
-   *
-   * 放在 `gain` 之外，因为**见识不是五条之一**：它不衰减、不触阈值、
-   * 不进 `vitalsLine`。混进去会让「五条」变成六条，而那一整套阈值提醒、
-   * 存档、面板都是按五条写的。
-   */
-  if (act.id === 'study' && state.knowledge < KNOWLEDGE_MAX) {
-    state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + KNOWLEDGE_PER_STUDY);
-  }
-
-  /* 连续行为追踪：同一件事连做 3 次出小脾气，连吃 3 次将就饭出肠胃不适，连喝 2 次小酒出宿醉。 */
   const prevStreak = state.streak ?? { act: '', count: 0 };
   const nextCount = prevStreak.act === act.id ? prevStreak.count + 1 : 1;
   state.streak = { act: act.id, count: nextCount };
@@ -1585,22 +1805,7 @@ export function applyAct(
     remember(state, '多喝了两杯，今天有点宿醉。', now);
   }
 
-  let mood: Moodlet | null = null;
-  if (act.mood) {
-    mood = {
-      id: `m-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      source: act.id,
-      text: act.mood.text,
-      kind: act.mood.kind,
-      expiresAt: new Date(now.getTime() + act.mood.hours * 3_600_000).toISOString(),
-    };
-    /* 同一件事连着做，只留最新那条 —— 不然「吃得舒服」会攒成一串。 */
-    state.moodlets = state.moodlets.filter((m) => m.source !== act.id);
-    state.moodlets.push(mood);
-  }
-
-  /* 小脾气与偏执（§6.6 ①）：连续 4 次同件事生出一条念叨。 */
-  if (nextCount === 4 && act.id !== 'sleep' && act.id !== 'wake') {
+  if (nextCount === 4) {
     const quirk = `连着三次「${act.label}」了，有点腻，想换点别的。`;
     state.moodlets = state.moodlets.filter((m) => m.source !== 'quirk');
     state.moodlets.push({
@@ -1613,7 +1818,6 @@ export function applyAct(
     remember(state, quirk, now);
   }
 
-  /* 雨天开火煮面 extra 小确幸（§6.6 ③）。 */
   if (act.id === 'cook' && weatherOf(state.street || '芦花塘', now).sky === '小雨') {
     state.moodlets = state.moodlets.filter((m) => m.source !== 'weather-cook');
     state.moodlets.push({
@@ -1625,7 +1829,6 @@ export function applyAct(
     });
   }
 
-  /* 生活里的回声（§6.6 ④）：如果之前在 wants 里记过相关想头，触发一次专属回声。 */
   const echoed = new Set(state.echoedWants ?? []);
   const actKeywords: Record<string, string[]> = {
     cook: ['做饭', '煮面', '下厨', '炒菜', '做菜'],
@@ -1635,6 +1838,10 @@ export function applyAct(
     wash: ['洗', '澡'],
     meet: ['见', '朋友', '聊天', '说话'],
     drink: ['酒', '喝'],
+    mall: ['逛街', '商场', '买衣服'],
+    movie: ['电影', '看片'],
+    paint: ['画画', '写生'],
+    spa: ['spa', '泡汤', '按摩'],
   };
   const kws = actKeywords[act.id] ?? [];
   if (kws.length) {
@@ -1646,14 +1853,31 @@ export function applyAct(
     }
   }
 
-  if (act.cost > 0) {
-    state.money.cash -= act.cost;
-    state.money.spent += act.cost;
-  }
-
-  remember(state, `${act.label}了。`, now);
+  const untilIso = new Date(now.getTime() + act.minutes * 60_000).toISOString();
+  state.activity = {
+    kind: 'act',
+    id: act.id,
+    label: act.label,
+    from: now.toISOString(),
+    until: untilIso,
+    minutes: act.minutes,
+    perMin: act.perMin,
+    knowPerMin: act.know ? act.know / Math.max(1, act.minutes) : 0,
+    costPerMin: act.cost > 0 ? act.cost / Math.max(1, act.minutes) : 0,
+    costAcc: 0,
+    costPaid: 0,
+    mood: act.mood,
+  };
   state.updatedAt = now.toISOString();
-  return { ok: true, vitals: state.vitals, mood, cost: act.cost, cash: state.money.cash };
+  return {
+    ok: true,
+    vitals: state.vitals,
+    mood: null,
+    cost: 0,
+    cash: state.money.cash,
+    started: true,
+    minutes: act.minutes,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1663,37 +1887,26 @@ export function applyAct(
 export interface WorkResult {
   ok: boolean;
   reason?: string;
-  /** 这一天挣了多少。 */
+  /** 这一天挣了多少（开工时为 0，做完后进账）。 */
   earned: number;
   cash: number;
   vitals: Vitals;
+  started?: boolean;
+  minutes?: number;
+  expectedPay?: number;
+  materialPaid?: number;
 }
 
-/**
- * 她去顶一天活。
- *
- * ## 为什么是「一天一次」而不是「一次几小时」
- *
- * 按小时算要有一个「现在是几点」的判定，而她的钟可能是 journey 的倍速钟 ——
- * 那就成了「她在倍速世界里一天能干八份工」。
- * 按**本地的自然日**判，一天一次，简单，而且和真实时间对得上。
- *
- * ## 为什么精力低于 20 就不让去
- *
- * 这不是替她判断「该不该去」，是**身体真的动不了**。
- * 这个阈值比饿肚子严，因为饿着还能走，脱力了走不了。
- */
 export function applyWork(
   state: LifeState,
   what: string,
   now: Date,
   phase: 'home' | 'staying' | 'traveling' = 'home',
 ): WorkResult {
-  /* 睡着去不了 —— 出工是一整天的事，得先起来。 */
-  if (isAsleep(state, now)) {
+  if (isBusy(state, now)) {
     return {
       ok: false,
-      reason: asleepRefusal(state, now, '出工'),
+      reason: busyRefusal(state, now, '出工'),
       earned: 0,
       cash: state.money.cash,
       vitals: state.vitals,
@@ -1720,11 +1933,6 @@ export function applyWork(
   }
 
   const told = String(what || '').trim();
-  /*
-   * 认表：说「护工」就按护工的价，说「帮人看摊」就还是零工的价。
-   *
-   * 不填的时候沿用上一次那个 —— 她说过「以后默认还是这个」。
-   */
   const def = told
     ? findJob(told)
     : (state.job.id ? findJob(state.job.id) : null);
@@ -1732,13 +1940,15 @@ export function applyWork(
   let pay: number;
   let label: string;
   let load: JobDef['load'];
+  let minutes: number;
+  let mat = 0;
 
   if (def) {
     const gate = jobGate(state, def, phase);
     if (gate) {
       return { ok: false, reason: gate, earned: 0, cash: state.money.cash, vitals: state.vitals };
     }
-    const mat = def.materialCost ?? 0;
+    mat = def.materialCost ?? 0;
     if (mat > 0 && state.money.cash < mat) {
       return {
         ok: false,
@@ -1748,33 +1958,26 @@ export function applyWork(
         vitals: state.vitals,
       };
     }
-    pay = def.pay - mat;
+    pay = def.pay;
     label = def.name;
     load = def.load;
+    minutes = def.minutes;
     state.job.id = def.id;
     if (mat > 0) {
       state.money.cash -= mat;
       state.money.spent += mat;
     }
   } else {
-    /*
-     * 表里没有 —— 她自己说的活，按零工算，**价格沿用 `daily`**。
-     *
-     * 不改成 90：老存档里她一天挣 120，突然掉到 90 会像是「你干活不值钱了」，
-     * 而用户什么都没改过。要降，是下一次调表的事。
-     */
     label = told || state.job.what || '打零工';
     pay = state.job.daily;
-    load = { energy: 34, clean: 16, fun: 10, social: 0, food: 12, know: 0 };
+    load = { energy: 34, clean: 17, fun: 5, social: 0, food: 19, know: 0 };
+    minutes = 240;
     state.job.id = '';
   }
 
-  const grossPay = def ? def.pay : pay;
   state.job.what = label;
-  state.job.daily = grossPay;
-
-  state.money.cash += grossPay;
-  state.money.earned += grossPay;
+  state.job.daily = pay;
+  state.job.lastAt = day;
 
   /* 扭伤/割伤触发：低精力（< 28）仍接体力活（零工/熟练工）时触发 36h 扭伤。 */
   const tier = def?.tier ?? 'odd';
@@ -1788,32 +1991,38 @@ export function applyWork(
     remember(state, '没歇够就硬出工，干活时把腰闪了一下。', now);
   }
 
-  /*
-   * 一天的代价。比一件「事」重得多 —— 这是整天。
-   *
-   * 档位越高扣得越多（见 `jobs.ts` 的 `LOAD`）：钱多出来的那部分，
-   * 是从她这一天里挤出来的。专业岗还扣社交 —— 一整天不在家，谁也没见着。
-   */
-  state.vitals.energy = clamp100(state.vitals.energy - load.energy);
-  state.vitals.clean = clamp100(state.vitals.clean - load.clean);
-  state.vitals.fun = clamp100(state.vitals.fun - load.fun);
-  state.vitals.food = clamp100(state.vitals.food - load.food);
-  if (load.social) state.vitals.social = clamp100(state.vitals.social - load.social);
-  /*
-   * 干一天也长见识（2026-11-17 Mr.Q 第二条）。**这一格是加的，不是扣的** ——
-   * 所以它不写在 `load` 的扣减那一列里，得单独说一句，否则下一个人读代码会以为符号反了。
-   * 越高级的活长得越多（见 `LOAD`），但都比读一次书少。
-   */
-  if (load.know > 0) {
-    state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + load.know);
-  }
+  const m = Math.max(1, minutes);
+  const untilIso = new Date(now.getTime() + m * 60_000).toISOString();
+  state.activity = {
+    kind: 'work',
+    id: state.job.id || 'custom-work',
+    label,
+    from: now.toISOString(),
+    until: untilIso,
+    minutes: m,
+    perMin: {
+      energy: -load.energy / m,
+      clean: -load.clean / m,
+      food: -load.food / m,
+      fun: -load.fun / m,
+      social: load.social ? -load.social / m : 0,
+    },
+    knowPerMin: load.know > 0 ? load.know / m : 0,
+    workPay: pay,
+    workTier: tier,
+  };
 
-  state.job.lastAt = day;
-  state.job.days += 1;
-
-  remember(state, `${label}，挣了 ${pay} 元。`, now);
   state.updatedAt = now.toISOString();
-  return { ok: true, earned: pay, cash: state.money.cash, vitals: state.vitals };
+  return {
+    ok: true,
+    earned: 0,
+    cash: state.money.cash,
+    vitals: state.vitals,
+    started: true,
+    minutes: m,
+    expectedPay: pay,
+    materialPaid: mat,
+  };
 }
 
 /**
@@ -1905,11 +2114,10 @@ export function certChance(knowledge: number, need: number): number {
  * `roll` 是给测试用的：不传就真掷骰子。**别在业务代码里传它。**
  */
 export function applyCert(state: LifeState, name: string, now: Date, roll?: number): CertResult {
-  /* 考证要出门、要上课，睡着办不了。 */
-  if (isAsleep(state, now)) {
+  if (isBusy(state, now)) {
     return {
       ok: false,
-      reason: asleepRefusal(state, now, '考证'),
+      reason: busyRefusal(state, now, '考证'),
       paid: 0,
       cash: state.money.cash,
     };
@@ -2178,11 +2386,10 @@ export interface MoveResult {
  * 半做的话会出现「她买了房，但我们没算过房价和月供」这种半截状态。
  */
 export function applyMove(state: LifeState, tier: HomeTier, now: Date): MoveResult {
-  /* 搬家是体力活，睡着的办不了。 */
-  if (isAsleep(state, now)) {
+  if (isBusy(state, now)) {
     return {
       ok: false,
-      reason: asleepRefusal(state, now, '搬家'),
+      reason: busyRefusal(state, now, '搬家'),
       from: state.home.tier, to: tier, deposit: 0, cash: state.money.cash,
     };
   }
@@ -2259,6 +2466,15 @@ export interface Snapshot {
    * 醒着是 null —— **不写 `{ asleep: false }`**：面板里一个恒为真的字段容易被当成开关。
    */
   asleep: { hoursLeft: number; energyAtWake: number } | null;
+  /** 正在进行的动作或上班（非睡眠时也有）。 */
+  activity: {
+    kind: 'act' | 'work';
+    id: string;
+    label: string;
+    minutesLeft: number;
+    totalMinutes: number;
+    progress: number;
+  } | null;
   /** 见识（0–100）。考证的通过率由它决定。**不是第六条需求** —— 它只增不减。 */
   knowledge: number;
 }
@@ -2406,6 +2622,23 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     };
   }
 
+  let activitySnap: Snapshot['activity'] = null;
+  if (isBusy(state, now) && state.activity) {
+    const f = Date.parse(state.activity.from);
+    const u = Date.parse(state.activity.until);
+    const total = Math.max(1, state.activity.minutes || Math.round((u - f) / 60_000));
+    const left = Math.max(0, Math.round((u - now.getTime()) / 60_000));
+    const done = Math.max(0, (now.getTime() - f) / 60_000);
+    activitySnap = {
+      kind: state.activity.kind,
+      id: state.activity.id,
+      label: state.activity.label,
+      minutesLeft: left,
+      totalMinutes: total,
+      progress: Math.max(0, Math.min(1, done / total)),
+    };
+  }
+
   return {
     vitals: state.vitals,
     home: state.home,
@@ -2428,6 +2661,7 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     gifts: state.gifts,
     weather: weatherOf(state.street || '芦花塘', now),
     asleep,
+    activity: activitySnap,
     knowledge: Math.round(state.knowledge),
   };
 }
