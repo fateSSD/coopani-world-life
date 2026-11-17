@@ -94,7 +94,20 @@ export class VersionCheck {
     this.pkg = opts.pkg ?? 'coopani-world-life';
     this.fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch | undefined);
     this.ttlMs = opts.ttlMs ?? TTL_MS;
-    this.file = join(opts.dataDir, 'version-check.json');
+    /*
+     * **缓存文件名必须带包名**（2026-11-17，Mr.Q 抓到的）。
+     *
+     * 原来是写死的 `version-check.json` —— 而这个 data 目录是**所有扩展共用**的，
+     * 于是模拟鱼生和环游世界（各自实现了一份同样的检查）会往同一个文件里写。
+     * 谁最后查谁覆盖：life 就会读到 journey 的版本号。
+     *
+     * 现场：面板角标显示「v0.16.5 → v1.12.3」，而 life 从来没有 1.12.x ——
+     * 那个 1.12.3 是 journey 重启时写进来的。
+     *
+     * 文件名只留 `[a-z0-9._-]`，包名里的其他字符换成 `_`（防止路径穿越/奇怪字符）。
+     */
+    const slug = this.pkg.replace(/[^A-Za-z0-9._-]/g, '_');
+    this.file = join(opts.dataDir, `version-check-${slug}.json`);
     this.load();
   }
 
