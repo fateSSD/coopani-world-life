@@ -972,15 +972,21 @@ console.log('\n[42] 睡着跨的线不会丢（deferred 落盘）');
   ok(back.deferred.includes('food'), 'deferred 存得下来、读得回来', back.deferred.join(','));
 }
 
-console.log('\n[43] 目标兜底：老档没有 goals 时按当前住处补一条');
+console.log('\n[43] 目标兜底：老档没有 goals 时按当前住处补一条（且跳过已经够的档）');
 {
   const t0 = new Date('2026-11-15T12:00:00Z');
   const s = freshState(t0);
+  const rawLow = JSON.parse(JSON.stringify(s));
+  rawLow.goals = [];
+  rawLow.money.cash = 1000;
+  const backLow = normalize(rawLow, t0);
+  ok(backLow.goals.length === 1, '现金不足老小区时补回老小区目标', String(backLow.goals.length));
+  ok(backLow.goals[0].id === 'g-home-old', '现金 1000 → 指向上一档（老小区 2400）', backLow.goals[0].id);
+
   const raw = JSON.parse(JSON.stringify(s));
   raw.goals = [];
   const back = normalize(raw, t0);
-  ok(back.goals.length === 1, '补回了一条目标', String(back.goals.length));
-  ok(back.goals[0].id === 'g-home-old', '指向上一档（城中村 → 老小区）', back.goals[0].id);
+  ok(back.goals[0].id === 'g-home-new', '现金 3000 已够老小区 → 顺延指向新小区（5200）', back.goals[0].id);
 
   /* 已经住到别墅区的，不再立目标 —— 立了就是一个永远做不完的条。 */
   const villa = JSON.parse(JSON.stringify(s));
@@ -1056,6 +1062,75 @@ console.log('\n[44] 读书涨见识，见识决定考证的胜算（2026-11-17�
   /* 第二天再来，这次骰子好 */
   const nextDay = applyCert(s2, '厨师证', new Date(t0.getTime() + 86_400_000), 0);
   ok(nextDay.ok && nextDay.passed === true, '第二天考过了');
+}
+
+console.log('\n[45] 跨关机睡眠结算：睡醒过点重启后不能抹掉整晚睡眠');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'life-sleep-boot-'));
+  const tSleep = new Date('2026-11-16T15:00:00.000Z');
+  const s = freshState(tSleep);
+  s.vitals.energy = 10;
+  s.vitals.food = 90;
+  applyAct(s, 'sleep', tSleep);
+  new StateStore(dir).save(s);
+
+  /* 9 小时后（已过 8 小时醒来点）再 load + advance：必须拿到 +80 精力 */
+  const tWake = new Date(tSleep.getTime() + 9 * 3_600_000);
+  const loaded = new StateStore(dir).load(tWake);
+  ok(Boolean(loaded.state.asleepUntil), 'normalize 不提前清空已过点的睡眠区间');
+  const r = advance(loaded.state, tWake);
+  ok(near(r.sleptHours, 8, 0.01), '结算了完整的 8 小时睡眠', String(r.sleptHours));
+  ok(loaded.state.vitals.energy > 80, '睡醒拿到 +80 精力，不再被倒扣成熬夜', String(loaded.state.vitals.energy));
+  ok(loaded.state.asleepUntil === '', '结算完后才清空 asleepUntil');
+}
+
+console.log('\n[46] 需求补回后解锁当日提醒 + 跨 15 紧急提醒 + 防过期告警');
+{
+  const t0 = new Date('2026-11-17T08:00:00');
+  const s = freshState(t0);
+  s.vitals.food = 25;
+  s.nagged.food = localDateKey(t0);
+  applyAct(s, 'eat', t0);
+  ok(s.vitals.food >= 45 && s.nagged.food === undefined, '吃回到 45 以上后清掉当日 nagged.food 锁');
+
+  const s2 = freshState(t0);
+  s2.vitals.food = 17;
+  const rCrit = advance(s2, new Date(t0.getTime() + 3_600_000));
+  ok(rCrit.critical.includes('food'), '掉穿 15 触发 critical 标记', rCrit.critical.join(','));
+}
+
+console.log('\n[47] 生活日记、可改路径与双扩展分流 + diary 面板');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'life-diary-'));
+  const customDir = join(dir, 'my-onedrive-life');
+  const cfg = { ...LIFE_DEFAULTS(), enabled: true, homeCity: '成都', diaryDir: customDir };
+  const w = new LifeWorld({ cfg, dataDir: dir, botName: '大肥鱼' });
+  await w.start({
+    log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+    pushEvent: async (e) => ({ ...e, blobs: [] }),
+  });
+
+  const writeTool = w.tools().find((x) => x.name === 'life_diary_write');
+  const readTool = w.tools().find((x) => x.name === 'life_diary_read');
+  const wr = await writeTool.handler({ body: '今天去早市街转了转，花了 15 块钱吃了一碗热面。', dateKey: '2026-11-17' });
+  ok(/2026-11-17/.test(wr.text) && existsSync(join(customDir, '2026-11.md')), '日记写入自定义目录', wr.text);
+
+  const rd = await readTool.handler({ dateKey: '2026-11-17' });
+  ok(/早市街/.test(rd.text), 'life_diary_read 读回第一人称日记', rd.text);
+
+  const panelList = await w.panelInvoke('diary', 'list');
+  ok(panelList.dir === customDir && panelList.days.length === 1, 'diary 面板返回目录和日记列表');
+
+  /* 模拟旅行扩展开着且正在外地停留：life_diary_write 提示去写旅行日记 */
+  writeFileSync(join(dir, 'journey-public.json'), JSON.stringify({
+    phase: 'staying',
+    city: { id: 'chengdu', name: '成都' },
+    updatedAt: new Date().toISOString(),
+  }));
+  const tripBlock = await writeTool.handler({ body: '外地测试', dateKey: '2026-11-18' });
+  ok(/journey_diary_write/.test(tripBlock.text), '旅行期间提示用 journey_diary_write', tripBlock.text);
+
+  await w.stop();
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

@@ -26,6 +26,8 @@ export interface LifeConfigSection extends WorldSection {
   tickMs: number;
   /** 阈值提醒的密度。 */
   notify: 'off' | 'once' | 'always';
+  /** 生活日记保存目录。留空 = 存在本机 dataDir/life-diary；填了 = 存到指定目录（如同步盘）。 */
+  diaryDir: string;
 }
 
 export const LIFE_DEFAULTS = (): LifeConfigSection => ({
@@ -38,6 +40,7 @@ export const LIFE_DEFAULTS = (): LifeConfigSection => ({
   townUrl: '',
   tickMs: 60_000,
   notify: 'once',
+  diaryDir: '',
 });
 
 export function lifeConfigGroups(): ConfigGroup[] {
@@ -108,6 +111,14 @@ export function lifeConfigGroups(): ConfigGroup[] {
           description: '饿了、困了、脏了、闷了、孤单了 —— 掉到 30 以下时，她会不会自己开口说一句。'
             + '\n\n「一天一次」= 同一条需求一天最多提一次（推荐）。'
             + '\n「每次都提醒」会在她一直饿着的时候反复说，通常太吵。',
+          'x-hot': true,
+        },
+        'worlds.life.diaryDir': {
+          type: 'string',
+          title: '生活日记保存目录',
+          description: '她在家过日子时，以第一人称写下的日记和日常经历保存在哪儿。'
+            + '\n\n留空：存在本机默认数据目录（life-diary）。'
+            + '\n填路径：存到你指定的文件夹（比如 OneDrive 或坚果云同步盘），改完立即生效。',
           'x-hot': true,
         },
       },

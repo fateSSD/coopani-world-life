@@ -348,6 +348,58 @@
         "zh": "在早市或鱼市街摊位买菜。",
         "en": "Buy food at the morning market or town stalls."
       }
+    },
+    {
+      "name": "life_diary_write",
+      "description": "用第一人称写一篇今天的生活日记，存到本地或你设定的目录里。在外面旅行且旅行扩展开着时用旅行日记，在家过日子用这个。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "dateKey": {
+            "type": "string"
+          }
+        }
+      },
+      "tags": [
+        "write"
+      ],
+      "summary": {
+        "zh": "写一篇第一人称生活日记。",
+        "en": "Write a first-person daily life diary entry."
+      }
+    },
+    {
+      "name": "life_diary_read",
+      "description": "读回自己写过的生活日记：某一天全文、某个月的目录、或最近几天。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dateKey": {
+            "type": "string"
+          },
+          "month": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          }
+        }
+      },
+      "tags": [
+        "read"
+      ],
+      "summary": {
+        "zh": "读回自己写过的生活日记。",
+        "en": "Read back her daily life diary entries."
+      }
     }
   ],
   "events": [
@@ -356,6 +408,14 @@
       "description": {
         "zh": "某条需求掉到了阈值以下。",
         "en": "One of her needs dropped below the threshold."
+      },
+      "trigger": "debounce"
+    },
+    {
+      "type": "life.day",
+      "description": {
+        "zh": "白天精力充足且今天还没出工。",
+        "en": "Daytime reminder when she has enough energy and hasn't worked today."
       },
       "trigger": "debounce"
     },

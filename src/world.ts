@@ -2,12 +2,13 @@ import { statSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VersionCheck } from './version-check.ts';
+import { LifeDiaryStore } from './diary.ts';
 import type {
   Logger, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp, TriggerMode,
 } from 'cortico/core/types.ts';
 import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
 import {
-  ACTS, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, LOW, MAX_PENDING, MAX_PLEDGES,
+  ACTS, CRITICAL, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, LOW, MAX_PENDING, MAX_PLEDGES,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL,
   advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyGift, asleepRefusal, isAsleep,
   localDateKey, noteVisit, quoteMove, readyGoals,
@@ -73,6 +74,7 @@ export class LifeWorld implements World {
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly opts: LifeWorldOptions;
   private readonly store: StateStore;
+  private readonly diary: LifeDiaryStore;
   private state: LifeState;
   private journey: JourneyView;
   private town: TownView = { ...BUILTIN_TOWN };
@@ -80,6 +82,7 @@ export class LifeWorld implements World {
   constructor(opts: LifeWorldOptions) {
     this.opts = opts;
     this.store = new StateStore(opts.dataDir);
+    this.diary = new LifeDiaryStore(opts.dataDir);
     /*
      * 版本检查（2026-11-15，照 journey 那套搬过来的）。
      *
@@ -112,6 +115,7 @@ export class LifeWorld implements World {
   private lastTickMs = 0;
   private lastTownUrl: string | null = null;
   private lastHomeCity: string | null = null;
+  private lastDiaryDir: string | null = null;
 
   /**
    * 会话文件的 mtime 基线。
@@ -153,6 +157,9 @@ export class LifeWorld implements World {
     this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
     this.lastTownUrl = String(this.cfg.townUrl || '').trim();
     this.lastHomeCity = String(this.cfg.homeCity || '').trim();
+    this.lastDiaryDir = String(this.cfg.diaryDir || '').trim();
+    const dh = this.diary.configure(this.lastDiaryDir);
+    if (dh.problem) host.log.warn(`模拟鱼生：${dh.problem}`);
     /*
      * 基线：启动那一刻文件的时间戳。之后变了才算「他又说过话」。
      * 启动时文件不存在（`0`）就不算立过基线 —— 它第一次出现说明他刚聊过，要记。
@@ -238,6 +245,12 @@ export class LifeWorld implements World {
     if (ms !== this.lastTickMs) this.restartTimer();
     const townUrl = String(this.cfg.townUrl || '').trim();
     const homeCity = String(this.cfg.homeCity || '').trim();
+    const diaryDir = String(this.cfg.diaryDir || '').trim();
+    if (this.lastDiaryDir !== null && diaryDir !== this.lastDiaryDir) {
+      this.lastDiaryDir = diaryDir;
+      const dh = this.diary.configure(diaryDir);
+      this.log?.info(`模拟鱼生：生活日记目录切到 ${dh.dir}${dh.problem ? `（${dh.problem}）` : ''}`);
+    }
     if (
       (this.lastTownUrl !== null && townUrl !== this.lastTownUrl)
       || (this.lastHomeCity !== null && homeCity !== this.lastHomeCity)
@@ -309,6 +322,41 @@ export class LifeWorld implements World {
     /* 饿醒了要说一声 —— 见 `reportHungryWake`。 */
     await this.reportHungryWake(r, now);
 
+    /*
+     * 白天未出工提醒（一天最多一次）：
+     * 醒着、无病、精力充足、五条不缺且今天还没出过工时，给一条事实提示，
+     * 避免手上挂着目标却全天忘了出工。
+     */
+    const at = herNow(this.journey, now);
+    const hr = at.getHours();
+    const allOk = (Object.keys(this.state.vitals) as VitalKey[]).every((k) => this.state.vitals[k] >= LOW);
+    if (
+      !isAsleep(this.state, now)
+      && hr >= 9 && hr <= 17
+      && this.state.conditions.length === 0
+      && this.state.vitals.energy >= 55
+      && allOk
+      && this.state.job.lastAt !== today
+      && this.shouldNag('day:work', now)
+    ) {
+      this.state.nagged['day:work'] = today;
+      const goalGap = readyGoals(this.state).length === 0 && this.state.goals.length
+        ? this.state.goals.filter((g) => !g.done && g.need > this.state.money.cash)
+          .map((g) => `距「${g.what}」还差 ${g.need - this.state.money.cash} 元`).join('；')
+        : '';
+      const jobHint = this.state.job.what
+        ? `上次做的是「${this.state.job.what}」（${this.state.job.daily} 元/天）`
+        : '还没定固定活（可以先挑个零工）';
+      await this.push(
+        'life.day',
+        `现在是白天（${DAYPART_LABEL[dayPart(at)]}），精力 ${Math.round(this.state.vitals.energy)}，今天还没出过工。`
+          + `${jobHint}；手上 ${Math.round(this.state.money.cash)} 元`
+          + (goalGap ? `（${goalGap}）` : '')
+          + '，房租和吃饭每天在扣。出不出工、去不去读书或出门，你自己定。',
+        'debounce',
+      );
+    }
+
     if (dirty) {
       try { this.store.save(this.state); } catch (e) {
         /* 存不进去要说，但**不能把 tick 搞挂** —— 下一跳还会再来一次。 */
@@ -327,11 +375,10 @@ export class LifeWorld implements World {
   private async flushCrossed(r: AdvanceResult, now: Date): Promise<void> {
     if (isAsleep(this.state, now)) {
       /*
-       * 在睡：只记不说。`bottomed` 也一起记 —— 见底比越线更该提，
-       * 只是同样不该在半夜提。醒来时按当时的真实值重算正文，
+       * 在睡：只记不说。`critical` / `bottomed` 也一起记 —— 醒来时按当时的真实值重算正文，
        * 所以这里只存 key，不存「那会儿是多少」。
        */
-      for (const k of [...r.crossed, ...r.bottomed]) {
+      for (const k of [...r.crossed, ...r.critical, ...r.bottomed]) {
         if (!this.state.deferred.includes(k)) this.state.deferred.push(k);
       }
       return;
@@ -340,8 +387,8 @@ export class LifeWorld implements World {
     this.state.deferred = [];
     /* 昨夜欠下的和这一跳新跨的合并去重：同一条只提一次。 */
     const merged = [...new Set([...carry, ...r.crossed])];
-    if (!merged.length && !r.bottomed.length) return;
-    await this.reportCrossed(merged, now, r.bottomed);
+    if (!merged.length && !r.critical.length && !r.bottomed.length) return;
+    await this.reportCrossed(merged, now, r.bottomed, r.critical);
   }
 
   /**
@@ -352,20 +399,35 @@ export class LifeWorld implements World {
    * 后果是**开机后第一件事就是调工具，她饿了一夜却一句提醒都没有** ——
    * `crossed` 判的是「这次推进跨过去的」，被工具消费掉之后 tick 再也看不到。
    *
-   * 说完就记 `nagged`（按本地日期），所以两边不会各说一次。
+   * 推送前再核一遍当前值（`vitals[key]`）：如果同一轮里她刚吃/刚洗补回去了，
+   * 不再推送过期提醒，以免把刚处理好的需求当成噪音。
    */
-  private async reportCrossed(crossed: VitalKey[], now: Date, bottomed: VitalKey[] = []): Promise<void> {
+  private async reportCrossed(
+    crossed: VitalKey[],
+    now: Date,
+    bottomed: VitalKey[] = [],
+    critical: VitalKey[] = [],
+  ): Promise<void> {
     const today = localDateKey(now);
     const seen = new Set<VitalKey>();
     for (const key of bottomed) {
+      if (this.state.vitals[key] > 0) continue;
       const zeroKey = `zero:${key}`;
       if (!this.shouldNag(zeroKey, now)) continue;
       await this.push('life.low', `见底了：${this.lowText(key, 0)}`, 'flush');
       this.state.nagged[zeroKey] = today;
       seen.add(key);
     }
+    for (const key of critical) {
+      if (seen.has(key) || this.state.vitals[key] >= CRITICAL) continue;
+      const critKey = `crit:${key}`;
+      if (!this.shouldNag(critKey, now)) continue;
+      await this.push('life.low', `很缺了：${this.lowText(key, Math.round(this.state.vitals[key]))}`, 'flush');
+      this.state.nagged[critKey] = today;
+      seen.add(key);
+    }
     for (const key of crossed) {
-      if (seen.has(key) || !this.shouldNag(key, now)) continue;
+      if (seen.has(key) || this.state.vitals[key] >= LOW || !this.shouldNag(key, now)) continue;
       await this.push('life.low', this.lowText(key, Math.round(this.state.vitals[key])), 'debounce');
       this.state.nagged[key] = today;
     }
@@ -630,9 +692,11 @@ export class LifeWorld implements World {
      */
     const relief = key === 'energy' ? 1 : (HOME_TIER_RELIEF[this.state.home.tier] ?? 1);
     const hours = v / (DECAY_PER_HOUR[key] * relief);
-    const left = hours >= 1
-      ? `按现在的掉法，${Math.round(hours)} 小时左右见底。`
-      : '按现在的掉法，撑不到一小时。';
+    const left = hours < 1
+      ? '按现在的掉法，撑不到一小时。'
+      : hours <= 6
+        ? `按现在的掉法，约 ${Math.round(hours)} 小时左右见底。`
+        : '已经低于 30 了。';
     /*
      * 「那时候你会怎么样」这句是 2026-11-17 Mr.Q 加的。
      *
@@ -697,6 +761,8 @@ export class LifeWorld implements World {
       this.toolPledge(),
       this.toolGift(),
       this.toolBuy(),
+      this.toolDiaryWrite(),
+      this.toolDiaryRead(),
     ];
   }
 
@@ -1498,9 +1564,10 @@ export class LifeWorld implements World {
       ? `，除了精力，其余四条掉得慢 ${Math.round((1 - relief) * 100)}%`
       : '，最便宜那档，四条照原速掉';
     parts.push(`住处：${HOME_TIER_LABEL[h.tier]}（${ten}），每月 ${h.monthly} 元${reliefText}`);
+    const workedToday = s.job.lastAt === localDateKey(now);
     parts.push(s.job.what
-      ? `做事：${s.job.what}，顶一天 ${s.job.daily} 元，一共出过 ${s.job.days} 天工`
-      : '做事：现在没在做事（可以在本城里顶一天活，见 life_work）');
+      ? `做事：${s.job.what}，顶一天 ${s.job.daily} 元，一共出过 ${s.job.days} 天工（${workedToday ? '今天已出过工' : '今天还没出工，可调 life_work 顶一天活'}）`
+      : `做事：现在没在做事（${workedToday ? '今天已出过工' : '今天还没出工，可以在本城里顶一天活，见 life_work'}）`);
     if (s.job.certs.length) parts.push(`手上的证：${s.job.certs.join('、')}`);
     /*
      * 见识要单独一行（2026-11-17）。
@@ -1509,7 +1576,7 @@ export class LifeWorld implements World {
      * 不给出来，她只知道「考砸了」，说不出「我还差多少」。
      */
     parts.push(`见识：${s.knowledge}（考证能不能过看它；读书和干活涨，不学还会退）`);
-    parts.push(`钱：手上 ${s.money.cash} 元（累计进 ${s.money.earned} / 出 ${s.money.spent}）`);
+    parts.push(`钱：手上 ${s.money.cash} 元（累计进 ${s.money.earned} / 出 ${s.money.spent}，房租和吃饭每天在扣）`);
     /*
      * 出门能用多少（2026-11-17）。
      *
@@ -1588,7 +1655,138 @@ export class LifeWorld implements World {
     /* 街名可能一条都没有（用户只填了城名）—— 那时候不说「城里有：」。 */
     if (this.town.streets.length) parts.push(`城里有：${this.town.streets.join(' / ')}`);
 
+    parts.push(this.diaryLine(j, now));
+    const digest = this.recentLedgerDigest(now);
+    if (digest) parts.push(`最近流水：${digest}`);
+
     return parts.join('\n');
+  }
+
+  /**
+   * 两个扩展都开着时（journey 在运行且不在家），在外面写旅行日记，在家写生活日记。
+   */
+  private inJourneyTrip(j: JourneyView): boolean {
+    return j.installed && j.staleSec <= 1800 && (j.phase === 'staying' || j.phase === 'traveling');
+  }
+
+  private diaryLine(j: JourneyView, now: Date): string {
+    if (this.inJourneyTrip(j)) {
+      return '日记：这会儿在外面旅行，今天的日记写到旅行那边去（journey_diary_write），回到家再写生活日记。';
+    }
+    const today = localDateKey(now);
+    if (this.diary.read(today)) return '日记：今天的生活日记已经写过了。';
+    const at = herNow(j, now);
+    return at.getHours() >= 20
+      ? '日记：今天的生活日记还没写 —— 结合最近流水和今天经历，用第一人称写一条（life_diary_write）。'
+      : '日记：今天的生活日记还没写（晚上再写）。';
+  }
+
+  private recentLedgerDigest(now: Date): string {
+    const today = localDateKey(now);
+    const rows = readLedger(this.opts.dataDir, 8);
+    if (!rows.length) return '';
+    return rows.slice(0, 5).map((e) => {
+      const d = localDateKey(new Date(e.ts));
+      const tag = d === today ? '今天' : d.slice(5);
+      return `${tag} ${e.kind === 'income' ? '+' : '-'}${e.amount}（${e.note || e.source}）`;
+    }).join('；');
+  }
+
+  private toolDiaryWrite(): ToolDef {
+    return {
+      name: 'life_diary_write',
+      description:
+        '用第一人称写一篇今天的生活日记，存到本地或你设定的目录里。'
+        + '写今天在家过日子做了什么、花了什么、经历了什么（结合最近流水与生活片段）。'
+        + '如果旅行扩展也开着且你正在外面旅行，在外面时写旅行日记（journey_diary_write），回到家才用这个写生活日记。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['body'],
+        properties: {
+          body: { type: 'string', description: '第一人称日记正文，写今天做了什么、经历了什么。' },
+          dateKey: { type: 'string', description: '可选，YYYY-MM-DD；不填默认今天。' },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const now = new Date();
+        await this.settleBeforeTool(now);
+        const j = readJourney(this.opts.dataDir, now);
+        this.journey = j;
+        if (this.inJourneyTrip(j)) {
+          const where = j.phase === 'traveling' ? `去${j.toName || '下一站'}的路上` : (j.cityName || '外地');
+          return {
+            text: `你现在正在外面旅行（${where}），旅行和生活两个扩展都开着时，出门期间请用 journey_diary_write 写旅行日记；回到家后再写生活日记。`,
+          };
+        }
+        const body = String(args?.body ?? '').trim();
+        if (!body) return { text: '日记正文是空的，写点今天发生的事再存吧。' };
+        const key = String(args?.dateKey ?? '').trim().slice(0, 10) || localDateKey(now);
+        const w = weatherOf(this.town.name, now);
+        const todayRows = readLedger(this.opts.dataDir, 20)
+          .filter((e) => localDateKey(new Date(e.ts)) === key);
+        const inc = todayRows.filter((e) => e.kind === 'income').reduce((a, b) => a + b.amount, 0);
+        const exp = todayRows.filter((e) => e.kind === 'expense').reduce((a, b) => a + b.amount, 0);
+        const summary = todayRows.length ? `当日入 ${inc} 元 / 出 ${exp} 元` : '';
+        const res = this.diary.write({
+          dateKey: key,
+          townName: this.town.name,
+          street: this.state.street || undefined,
+          weather: w.sky,
+          summary: summary || undefined,
+          body,
+        });
+        if (!res.path) return { text: res.problem ?? '生活日记没写进去。' };
+        remember(this.state, '写了今天的生活日记。', now);
+        try { this.store.save(this.state); } catch { /* ignore */ }
+        return {
+          text: res.problem
+            ? `生活日记只存到本机了（${res.problem}）：${res.path}`
+            : `写好了，${key} 的生活日记已经存进 ${res.path}。`,
+        };
+      },
+    };
+  }
+
+  private toolDiaryRead(): ToolDef {
+    return {
+      name: 'life_diary_read',
+      description: '读回自己写过的生活日记：传 dateKey 读某一天全文，传 month（YYYY-MM）看某月目录，或传 days 读最近几天。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          dateKey: { type: 'string', description: '某一天 YYYY-MM-DD' },
+          month: { type: 'string', description: '某个月 YYYY-MM' },
+          days: { type: 'integer', description: '最近几天，默认 7，最多 30' },
+        },
+      },
+      tags: ['read'],
+      handler: async (args: any) => {
+        const one = String(args?.dateKey ?? '').trim();
+        if (one) {
+          const e = this.diary.read(one.slice(0, 10));
+          if (!e) return { text: `生活日记里没有 ${one.slice(0, 10)} 这天。` };
+          return { text: `${e.dateKey} · ${e.townName}${e.weather ? ` · ${e.weather}` : ''}\n${e.body}` };
+        }
+        const mon = String(args?.month ?? '').trim();
+        if (mon) {
+          const list = this.diary.month(mon.slice(0, 7));
+          if (!list.length) return { text: `${mon.slice(0, 7)} 这个月还没有生活日记。` };
+          return {
+            text: `${mon.slice(0, 7)} 共 ${list.length} 天：\n`
+              + list.map((e) => `${e.dateKey} · ${e.townName} · ${e.body.replace(/\s+/g, ' ').slice(0, 48)}`).join('\n'),
+          };
+        }
+        const days = Math.max(1, Math.min(30, Number(args?.days ?? 7) || 7));
+        const entries = this.diary.recent(days);
+        if (!entries.length) return { text: '生活日记还是空的，一天都还没写。' };
+        return {
+          text: entries.map((e) => `${e.dateKey} · ${e.townName}\n${e.body}`).join('\n\n---\n\n'),
+        };
+      },
+    };
   }
 
   /**
@@ -1639,11 +1837,12 @@ export class LifeWorld implements World {
         : `${this.town.name}（街名还没定，你自己走着看）`,
       'life.street': this.state.street ? `你住在${this.state.street}。` : '你还没选定住在哪条街。',
       'life.who': [
-        `做事：${s.job.what || '现在没在做事'}`,
+        `做事：${s.job.what || '现在没在做事'}（${s.job.lastAt === localDateKey(now) ? '今天已出过工' : '今天还没出工'}）`,
         `住：${this.lodgingText(j)}　${HOME_TIER_LABEL[s.home.tier]}（${s.home.tenure === 'own' ? '买下的' : '租的'}）`,
-        `钱：手上 ${s.money.cash} 元`,
+        `钱：手上 ${s.money.cash} 元（进 ${s.money.earned} / 出 ${s.money.spent}）`,
         `见识：${s.knowledge}`,
       ].join('　·　'),
+      'life.diary': this.diaryLine(j, now),
       'life.goal': s.goals.length
         ? s.goals.map((g) => {
           if (g.done) return `${g.what}（已经做到了）`;
@@ -1776,6 +1975,11 @@ export class LifeWorld implements World {
           title: '她此刻',
           description: '五条需求、身上舒不舒服、心里什么劲、手上在留意什么。',
         },
+        {
+          id: 'diary',
+          title: '生活日记与流水',
+          description: '她以第一人称写下的日常日记，以及最近的流水与经历。',
+        },
       ],
       invoke: (panel, method, args) => this.panelInvoke(panel, method, args),
       config: lifeConfigGroups(),
@@ -1801,6 +2005,7 @@ export class LifeWorld implements World {
           { name: 'life.pledge', description: '说好了还没做的；到期没做的单独标出来。' },
           { name: 'life.visits', description: '最近 7 天他来过几天。' },
           { name: 'life.tellable', description: '还没说出去的生活片段。' },
+          { name: 'life.diary', description: '今天生活日记写了没（与旅行扩展分流）。' },
         ],
       }],
     };
@@ -1835,6 +2040,40 @@ export class LifeWorld implements World {
     const j = readJourney(this.opts.dataDir, now);
     this.journey = j;
     const s = snapshot(this.state, now);
+
+    if (panel === 'diary') {
+      if (method === 'list' || method === 'snapshot' || method === '') {
+        const days = this.diary.recent(60).reverse().map((d) => ({
+          dateKey: d.dateKey,
+          town: d.townName,
+          street: d.street ?? '',
+          weather: d.weather ?? '',
+          summary: d.summary ?? '',
+          body: d.body,
+        }));
+        return {
+          days,
+          dir: this.diary.current.dir,
+          problem: this.diary.current.problem,
+          inTrip: this.inJourneyTrip(j),
+          ledger: readLedger(this.opts.dataDir, 40),
+          tellable: [...this.state.tellable].reverse().slice(0, 20),
+        };
+      }
+      if (method === 'read') {
+        const want = String((args as any)?.dateKey ?? (Array.isArray(args) ? args[0] : '') ?? '').trim();
+        const d = want ? this.diary.read(want) : null;
+        return d ? {
+          dateKey: d.dateKey,
+          town: d.townName,
+          street: d.street ?? '',
+          weather: d.weather ?? '',
+          summary: d.summary ?? '',
+          body: d.body,
+        } : null;
+      }
+      throw new Error(`生活日记页不认识这个方法：${method}`);
+    }
 
     if (method === 'move') {
       const tier = String((args as any)?.tier ?? '');

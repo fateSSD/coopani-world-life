@@ -340,6 +340,21 @@ function ensureStyle(root) {
 .lf-btn:hover { background: #f7f8fa; }
 .lf-foot { margin-top: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .lf-msg { font-size: 12.5px; color: #6b7280; }
+
+.lf-diary-wrap { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.lf-dlist { flex: 0 0 180px; display: flex; flex-direction: column; gap: 6px; }
+.lf-ditem { text-align: left; padding: 8px 10px; border-radius: 8px; border: 1px solid #e5e7eb;
+  background: #fff; cursor: pointer; font: inherit; color: #1b1e24; }
+.lf-ditem:hover { background: #f7f8fa; }
+.lf-ditem[data-on="1"] { border-color: #2f6fed; background: #f0f5ff; }
+.lf-ditem .d { font-size: 12.5px; font-weight: 600; display: block; }
+.lf-ditem .c { font-size: 11.5px; color: #6b7280; }
+.lf-dview { flex: 1 1 280px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px 16px; }
+.lf-dview h2 { margin: 0 0 4px; font-size: 16px; }
+.lf-dmeta { margin: 0 0 12px; font-size: 12px; color: #6b7280; }
+.lf-dp { margin: 0 0 10px; font-size: 13.5px; line-height: 1.75; color: #1f2937; white-space: pre-wrap; }
+.lf-dp:last-child { margin-bottom: 0; }
+.lf-dir { font-size: 11.5px; color: #9ca3af; word-break: break-all; margin: 4px 0 12px; }
 `;
   doc.head.append(s);
 }
@@ -392,11 +407,10 @@ export default {
         const pendingCard = el('div', 'lf-card');
         const pledgeCard = el('div', 'lf-card');
         const giftsCard = el('div', 'lf-card');
-        const ledgerCard = el('div', 'lf-card');
         habits.append(el('h3', null, t(lang, 'habits')));
         watches.append(el('h3', null, t(lang, 'watches')));
         wants.append(el('h3', null, t(lang, 'wants')));
-        cols.append(habits, watches, wants, wishCard, pendingCard, pledgeCard, giftsCard, ledgerCard);
+        cols.append(habits, watches, wants, wishCard, pendingCard, pledgeCard, giftsCard);
         const helpBox = el('details', 'lf-help');
         const fbBox = el('section', 'lf-fb');
         const foot = el('div', 'lf-foot');
@@ -757,8 +771,6 @@ export default {
             (w) => w.what);
           drawList(giftsCard, t(lang, 'gifts'), d.gifts || [],
             (g) => `${g.what}（${g.from || '他'}）`);
-          drawList(ledgerCard, t(lang, 'ledger'), (d.ledger || []).slice(0, 12),
-            (e) => `${e.kind === 'income' ? '+' : '-'}${e.amount}　${e.note || e.source}（${e.payee || ''}）`);
         };
 
         /** 复制到剪贴板。宿主的 webview 里 clipboard API 未必有，要有降级。 */
@@ -897,6 +909,133 @@ export default {
          * 用 `ctx.timeout` 而不是裸 setTimeout：宿主切走页面时它会连带清掉，
          * 裸定时器会在后台一直跑，跑一整天没人发现。
          */
+        const loop = () => {
+          ctx.timeout(() => {
+            load().finally(loop);
+          }, 30_000);
+        };
+        loop();
+      },
+    },
+    diary: {
+      async mount(ctx) {
+        ensureStyle(ctx.root);
+        const app = el('div', 'lf');
+        ctx.root.append(app);
+
+        const head = el('div', 'lf-head');
+        head.append(el('h1', 'lf-town', '生活日记与流水'));
+        app.append(head);
+
+        const dirLine = el('p', 'lf-dir', '读取中…');
+        const notice = el('div', 'lf-note');
+        notice.hidden = true;
+        app.append(dirLine, notice);
+
+        const wrap = el('div', 'lf-diary-wrap');
+        const listBox = el('div', 'lf-dlist');
+        const viewBox = el('article', 'lf-dview');
+        wrap.append(listBox, viewBox);
+        app.append(wrap);
+
+        const cols = el('div', 'lf-cols');
+        const ledgerCard = el('div', 'lf-card');
+        const eventsCard = el('div', 'lf-card');
+        cols.append(ledgerCard, eventsCard);
+        app.append(cols);
+
+        let selectedDate = '';
+        const showEntry = (d) => {
+          viewBox.innerHTML = '';
+          if (!d) {
+            viewBox.append(el('p', 'lf-muted', '还没有写过生活日记 —— 晚上她会根据今天做过的事与最近流水，用第一人称写一篇（也可直接对她说「写一下今天的生活日记」）。'));
+            return;
+          }
+          selectedDate = d.dateKey;
+          viewBox.append(el('h2', null, `${d.dateKey} · ${d.town || '芦花塘'}`));
+          const meta = [d.street, d.weather, d.summary].filter(Boolean).join('　·　');
+          if (meta) viewBox.append(el('p', 'lf-dmeta', meta));
+          for (const para of String(d.body || '').split(/\n{2,}/)) {
+            const p = para.trim();
+            if (p) viewBox.append(el('p', 'lf-dp', p));
+          }
+        };
+
+        const render = (r) => {
+          if (!r) return;
+          dirLine.textContent = r.dir ? `保存目录：${r.dir}（可在设置「生活日记保存目录」修改）` : '';
+          notice.hidden = true;
+          if (r.problem) {
+            notice.hidden = false;
+            notice.textContent = r.problem;
+          } else if (r.inTrip) {
+            notice.hidden = false;
+            notice.textContent = '她目前正在旅行扩展的旅途中 —— 在外面期间会写旅行日记，回到家后恢复写生活日记。';
+          }
+
+          const days = r.days || [];
+          listBox.innerHTML = '';
+          if (!days.length) {
+            showEntry(null);
+          } else {
+            let active = days.find((x) => x.dateKey === selectedDate) || days[0];
+            for (const d of days) {
+              const btn = el('button', 'lf-ditem');
+              btn.type = 'button';
+              if (d.dateKey === active.dateKey) btn.dataset.on = '1';
+              btn.append(el('span', 'd', d.dateKey));
+              btn.append(el('span', 'c', d.town || '芦花塘'));
+              btn.addEventListener('click', () => {
+                for (const ch of listBox.children) if (ch.dataset) delete ch.dataset.on;
+                btn.dataset.on = '1';
+                showEntry(d);
+              });
+              listBox.append(btn);
+            }
+            showEntry(active);
+          }
+
+          ledgerCard.innerHTML = '';
+          ledgerCard.append(el('h3', null, '最近流水'));
+          const ledger = r.ledger || [];
+          if (!ledger.length) {
+            ledgerCard.append(el('p', 'lf-muted', '暂无收支流水。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const e of ledger) {
+              const li = el('li');
+              const sign = e.kind === 'income' ? '+' : '-';
+              const day = e.ts ? String(e.ts).slice(5, 10) : '';
+              li.append(document.createTextNode(`${sign}${e.amount}　${e.note || e.source}${e.payee ? `（${e.payee}）` : ''}`));
+              if (day) li.append(el('span', 'id', day));
+              ul.append(li);
+            }
+            ledgerCard.append(ul);
+          }
+
+          eventsCard.innerHTML = '';
+          eventsCard.append(el('h3', null, '最近经历'));
+          const tells = r.tellable || [];
+          if (!tells.length) {
+            eventsCard.append(el('p', 'lf-muted', '暂无经历片段。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const it of tells) {
+              const li = el('li');
+              const day = it.at ? String(it.at).slice(5, 10) : '';
+              li.append(document.createTextNode(it.text || ''));
+              if (day) li.append(el('span', 'id', day));
+              ul.append(li);
+            }
+            eventsCard.append(ul);
+          }
+        };
+
+        const load = () => ctx.invoke('list').then(render).catch((e) => {
+          dirLine.textContent = (e && e.message) ? e.message : '读取失败';
+        });
+        await load();
+
         const loop = () => {
           ctx.timeout(() => {
             load().finally(loop);

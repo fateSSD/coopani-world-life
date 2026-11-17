@@ -863,13 +863,23 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
    * 已经住到别墅区的也不再立（没得搬了，立了就是个永远做不完的条）。
    */
   const goals = arr<Goal>(s.goals).filter((g) => g && typeof g.id === 'string');
+  const money = normMoney(s.money, now);
   const fallbackGoal = (): Goal[] => {
-    const next = nextHomeTier(home.tier);
-    if (!next) return [];
-    const need = HOME_TIER_COST[next] * MOVING_DEPOSIT_MONTHS;
+    let target = nextHomeTier(home.tier);
+    /*
+     * 兜底目标不能一立下来就「已经攒够了」（例如开局 3000 元时立老小区 2400），
+     * 否则刚上线目标就显示「钱够了」，失去攒钱动力。若当前现金已够下一档，顺延一档。
+     */
+    while (target && money.cash >= HOME_TIER_COST[target] * MOVING_DEPOSIT_MONTHS) {
+      const higher = nextHomeTier(target);
+      if (!higher) break;
+      target = higher;
+    }
+    if (!target) return [];
+    const need = HOME_TIER_COST[target] * MOVING_DEPOSIT_MONTHS;
     return [{
-      id: `g-home-${next}`,
-      what: `攒够 ${need}，搬到${HOME_TIER_LABEL[next]}`,
+      id: `g-home-${target}`,
+      what: `攒够 ${need}，搬到${HOME_TIER_LABEL[target]}`,
       need,
       since: now.toISOString(),
     }];
@@ -904,7 +914,7 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     street: typeof s.street === 'string' ? s.street : '',
     home,
     job: normJob(s.job),
-    money: normMoney(s.money, now),
+    money,
     goals: goals.length ? goals : fallbackGoal(),
     nagged: (s.nagged && typeof s.nagged === 'object') ? s.nagged : {},
     spendApplied: arr(s.spendApplied).filter((x) => typeof x === 'string').slice(-120),
@@ -949,9 +959,11 @@ function normAsleepFrom(s: Partial<LifeState>, now: Date): string {
 function normAsleepUntil(s: Partial<LifeState>, now: Date): string {
   if (typeof s.asleepUntil !== 'string' || !s.asleepUntil) return '';
   const u = Date.parse(s.asleepUntil);
-  /* 已经过点的，就是醒了 —— 留着会让「她在睡」永远为真。 */
-  if (!Number.isFinite(u) || u <= now.getTime()) return '';
-  /* 起点不成立（见上），那就别承认这次睡眠。 */
+  /*
+   * 哪怕已经过了醒来时刻，这里也不直接清空 —— 跨关机睡了一整夜时，
+   * 必须先保留给随后的 `advance()` 去按睡过的钟点补精力，再由 `advance()` 清空。
+   */
+  if (!Number.isFinite(u)) return '';
   return normAsleepFrom(s, now) ? s.asleepUntil : '';
 }
 
@@ -1019,6 +1031,8 @@ export interface AdvanceResult {
   rent: number;
   /** 这一次推进里，哪几条从「够」掉进了「低」。按需求分，同一条一小时只报一次。 */
   crossed: VitalKey[];
+  /** 这一次推进里，哪几条掉进了「很缺」（CRITICAL = 15）。 */
+  critical: VitalKey[];
   /** 这一次推进里，哪几条从「大于 0」掉到了「见底（0）」。单独算一次紧急提醒额度。 */
   bottomed: VitalKey[];
   /** 这次推进里自己好起来的病。 */
@@ -1068,7 +1082,7 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
   const rawHours = Number.isFinite(from) ? (to - from) / 3_600_000 : 0;
   if (!(rawHours > 0)) {
     return {
-      hours: 0, crossed: [], bottomed: [], recovered: [], caught: [],
+      hours: 0, crossed: [], critical: [], bottomed: [], recovered: [], caught: [],
       rentMissed: false, rent: 0, woke: null, sleptHours: 0,
     };
   }
@@ -1213,6 +1227,11 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
   if (woke) {
     state.asleepFrom = '';
     state.asleepUntil = '';
+    if (state.vitals.energy >= LOW + 15 && state.nagged) {
+      delete state.nagged.energy;
+      delete state.nagged['crit:energy'];
+      delete state.nagged['zero:energy'];
+    }
     const w = woke;
     const mood = w.reason === 'enough'
       ? { text: '睡够了，脑子是清的', kind: 'good' as const }
@@ -1297,15 +1316,17 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
    * 醒来仍低再说。**记录和推送是两件事**，别在记录这一层替她决定要不要说。
    */
   const crossed: VitalKey[] = [];
+  const critical: VitalKey[] = [];
   const bottomed: VitalKey[] = [];
   for (const key of Object.keys(DECAY_PER_HOUR) as VitalKey[]) {
     if (before[key] >= LOW && state.vitals[key] < LOW) crossed.push(key);
+    if (before[key] >= CRITICAL && state.vitals[key] < CRITICAL) critical.push(key);
     if (before[key] > 0 && state.vitals[key] <= 0) bottomed.push(key);
   }
 
   state.updatedAt = iso;
   return {
-    hours, crossed, bottomed, recovered, caught, rentMissed, rent,
+    hours, crossed, critical, bottomed, recovered, caught, rentMissed, rent,
     woke, sleptHours: sleepHours,
   };
 }
@@ -1478,6 +1499,11 @@ export function applyAct(
     const r = advance(state, now);
     state.asleepFrom = '';
     state.asleepUntil = '';
+    if (state.vitals.energy >= LOW + 15 && state.nagged) {
+      delete state.nagged.energy;
+      delete state.nagged['crit:energy'];
+      delete state.nagged['zero:energy'];
+    }
     let mood: Moodlet | null = null;
     if (!r.woke) {
       const good = slept >= SLEEP_ENOUGH_HOURS;
@@ -1515,6 +1541,12 @@ export function applyAct(
     if (key === 'food' && d > 0 && hasStomach) d = Math.round(d * .5);
     if (d > 0 && hasHangover) d = Math.round(d * .75);
     state.vitals[key] = clamp100(state.vitals[key] + d);
+    /* 补回到安全线（45）以上时清掉当日提醒锁，避免一天后两顿再饿时完全静音。 */
+    if (d > 0 && state.vitals[key] >= LOW + 15 && state.nagged) {
+      delete state.nagged[key];
+      delete state.nagged[`crit:${key}`];
+      delete state.nagged[`zero:${key}`];
+    }
   }
 
   /*
