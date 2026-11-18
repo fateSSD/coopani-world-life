@@ -8,7 +8,7 @@
 - **基本**：{{life.who}}
 - **目标**：{{life.goal}}
 - **五条**：{{life.body}}（缺：{{life.low}}）
-- **状态与心情**：{{life.state}}
+- **状态与心情**：{{life.state}} · 体质 {{life.fitness}}
 - **手头记着**：{{life.has}} · {{life.visits}} · {{life.diary}}
 - **悬着的事**：{{life.pending}}
 - **说好了的事**：{{life.pledge}}

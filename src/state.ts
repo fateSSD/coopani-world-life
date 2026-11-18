@@ -436,6 +436,8 @@ export interface LifeState {
    * 它更像 `job.days` —— 只往上走，走慢一点。
    */
   knowledge: number;
+  /** 体质（0–100）。运动、体力活与旅途步行/骑行提升，加快精力恢复速度并抗疲劳。 */
+  fitness: number;
   /**
    * 每张证最后一次去考是哪天（`YYYY-MM-DD`，本地日期）。
    *
@@ -559,6 +561,53 @@ export const KNOWLEDGE_DECAY_PER_HOUR = 0.05;
 
 /** 见识封顶。到顶之后再读只补娱乐，不再涨 —— 读成专家就没意思了。 */
 export const KNOWLEDGE_MAX = 100;
+
+/** 体质参数（0–100）：长期不动极其缓慢微降（保底 5 不清零）；高体质加快睡眠精力恢复。 */
+export const FITNESS_INITIAL = 25;
+export const FITNESS_MIN = 5;
+export const FITNESS_MAX = 100;
+export const FITNESS_DECAY_PER_HOUR = 0.02;
+
+/** 按体质算睡眠/小憩精力恢复倍率：基准体质(25)及以下为 1.00，练满(100)为 1.30。 */
+export function fitnessEnergyRegenMult(fitness: number): number {
+  const f = Math.max(0, Math.min(FITNESS_MAX, Number.isFinite(fitness) ? fitness : FITNESS_INITIAL));
+  if (f <= FITNESS_INITIAL) return 1;
+  return 1 + ((f - FITNESS_INITIAL) / (FITNESS_MAX - FITNESS_INITIAL)) * 0.3;
+}
+
+/** 酒店档位对应日常四条（除精力外）的衰减减免；豪华档娱乐与社交稳住不掉。 */
+export const HOTEL_TIER_RELIEF: Record<'budget' | 'comfort' | 'view' | 'luxury', number> = {
+  budget: 1,
+  comfort: 0.9,
+  view: 0.8,
+  luxury: 0.65,
+};
+
+/** 旅途交通方式对醒着精力/饱腹衰减的倍率（相对于在家静态衰减）。 */
+export const TRAVEL_MODE_DECAY_MULT: Record<string, { energy: number; food: number }> = {
+  walk: { energy: 2.2, food: 1.35 },
+  bike: { energy: 1.7, food: 1.2 },
+  motorcycle: { energy: 1.4, food: 1.05 },
+  scooter: { energy: 1.15, food: 1 },
+  car: { energy: 1, food: 1 },
+  bus: { energy: 0.85, food: 1 },
+  train: { energy: 0.8, food: 1 },
+  ship: { energy: 0.8, food: 1 },
+  plane: { energy: 0.85, food: 1 },
+};
+
+/** 体力类工作 id：干满收工涨体质。 */
+export const PHYSICAL_JOB_IDS = new Set([
+  'porter', 'waiter', 'delivery', 'flyer',
+  'kitchen', 'renovation', 'errand', 'stall',
+  'caregiver', 'electrician',
+]);
+
+export interface AdvanceExt {
+  phase?: '' | 'home' | 'staying' | 'traveling';
+  hotelTier?: '' | 'budget' | 'comfort' | 'view' | 'luxury';
+  modeId?: string;
+}
 
 /** 她的行为表。除了 wake / cancel，每件事都要花一段真实时间，按分钟慢慢生效。 */
 export interface ActKind {
@@ -793,6 +842,7 @@ export function freshState(now: Date = new Date()): LifeState {
     spendApplied: [],
     deferred: [],
     knowledge: 0,
+    fitness: FITNESS_INITIAL,
     certLast: {},
     asleepFrom: '',
     asleepUntil: '',
@@ -976,6 +1026,7 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     spendApplied: arr(s.spendApplied).filter((x) => typeof x === 'string').slice(-120),
     deferred: arr<unknown>(s.deferred).filter((k): k is VitalKey => typeof k === 'string' && k in DECAY_PER_HOUR),
     knowledge: Number.isFinite(Number(s.knowledge)) ? clamp100(Number(s.knowledge)) : 0,
+    fitness: Number.isFinite(Number(s.fitness)) ? Math.max(FITNESS_MIN, clamp100(Number(s.fitness))) : FITNESS_INITIAL,
     certLast: (s.certLast && typeof s.certLast === 'object' && !Array.isArray(s.certLast))
       ? Object.fromEntries(
         Object.entries(s.certLast as Record<string, unknown>)
@@ -1170,7 +1221,7 @@ export interface WakeResult {
  * **跨时段必须分段** —— 一次推进跨了八小时睡眠加三天醒着，
  * 整段套一种规则会把后面那三天也算成在睡觉。
  */
-export function advance(state: LifeState, now: Date): AdvanceResult {
+export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceResult {
   const from = Date.parse(state.updatedAt);
   const to = now.getTime();
   const rawHours = Number.isFinite(from) ? (to - from) / 3_600_000 : 0;
@@ -1306,7 +1357,12 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
             state.money.cash += earned;
             state.money.earned += earned;
           }
-          if (!outOfCash) state.job.days += 1;
+          if (!outOfCash) {
+            state.job.days += 1;
+            if (PHYSICAL_JOB_IDS.has(actTask.id)) {
+              state.fitness = Math.min(FITNESS_MAX, state.fitness + 1.5);
+            }
+          }
           remember(state, `${actTask.label}，挣了 ${earned} 元。`, endAt);
           completed.push({
             kind: 'work',
@@ -1328,6 +1384,10 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
             });
           }
           const actDef = ACTS[actTask.id];
+          if (!outOfCash) {
+            const fitGain = actTask.id === 'workout' ? 3 : (actTask.id === 'tidy' || actTask.id === 'pond' ? 0.5 : 0);
+            if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain);
+          }
           const sceneBit = actDef?.scene ? `在${actDef.scene}` : '';
           const propBit = actDef?.props ? `（${actDef.props}）` : '';
           remember(
@@ -1363,15 +1423,27 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
    * 见 `HOME_TIER_RELIEF`。睡着那段的清爽也一起受它影响 ——
    * 潮气和通风不因为她躺着就绕道。
    */
-  const reliefOf = (key: VitalKey): number =>
-    key === 'energy' ? 1 : (HOME_TIER_RELIEF[state.home.tier] ?? 1);
+  const stayingTier = ext?.phase === 'staying' && ext.hotelTier ? ext.hotelTier : null;
+  const travelMult = ext?.phase === 'traveling' && ext.modeId ? TRAVEL_MODE_DECAY_MULT[ext.modeId] : null;
+  const hotelSleepBonus = stayingTier === 'luxury' ? 1.15 : stayingTier === 'view' ? 1.08 : 1;
+  const energyRegenMult = fitnessEnergyRegenMult(state.fitness) * hotelSleepBonus;
+  const reliefOf = (key: VitalKey): number => {
+    if (key === 'energy') return 1;
+    if (stayingTier === 'luxury' && (key === 'fun' || key === 'social')) return 0;
+    return stayingTier ? HOTEL_TIER_RELIEF[stayingTier] : (HOME_TIER_RELIEF[state.home.tier] ?? 1);
+  };
 
   for (const key of Object.keys(DECAY_PER_HOUR) as VitalKey[]) {
     /* 精力不衰减，是**另算回升** —— 锁死的话她睡八小时醒来还是原值。 */
-    const sleepDelta = key === 'energy' ? SLEEP_ENERGY_PER_HOUR : -SLEEP_DECAY_PER_HOUR[key];
+    const sleepDelta = key === 'energy'
+      ? SLEEP_ENERGY_PER_HOUR * energyRegenMult
+      : -SLEEP_DECAY_PER_HOUR[key];
     const relief = reliefOf(key);
+    const modeFactor = key === 'energy'
+      ? (travelMult?.energy ?? 1)
+      : (key === 'food' ? (travelMult?.food ?? 1) : 1);
     const v = state.vitals[key]
-      - DECAY_PER_HOUR[key] * relief * awakeHours
+      - DECAY_PER_HOUR[key] * relief * modeFactor * awakeHours
       + sleepDelta * relief * sleepHours;
     state.vitals[key] = clamp100(v);
   }
@@ -1386,6 +1458,9 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
    */
   if (state.knowledge > 0) {
     state.knowledge = Math.max(0, state.knowledge - KNOWLEDGE_DECAY_PER_HOUR * hours);
+  }
+  if (state.fitness > FITNESS_MIN) {
+    state.fitness = Math.max(FITNESS_MIN, state.fitness - FITNESS_DECAY_PER_HOUR * hours);
   }
 
   /*
@@ -2273,7 +2348,7 @@ export interface SpendSettle {
 
 export function applySpend(
   state: LifeState,
-  reqs: readonly { id: string; amount: number; note?: string }[],
+  reqs: readonly { id: string; amount: number; note?: string; invalid?: boolean; vitalsDelta?: Partial<Record<VitalKey, number>>; fitnessDelta?: number; moodlet?: { text: string; kind: 'good' | 'bad'; hours: number } }[],
   now: Date,
 ): { settled: SpendSettle[]; changed: boolean } {
   const done = new Set(state.spendApplied);
@@ -2288,14 +2363,42 @@ export function applySpend(
       settled.push({ id, status: 'applied' });
       continue;
     }
-    const amount = Math.round(Number(r?.amount));
-    if (!Number.isFinite(amount) || amount <= 0) {
+    const amount = Math.round(Number(r?.amount ?? 0));
+    const hasEffect = Boolean(r?.vitalsDelta || r?.fitnessDelta || r?.moodlet);
+    if (r?.invalid || !Number.isFinite(amount) || amount < 0 || (amount === 0 && !hasEffect)) {
       state.spendApplied.push(id);
       settled.push({ id, status: 'rejected' });
       changed = true;
       continue;
     }
-    const pay = Math.min(amount, Math.max(0, Math.round(state.money.cash)));
+    const pay = amount > 0 ? Math.min(amount, Math.max(0, Math.round(state.money.cash))) : 0;
+    if (r?.vitalsDelta) {
+      for (const k of Object.keys(DECAY_PER_HOUR) as VitalKey[]) {
+        const d = Number(r.vitalsDelta[k]);
+        if (Number.isFinite(d) && d !== 0) {
+          state.vitals[k] = clamp100(state.vitals[k] + d);
+          if (d > 0 && state.vitals[k] >= LOW + 15 && state.nagged) {
+            delete state.nagged[k];
+            delete state.nagged[`crit:${k}`];
+            delete state.nagged[`zero:${k}`];
+          }
+        }
+      }
+    }
+    if (typeof r?.fitnessDelta === 'number' && Number.isFinite(r.fitnessDelta) && r.fitnessDelta !== 0) {
+      state.fitness = Math.max(FITNESS_MIN, Math.min(FITNESS_MAX, state.fitness + r.fitnessDelta));
+    }
+    if (r?.moodlet && r.moodlet.text) {
+      const hrs = Number.isFinite(r.moodlet.hours) && r.moodlet.hours > 0 ? r.moodlet.hours : 3;
+      state.moodlets = state.moodlets.filter((m) => m.source !== `journey:${id}`);
+      state.moodlets.push({
+        id: `m-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        source: `journey:${id}`,
+        text: r.moodlet.text,
+        kind: r.moodlet.kind === 'bad' ? 'bad' : 'good',
+        expiresAt: new Date(now.getTime() + hrs * 3_600_000).toISOString(),
+      });
+    }
     state.money.cash -= pay;
     state.money.spent += pay;
     state.spendApplied.push(id);
@@ -2304,7 +2407,7 @@ export function applySpend(
     const note = String(r?.note ?? '').slice(0, 60);
     if (pay < amount) {
       remember(state, `${note || '旅行的花销'}没付清，还差 ${amount - pay} 元。`, now);
-    } else if (note) {
+    } else if (amount > 0 && note) {
       remember(state, `${note}花了 ${amount} 元。`, now);
     }
   }
@@ -2541,6 +2644,8 @@ export interface Snapshot {
   } | null;
   /** 见识（0–100）。考证的通过率由它决定。**不是第六条需求** —— 它只增不减。 */
   knowledge: number;
+  /** 体质（0–100）。运动、体力活与旅途步行/骑行提升，加快精力恢复速度并抗疲劳。 */
+  fitness: number;
 }
 
 export interface WeatherInfo {
@@ -2727,5 +2832,6 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     asleep,
     activity: activitySnap,
     knowledge: Math.round(state.knowledge),
+    fitness: Math.round(state.fitness),
   };
 }

@@ -286,7 +286,7 @@ export class LifeWorld implements World {
      */
     this.settleSpendRequests(now);
     this.broadcastLife(now);
-    const r = advance(this.state, now);
+    const r = advance(this.state, now, { phase: this.journey.phase, hotelTier: this.journey.hotelTier, modeId: this.journey.modeId });
     if (r.hours <= 0) return;
 
     this.settleCompleted(r, now);
@@ -502,7 +502,7 @@ export class LifeWorld implements World {
   }
 
   private async settleBeforeTool(now: Date): Promise<void> {
-    const r = advance(this.state, now);
+    const r = advance(this.state, now, { phase: this.journey.phase, hotelTier: this.journey.hotelTier, modeId: this.journey.modeId });
     if (r.hours <= 0) return;
     this.settleCompleted(r, now);
     /* 工具能调，说明她已经醒了 —— `flushCrossed` 会走醒着那一支，昨夜欠的一起补。 */
@@ -548,6 +548,10 @@ export class LifeWorld implements World {
         ledger: {
           cash: this.state.money.cash,
           travelAllowance: allowance,
+        },
+        vitals: {
+          energy: Math.round(this.state.vitals.energy),
+          fitness: Math.round(this.state.fitness),
         },
         settled: this.recentSettled.slice(-40),
         town: { id: this.town.id, name: this.town.name, weather: w.sky },
@@ -1678,6 +1682,7 @@ export class LifeWorld implements World {
      * 不给出来，她只知道「考砸了」，说不出「我还差多少」。
      */
     parts.push(`见识：${s.knowledge}（读书和专业活都能涨见识，够了考下证就能接更体面高薪的活；不学也会退）`);
+    parts.push(`体质：${s.fitness}（跑步锻炼、体力活与旅途步行骑行会涨；体质越高精力恢复越快、也不易疲惫）`);
     const dailyBase = Math.max(15, Math.round(h.monthly / 30) + 15);
     const moneyMood = s.money.cash < dailyBase * 5
       ? '手头偏紧，每天还有房租和吃饭开销'
@@ -2029,6 +2034,7 @@ export class LifeWorld implements World {
       ].join('　·　'),
       'life.diary': this.diaryLine(j, now),
       'life.library': this.library.summaryLine(),
+      'life.fitness': String(s.fitness),
       'life.goal': s.goals.length
         ? s.goals.map((g) => {
           if (g.done) return `${g.what}（已经做到了）`;

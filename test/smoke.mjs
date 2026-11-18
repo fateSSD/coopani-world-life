@@ -1356,6 +1356,56 @@ console.log('\n[老版本的 settings.json 要搬过来]');
   ok(s.policy === 'active' && s.cooldownMin === 30, '升级后旧设置搬到了新位置', JSON.stringify(s));
 }
 
+console.log('\n[50] 体质词条、豪华酒店稳住娱乐社交、交通消耗倍率与条子五维反哺');
+{
+  const t0 = new Date('2026-11-18T08:00:00Z');
+  const stFit = freshState(t0);
+  ok(stFit.fitness === 25, '新档体质初始 25');
+  applyAct(stFit, 'workout', t0);
+  advance(stFit, new Date(t0.getTime() + ACTS.workout.minutes * 60_000));
+  ok(stFit.fitness > 27, '跑步锻炼后体质上升', String(stFit.fitness));
+
+  /* 高体质睡眠精力恢复快于基准体质 */
+  const sLow = freshState(t0);
+  const sHigh = freshState(t0);
+  sLow.vitals.energy = 30;
+  sHigh.vitals.energy = 30;
+  sHigh.fitness = 100;
+  applyAct(sLow, 'sleep', t0);
+  applyAct(sHigh, 'sleep', t0);
+  advance(sLow, new Date(t0.getTime() + 4 * 3_600_000));
+  advance(sHigh, new Date(t0.getTime() + 4 * 3_600_000));
+  ok(sHigh.vitals.energy > sLow.vitals.energy + 10, '高体质睡眠精力回得更快', `${sLow.vitals.energy} vs ${sHigh.vitals.energy}`);
+
+  /* 豪华酒店期间娱乐与社交稳住不掉 */
+  const sLux = freshState(t0);
+  sLux.vitals.fun = 80;
+  sLux.vitals.social = 80;
+  advance(sLux, new Date(t0.getTime() + 6 * 3_600_000), { phase: 'staying', hotelTier: 'luxury' });
+  ok(sLux.vitals.fun === 80 && sLux.vitals.social === 80, '豪华酒店期间娱乐社交稳住不掉');
+
+  /* 路上步行比自驾更耗精力 */
+  const sWalk = freshState(t0);
+  const sCar = freshState(t0);
+  advance(sWalk, new Date(t0.getTime() + 3 * 3_600_000), { phase: 'traveling', modeId: 'walk' });
+  advance(sCar, new Date(t0.getTime() + 3 * 3_600_000), { phase: 'traveling', modeId: 'car' });
+  ok(sWalk.vitals.energy < sCar.vitals.energy - 5, '步行赶路比自驾更耗精力', `${sWalk.vitals.energy} vs ${sCar.vitals.energy}`);
+
+  /* applySpend 消费纯状态反哺条子（amount=0） */
+  const sEff = freshState(t0);
+  sEff.vitals.food = 40;
+  sEff.vitals.energy = 60;
+  const { settled } = applySpend(sEff, [{
+    id: 'eff-1',
+    amount: 0,
+    note: '旅途吃顿好的',
+    vitalsDelta: { food: 35, energy: -10 },
+    fitnessDelta: 2,
+    moodlet: { text: '在当地吃了顿顺口的好饭', kind: 'good', hours: 3 },
+  }], t0);
+  ok(settled[0]?.status === 'applied' && sEff.vitals.food === 75 && sEff.vitals.energy === 50 && sEff.fitness === 27 && sEff.moodlets.some((m) => /好饭/.test(m.text)), 'applySpend 支持 amount=0 五维/体质/心情反哺');
+}
+
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);
 
 process.exit(fail ? 1 : 0);

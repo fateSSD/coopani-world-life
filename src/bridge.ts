@@ -39,6 +39,10 @@ export interface JourneyView {
   /** 这一趟累计花了多少、挣了多少（旅行那边的账）。 */
   spent: number;
   earned: number;
+  /** 在路上时的交通方式 id（walk / bike / car / bus / train / ship / plane 等）。 */
+  modeId: string;
+  /** 在外地住店时的酒店档位。 */
+  hotelTier: '' | 'budget' | 'comfort' | 'view' | 'luxury';
 }
 
 const EMPTY_JOURNEY: JourneyView = {
@@ -53,6 +57,8 @@ const EMPTY_JOURNEY: JourneyView = {
   moneyOn: false,
   spent: 0,
   earned: 0,
+  modeId: '',
+  hotelTier: '',
 };
 
 /**
@@ -91,12 +97,19 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
   /* 记账这两格：读不到就当「不知道」（0 / false），不猜——猜错方向会让她乱花钱。 */
   const spent = Number(raw.money?.spent);
   const earned = Number(raw.money?.earned);
+  const modeId = phase === 'traveling' && typeof raw.leg?.modeId === 'string' ? raw.leg.modeId : '';
+  const rawTier = raw.hotelTier;
+  const hotelTier = phase === 'staying' && (rawTier === 'budget' || rawTier === 'comfort' || rawTier === 'view' || rawTier === 'luxury')
+    ? rawTier
+    : '';
 
   return {
     installed: true, phase, cityId, cityName, worldNow, speed, toName, staleSec,
     moneyOn: raw.money?.enabled === true,
     spent: Number.isFinite(spent) ? spent : 0,
     earned: Number.isFinite(earned) ? earned : 0,
+    modeId,
+    hotelTier,
   };
 }
 
@@ -319,16 +332,53 @@ export function clockGapHours(j: JourneyView, real: Date = new Date()): number {
  * 所以那边只往 `life-spend/<id>.json` 放一张条子，这边读、判重、扣、回执
  * （见 `coopani-world-extension` 的 `references/20-跨扩展联动.md`）。
  */
+export type VitalDeltaMap = Partial<Record<'food' | 'energy' | 'clean' | 'fun' | 'social', number>>;
+
+export interface SpendMoodlet {
+  text: string;
+  kind: 'good' | 'bad';
+  hours: number;
+}
+
 export interface SpendRequest {
   /** 文件名就是它 —— 坏文件靠这个回一条 `rejected`。 */
   id: string;
   at: string;
   amount: number;
   note: string;
+  vitalsDelta?: VitalDeltaMap;
+  fitnessDelta?: number;
+  moodlet?: SpendMoodlet;
+  invalid?: boolean;
 }
 
 /** 条子目录名。和那边写死的那个字符串必须一致，改一处等于断桥。 */
 export const SPEND_DIR = 'life-spend';
+
+function parseVitalsDelta(raw: unknown): VitalDeltaMap | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: VitalDeltaMap = {};
+  let hasAny = false;
+  for (const k of ['food', 'energy', 'clean', 'fun', 'social'] as const) {
+    const v = Number((raw as Record<string, unknown>)[k]);
+    if (Number.isFinite(v) && v !== 0) {
+      out[k] = Math.max(-100, Math.min(100, v));
+      hasAny = true;
+    }
+  }
+  return hasAny ? out : undefined;
+}
+
+function parseSpendMoodlet(raw: unknown): SpendMoodlet | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const o = raw as Record<string, unknown>;
+  const text = typeof o.text === 'string' ? o.text.trim().slice(0, 80) : '';
+  if (!text) return undefined;
+  const kind = o.kind === 'bad' ? 'bad' : 'good';
+  const hrs = Number(o.hours);
+  const hours = Number.isFinite(hrs) && hrs > 0 ? Math.min(24, hrs) : 3;
+  return { text, kind, hours };
+}
 
 /**
  * 读她名下的条子。**读不出来的一条不吞** —— 用文件名当 id 回 `rejected`，
@@ -347,10 +397,17 @@ export function readSpendRequests(dataDir: string): SpendRequest[] {
     const id = name.replace(/\.json$/, '');
     try {
       const raw = JSON.parse(readFileSync(join(dir, name), 'utf8'));
-      const amount = Math.round(Number(raw?.amount));
-      if (!Number.isFinite(amount) || amount <= 0) {
-        /* 读得出来但数不对：记一条 0，调用方按 rejected 回。 */
-        out.push({ id, at: '', amount: 0, note: '看不懂这一笔' });
+      const amount = Math.round(Number(raw?.amount ?? 0));
+      const vitalsDelta = parseVitalsDelta(raw?.vitalsDelta);
+      const fitnessRaw = Number(raw?.fitnessDelta ?? 0);
+      const fitnessDelta = Number.isFinite(fitnessRaw) && fitnessRaw !== 0
+        ? Math.max(-20, Math.min(20, fitnessRaw))
+        : undefined;
+      const moodlet = parseSpendMoodlet(raw?.moodlet);
+      const hasEffect = Boolean(vitalsDelta || fitnessDelta || moodlet);
+      if (!Number.isFinite(amount) || amount < 0 || (amount === 0 && !hasEffect)) {
+        /* 读得出来但数不对且没有任何状态效果：标 invalid，调用方按 rejected 回。 */
+        out.push({ id, at: '', amount: 0, note: '看不懂这一笔', invalid: true });
         continue;
       }
       out.push({
@@ -358,9 +415,12 @@ export function readSpendRequests(dataDir: string): SpendRequest[] {
         at: typeof raw?.at === 'string' ? raw.at : '',
         amount,
         note: typeof raw?.note === 'string' ? raw.note.slice(0, 60) : '',
+        ...(vitalsDelta ? { vitalsDelta } : {}),
+        ...(fitnessDelta ? { fitnessDelta } : {}),
+        ...(moodlet ? { moodlet } : {}),
       });
     } catch {
-      out.push({ id, at: '', amount: 0, note: '这文件读不出来' });
+      out.push({ id, at: '', amount: 0, note: '这文件读不出来', invalid: true });
     }
   }
   return out;
