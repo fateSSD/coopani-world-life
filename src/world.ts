@@ -344,13 +344,12 @@ export class LifeWorld implements World {
      */
     const at = herNow(this.journey, now);
     const hr = at.getHours();
-    const allOk = (Object.keys(this.state.vitals) as VitalKey[]).every((k) => this.state.vitals[k] >= LOW);
     if (
       !isBusy(this.state, now)
       && hr >= 9 && hr <= 17
       && this.state.conditions.length === 0
-      && this.state.vitals.energy >= 55
-      && allOk
+      && this.state.vitals.energy >= 50
+      && this.state.vitals.food >= 20
       && this.state.job.lastAt !== today
       && this.shouldNag('day:work', now)
     ) {
@@ -803,7 +802,7 @@ export class LifeWorld implements World {
          * 社交这条只说了付钱那一条，她没有。
          */
         return `社交 ${v}，${left}那时候会觉得屋里太静，安静得能听见自己喘气。`
-          + `跟人说说话回 31（30 元，花 5 点精力）；不想花钱就逛早市集市（回 8）或望水坡（回 4）—— `
+          + '跟人说说话回 31（30 元，花 5 点精力）；不想花钱就逛早市集市（回 8）或望水坡（回 4，出门在外也照样能调）—— '
           + `慢一点，多走两趟也上来了。${tail}`;
     }
   }
