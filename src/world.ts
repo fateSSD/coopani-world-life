@@ -351,12 +351,17 @@ export class LifeWorld implements World {
       const jobHint = this.state.job.what
         ? `上次做的是「${this.state.job.what}」（${this.state.job.daily} 元/天）`
         : '还没定固定活（可以先挑个零工）';
+      const cash = Math.round(this.state.money.cash);
+      const dailyBase = Math.max(15, Math.round(this.state.home.monthly / 30) + 15);
+      const tightHint = cash < dailyBase * 5
+        ? '，手头有点紧，出工能先把这几天的饭钱房租稳住。'
+        : `；出门能动用的旅费约 ${Math.round(cash * 0.7)} 元，想吃点好的、住得更舒心或攒钱去想去的地方，今天可以出工挣一笔，也可以读书考证提升自己。`;
       await this.push(
         'life.day',
         `现在是白天（${DAYPART_LABEL[dayPart(at)]}），精力 ${Math.round(this.state.vitals.energy)}，今天还没出过工。`
-          + `${jobHint}；手上 ${Math.round(this.state.money.cash)} 元`
+          + `${jobHint}；手上 ${cash} 元`
           + (goalGap ? `（${goalGap}）` : '')
-          + '，房租和吃饭每天在扣。出不出工、去不去读书或出门，你自己定。',
+          + `${tightHint}怎么安排你自己定。`,
         'debounce',
       );
     }
@@ -1661,8 +1666,12 @@ export class LifeWorld implements World {
      * 它是「考证能不能过」的唯一变量，藏在代码里的数字对她等于不存在 ——
      * 不给出来，她只知道「考砸了」，说不出「我还差多少」。
      */
-    parts.push(`见识：${s.knowledge}（考证能不能过看它；读书和干活涨，不学还会退）`);
-    parts.push(`钱：手上 ${s.money.cash} 元（累计进 ${s.money.earned} / 出 ${s.money.spent}，房租和吃饭每天在扣）`);
+    parts.push(`见识：${s.knowledge}（读书和专业活都能涨见识，够了考下证就能接更体面高薪的活；不学也会退）`);
+    const dailyBase = Math.max(15, Math.round(h.monthly / 30) + 15);
+    const moneyMood = s.money.cash < dailyBase * 5
+      ? '手头偏紧，每天还有房租和吃饭开销'
+      : '手头还算宽裕，够挑顿好的犒劳自己或留着出门';
+    parts.push(`钱：手上 ${s.money.cash} 元（累计进 ${s.money.earned} / 出 ${s.money.spent}；${moneyMood}）`);
     /*
      * 出门能用多少（2026-11-17）。
      *
@@ -1670,7 +1679,7 @@ export class LifeWorld implements World {
      * 她这头看到的数必须和旅行那头扣的是同一个，不然「我想去洛杉矶」
      * 会变成一个她自己都对不上账的念头。
      */
-    parts.push(`出门能动用的：${Math.round(s.money.cash * .7)} 元（现金的七成，剩下三成是吃饭交房租的）`);
+    parts.push(`出门能动用的：${Math.round(s.money.cash * .7)} 元（现金的七成，攒得越多能走得越远；剩下三成留作日常安稳过日子）`);
     if (j.installed && j.moneyOn) {
       parts.push(`旅行那边记账着：这一趟花了 ${j.spent} 元、挣了 ${j.earned} 元，都从上面这本账里走。`);
     } else if (j.installed) {
