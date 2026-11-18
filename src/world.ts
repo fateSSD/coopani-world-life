@@ -2389,8 +2389,9 @@ export class LifeWorld implements World {
         versionOutdated: this.versionCheck.state().outdated,
         at: now.toISOString(),
         herNow: at.toISOString(),
-        /* 见识。面板那格读它 —— `snapshot()` 里也有，但面板走的是这一份。 */
+        /* 见识与体质。面板那格读它 —— `snapshot()` 里也有，但面板走的是这一份。 */
         knowledge: Math.round(this.state.knowledge),
+        fitness: Math.round(this.state.fitness),
         dayPart: DAYPART_LABEL[dayPart(at)],
         clock: `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
         clockGapHours: Math.round(clockGapHours(j, now) * 10) / 10,

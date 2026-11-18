@@ -52,6 +52,8 @@ const TEXT = {
     noCert: '还没有证',
     knowledge: '见识',
     knowledgeHint: '考证能不能过看它，读书涨',
+    fitness: '体质',
+    fitnessHint: '锻炼、体力活或旅途步行骑行涨，加快回精',
     wishes: '想去哪',
     noWish: '还没记下想去的地方。',
     verSelf: 'v{v}',
@@ -137,6 +139,8 @@ const TEXT = {
     noCert: 'no certificates yet',
     knowledge: 'Knowledge',
     knowledgeHint: 'it decides whether a certificate exam passes',
+    fitness: 'Fitness',
+    fitnessHint: 'builds from workouts/physical jobs, speeds up sleep recovery',
     wishes: 'Want to go',
     noWish: 'No place on her list yet.',
     verSelf: 'v{v}',
@@ -514,6 +518,9 @@ export default {
           const kn = typeof d.knowledge === 'number' ? d.knowledge : 0;
           jobCard.append(el('p', 'lf-muted',
             `${t(lang, 'knowledge')}：${kn}　·　${t(lang, 'knowledgeHint')}`));
+          const ft = typeof d.fitness === 'number' ? d.fitness : 25;
+          jobCard.append(el('p', 'lf-muted',
+            `${t(lang, 'fitness')}：${ft}　·　${t(lang, 'fitnessHint')}`));
         };
 
         const drawWho = (d) => {
