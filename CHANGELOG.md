@@ -1,5 +1,10 @@
 # 变更记录
 
+## 0.17.2 — 2026-11-18（素材库保存目录可调 + 完善市场长介绍）
+
+- **素材库保存目录可调（`worlds.life.libraryDir`）**：[config.ts](src/config.ts) 新增 `libraryDir` 热配置项，[library.ts](src/library.ts) 新增 `ImageLibrary.configure()` 支持热切换根目录（留空回退 `<dataDir>/image-library`，目标目录不可用时保留原可用目录并记日志，不破坏扩展运行）。
+- **完善扩展市场介绍**：更新 [package.json](package.json) 中英文长介绍，补充四分类素材库、留影策略联动以及单独安装时的使用边界说明。
+
 ## 0.17.1 — 2026-11-18（赚钱与出工动力转向正面）
 
 - **正面内驱力调整**：改写 [ENV_PROMPT.md](ENV_PROMPT.md) 核心原则、`life.day` 白天未出工提醒及 `life_status` 状态正文。手头宽裕时不再用「房租和吃饭每天在扣」催命，而是把重心放在住得更舒心、吃顿好的、攒旅费出门看世界，以及读书考证提升本事与身价；仅在现金低于 5 天日常刚需时提示先稳住开销。

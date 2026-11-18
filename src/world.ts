@@ -85,7 +85,7 @@ export class LifeWorld implements World {
     this.opts = opts;
     this.store = new StateStore(opts.dataDir);
     this.diary = new LifeDiaryStore(opts.dataDir);
-    this.library = new ImageLibrary(opts.dataDir);
+    this.library = new ImageLibrary(opts.dataDir, opts.cfg?.libraryDir ?? '');
     /*
      * 版本检查（2026-11-15，照 journey 那套搬过来的）。
      *
@@ -119,6 +119,7 @@ export class LifeWorld implements World {
   private lastTownUrl: string | null = null;
   private lastHomeCity: string | null = null;
   private lastDiaryDir: string | null = null;
+  private lastLibraryDir: string | null = null;
 
   /**
    * 会话文件的 mtime 基线。
@@ -163,6 +164,9 @@ export class LifeWorld implements World {
     this.lastDiaryDir = String(this.cfg.diaryDir || '').trim();
     const dh = this.diary.configure(this.lastDiaryDir);
     if (dh.problem) host.log.warn(`模拟鱼生：${dh.problem}`);
+    this.lastLibraryDir = String(this.cfg.libraryDir || '').trim();
+    const lh = this.library.configure(this.lastLibraryDir);
+    if (lh.problem) host.log.warn(`模拟鱼生：${lh.problem}`);
     /*
      * 基线：启动那一刻文件的时间戳。之后变了才算「他又说过话」。
      * 启动时文件不存在（`0`）就不算立过基线 —— 它第一次出现说明他刚聊过，要记。
@@ -253,6 +257,13 @@ export class LifeWorld implements World {
       this.lastDiaryDir = diaryDir;
       const dh = this.diary.configure(diaryDir);
       this.log?.info(`模拟鱼生：生活日记目录切到 ${dh.dir}${dh.problem ? `（${dh.problem}）` : ''}`);
+    }
+    const libraryDir = String(this.cfg.libraryDir || '').trim();
+    if (this.lastLibraryDir !== null && libraryDir !== this.lastLibraryDir) {
+      this.lastLibraryDir = libraryDir;
+      const lh = this.library.configure(libraryDir);
+      this.log?.info(`模拟鱼生：素材库目录切到 ${lh.dir}${lh.problem ? `（${lh.problem}）` : ''}`);
+      this.broadcastLife(now);
     }
     if (
       (this.lastTownUrl !== null && townUrl !== this.lastTownUrl)

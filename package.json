@@ -1,6 +1,6 @@
 {
   "name": "coopani-world-life",
-  "version": "0.17.1",
+  "version": "0.17.2",
   "type": "module",
   "description": "模拟鱼生 · 给她一个小日子：会饿会困会闷、自己出门打工挣钱、看书考证、从城中村一步步攒钱搬进新家，还会用第一人称写下每天的生活日记。（需 Coopani 0.2.17+）",
   "author": {
@@ -46,11 +46,11 @@
     "locales": {
       "zh": {
         "displayName": "模拟鱼生",
-        "description": "让她真正在桌面外过起自己的小日子，而不只是在城市里发呆。（需要 Coopani 0.2.17+）\n\n- **有血有肉的日常**：饱腹、精力、清爽、娱乐、社交会随着时间慢慢变化；吃饭、泡咖啡馆、做 SPA、逛商场、看电影全都要花时间去体验。\n- **打工、读书与搬家**：自己选活干挣工资，看书涨见识去考证；从城中村一路攒钱搬进老小区、新小区或别墅区，每一步都有账可查。\n- **有想头，也记得约定**：想买的东西、犹豫不决的事、答应过你的约定她都记在心里，也会默默记下你这几天来看过她几次。\n- **第一人称生活日记**：每天晚上把自己做了什么、花了多少钱写进日记本。\n\n**和其他扩展一起玩**\n\n- 配上「大肥鱼环游世界」：出门旅行时用旅行日记，回家后继续写生活日记，人在哪座城两边自动对齐。\n- 单独装也能完整过日子。"
+        "description": "让她真正在桌面外过起自己的小日子，而不只是在城市里发呆。（需要 Coopani 0.2.17+）\n\n- **有血有肉的日常**：饱腹、精力、清爽、娱乐、社交会随着时间慢慢变化；吃饭、泡咖啡馆、做 SPA、逛商场、看电影全都要花时间去体验。\n- **打工、读书与搬家**：自己选活干挣工资，看书涨见识去考证；从城中村一路攒钱搬进老小区、新小区或别墅区，攒够了也能犒劳自己吃顿好的、留一笔旅费出去走走。\n- **有想头，也记得约定**：想买的东西、犹豫不决的事、答应过你的约定她都记在心里，也会默默记下你这几天来看过她几次。\n- **第一人称生活日记与参考素材库**：每天晚上写第一人称生活日记；内置人物、服饰、场景、道具四分类参考素材库（支持在设置里自定义保存目录，并可设三档留影策略与冷却）。\n\n**和其他扩展一起玩**\n\n- 配上「大肥鱼环游世界」：出门旅行用旅行日记、在家写生活日记，人在哪座城自动对齐；在家/出门的画面参考、留影策略与冷却也会同步过去由旅行扩展生图。\n- 单独装也能完整过日子（仅本扩展自身不内置生图模型调用，想自动拍出照片需要配合「大肥鱼环游世界」）。"
       },
       "en": {
         "displayName": "Simulated Fish Life",
-        "description": "Give her a real everyday life of her own, not just standing around in a city. (Needs Coopani 0.2.17+)\n\n- **Real daily rhythms**: food, energy, cleanliness, fun, and social needs shift over time; grabbing a meal, visiting a café, getting a spa, or watching a movie all take real time.\n- **Work, study, and moving up**: pick jobs to earn a living, read to build knowledge for certifications, and save up to move from an urban village into nicer neighborhoods.\n- **Plans & promises**: she keeps track of what she wants, what she's mulling over, promises she made to you, and which days you dropped by.\n- **First-person diary**: writes down how her day went and what she spent.\n\n**Works great with other extensions**\n\n- With Big Fish World Tour: seamlessly shares location and splits travel vs. home diaries.\n- Also works completely standalone."
+        "description": "Give her a real everyday life of her own, not just standing around in a city. (Needs Coopani 0.2.17+)\n\n- **Real daily rhythms**: food, energy, cleanliness, fun, and social needs shift over time; grabbing a meal, visiting a café, getting a spa, or watching a movie all take real time.\n- **Work, study, and moving up**: pick jobs to earn a living, read to build knowledge for certifications, and save up for nicer homes, better meals, or travel funds.\n- **Plans & promises**: she keeps track of what she wants, what she's mulling over, promises she made to you, and which days you dropped by.\n- **First-person diary & visual reference library**: writes down how her day went and manages a 4-category reference library (characters, outfits, scenes, props) with a configurable directory and photo policy.\n\n**Works great with other extensions**\n\n- With Big Fish World Tour: seamlessly shares location, travel budget, diaries, and visual/photo policy for image generation.\n- Works completely standalone for daily life simulation (standalone mode does not call image generation APIs directly)."
       }
     },
     "icon": "assets/icon.png"

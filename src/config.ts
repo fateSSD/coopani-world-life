@@ -28,6 +28,8 @@ export interface LifeConfigSection extends WorldSection {
   notify: 'off' | 'once' | 'always';
   /** 生活日记保存目录。留空 = 存在本机 dataDir/life-diary；填了 = 存到指定目录（如同步盘）。 */
   diaryDir: string;
+  /** 四分类参考素材库保存目录。留空 = 存在本机 dataDir/image-library；填了 = 存到指定目录。 */
+  libraryDir: string;
 }
 
 export const LIFE_DEFAULTS = (): LifeConfigSection => ({
@@ -41,6 +43,7 @@ export const LIFE_DEFAULTS = (): LifeConfigSection => ({
   tickMs: 60_000,
   notify: 'once',
   diaryDir: '',
+  libraryDir: '',
 });
 
 export function lifeConfigGroups(): ConfigGroup[] {
@@ -119,6 +122,14 @@ export function lifeConfigGroups(): ConfigGroup[] {
           description: '她在家过日子时，以第一人称写下的日记和日常经历保存在哪儿。'
             + '\n\n留空：存在本机默认数据目录（life-diary）。'
             + '\n填路径：存到你指定的文件夹（比如 OneDrive 或坚果云同步盘），改完立即生效。',
+          'x-hot': true,
+        },
+        'worlds.life.libraryDir': {
+          type: 'string',
+          title: '素材库保存目录',
+          description: '四分类参考素材库（人物、服饰、场景、道具）与留影策略设置保存在哪儿。'
+            + '\n\n留空：存在本机默认数据目录（image-library）。'
+            + '\n填路径：存到你指定的文件夹（比如大硬盘目录或同步盘），改完立即生效；不会自动删掉旧目录里的文件。',
           'x-hot': true,
         },
       },

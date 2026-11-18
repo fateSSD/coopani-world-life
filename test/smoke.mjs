@@ -1312,6 +1312,15 @@ console.log('\n[49] 四分类素材库、留影策略与跨扩展 visualPrompt')
 
   const del = await lw.panelInvoke('library', 'delete', [{ category: 'props', id: 'test-cup' }]);
   ok(del.ok && !del.entries.some((e) => e.id === 'test-cup'), '面板 delete 正常删掉条目');
+
+  const customLibDir = mkdtempSync(join(tmpdir(), 'life-custom-lib-'));
+  const sw = lw.library.configure(customLibDir);
+  ok(sw.problem === null && lw.library.rootDir === customLibDir, '素材库支持切换到自定义目录', sw.problem ?? lw.library.rootDir);
+  const snap2 = await lw.panelInvoke('library', 'list');
+  ok(snap2.dir === customLibDir && Array.isArray(snap2.entries) && snap2.entries.length >= 10, '切换后在新目录自动播撒默认条目且面板返回新 dir');
+  const swBack = lw.library.configure('');
+  ok(swBack.problem === null && lw.library.rootDir === join(libDir, 'image-library'), '留空切回默认 <dataDir>/image-library');
+
   await lw.stop();
 }
 

@@ -100,19 +100,39 @@ const atomicWriteJson = (file: string, data: unknown): void => {
 };
 
 export class ImageLibrary {
-  public readonly rootDir: string;
-  private readonly settingsFile: string;
-  private readonly seededFile: string;
+  private readonly defaultRootDir: string;
+  public rootDir: string;
+  private settingsFile: string;
+  private seededFile: string;
 
-  constructor(dataDir: string) {
-    this.rootDir = join(dataDir, 'image-library');
+  constructor(dataDir: string, libraryDir = '') {
+    this.defaultRootDir = join(dataDir, 'image-library');
+    this.rootDir = this.defaultRootDir;
     this.settingsFile = join(this.rootDir, 'settings.json');
     this.seededFile = join(this.rootDir, '.seeded');
-    mkdirSync(this.rootDir, { recursive: true });
-    for (const cat of LIBRARY_CATEGORIES) {
-      mkdirSync(join(this.rootDir, cat), { recursive: true });
+    this.configure(libraryDir);
+  }
+
+  /**
+   * 切换素材库根目录（留空回退默认 `<dataDir>/image-library`）。
+   * 若目标目录创建失败，保留当前可用目录并返回错误信息，避免把扩展搞挂。
+   */
+  configure(libraryDir = ''): { dir: string; problem: string | null } {
+    const want = String(libraryDir ?? '').trim();
+    const target = want || this.defaultRootDir;
+    try {
+      mkdirSync(target, { recursive: true });
+      for (const cat of LIBRARY_CATEGORIES) {
+        mkdirSync(join(target, cat), { recursive: true });
+      }
+      this.rootDir = target;
+      this.settingsFile = join(target, 'settings.json');
+      this.seededFile = join(target, '.seeded');
+      this.seedDefaultsIfNeeded();
+      return { dir: this.rootDir, problem: null };
+    } catch (e) {
+      return { dir: this.rootDir, problem: `素材库目录不可用（${(e as Error).message}），暂沿用 ${this.rootDir}` };
     }
-    this.seedDefaultsIfNeeded();
   }
 
   private seedDefaultsIfNeeded(): void {
