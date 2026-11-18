@@ -9,3 +9,11 @@ life-public.json
 life-spend-settled.json
 life-spend/
 .tmp/
+
+# 本机工作区数据 —— **绝不入库**（2026-11-18）
+#
+# 姊妹项目（journey）那边出过一次：45 个 .workbuddy 文件被跟进了公开仓库，
+# 里面有本机路径、邮箱别名的内部 ID、文档表格 ID，还有带用户邮箱的反馈台账。
+# 这个仓库当时是干净的（没人 add 过），但 .gitignore 里没有这一条 —— 补上防下次。
+.workbuddy/
+
