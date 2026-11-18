@@ -1,14 +1,18 @@
 /**
  * 四分类共享素材库（目录即库）+ 三档留影策略与冷却设置。
  *
- * 目录约定：
- *   <dataDir>/image-library/
- *     settings.json
+ * 目录约定（**设置在库外面**，2026-11-18 改）：
+ *   <dataDir>/image-library-settings.json   ← 三档策略与冷却，固定在 dataDir
+ *
+ *   <dataDir>/image-library/                ← 素材，可被 `libraryDir` 配置指到别处
  *     .seeded
  *     characters/<id>/entry.json + ref-*.png
  *     outfits/<id>/entry.json + ref-*.png
  *     scenes/<id>/entry.json + ref-*.png
  *     props/<id>/entry.json + ref-*.png
+ *
+ * 设置为什么不跟库走：用户换保存目录时，以为只是换个地方存图；
+ * 如果设置也跟着搬，留影策略会悄悄回到默认，她拍照的频率就变了 —— 而他找不到原因。
  */
 import {
   existsSync,
@@ -101,14 +105,26 @@ const atomicWriteJson = (file: string, data: unknown): void => {
 
 export class ImageLibrary {
   private readonly defaultRootDir: string;
+  private readonly dataDir: string;
   public rootDir: string;
-  private settingsFile: string;
+  /**
+   * **设置固定放在 `dataDir` 下，不跟素材库根目录走**（2026-11-18 改）。
+   *
+   * 原来它在 `rootDir/settings.json`。用户把保存目录从 A 改到 B 之后，
+   * 新目录没有这个文件 → 留影策略（主动 / 里程碑 / 静默 + 冷却分钟）悄悄回到默认。
+   * 配置页只写了「改完立即生效；不会自动删旧目录里的文件」，**没说设置会跟着重置** ——
+   * 用户以为只是换个地方存图，结果她拍照的频率变了，也找不到原因。
+   *
+   * 设置是「这个扩展的偏好」，不是「这套素材的属性」，所以它不该跟着库搬家。
+   */
+  private readonly settingsFile: string;
   private seededFile: string;
 
   constructor(dataDir: string, libraryDir = '') {
+    this.dataDir = dataDir;
     this.defaultRootDir = join(dataDir, 'image-library');
     this.rootDir = this.defaultRootDir;
-    this.settingsFile = join(this.rootDir, 'settings.json');
+    this.settingsFile = join(dataDir, 'image-library-settings.json');
     this.seededFile = join(this.rootDir, '.seeded');
     this.configure(libraryDir);
   }
@@ -126,12 +142,31 @@ export class ImageLibrary {
         mkdirSync(join(target, cat), { recursive: true });
       }
       this.rootDir = target;
-      this.settingsFile = join(target, 'settings.json');
+      /* `settingsFile` 不在这里动 —— 它固定在 `dataDir` 下，见字段注释。 */
       this.seededFile = join(target, '.seeded');
+      this.migrateSettingsIfNeeded(target);
       this.seedDefaultsIfNeeded();
       return { dir: this.rootDir, problem: null };
     } catch (e) {
       return { dir: this.rootDir, problem: `素材库目录不可用（${(e as Error).message}），暂沿用 ${this.rootDir}` };
+    }
+  }
+
+  /**
+   * 旧版本的设置放在 `<库目录>/settings.json`。搬一次过来，别让升级的人丢设置。
+   *
+   * 只在新位置**还没有**文件时搬 —— 搬过一次之后，用户在新位置改的东西不会被旧文件覆盖。
+   * 搬失败就用默认值，不拦着启动（一个设置文件不值得把扩展搞挂）。
+   */
+  private migrateSettingsIfNeeded(target: string): void {
+    if (existsSync(this.settingsFile)) return;
+    const legacy = join(target, 'settings.json');
+    if (!existsSync(legacy)) return;
+    try {
+      const raw = JSON.parse(readFileSync(legacy, 'utf8'));
+      atomicWriteJson(this.settingsFile, { ...DEFAULT_SETTINGS, ...raw });
+    } catch {
+      /* 读不动/写不动都退回默认，下一次 `getSettings()` 会补一份 */
     }
   }
 

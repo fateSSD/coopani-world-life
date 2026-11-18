@@ -21,6 +21,7 @@ import {
 import { readTown, fetchTownStalls, buyTownStall } from '../src/bridge.ts';
 import { LifeWorld } from '../src/world.ts';
 import { LIFE_DEFAULTS } from '../src/config.ts';
+import { ImageLibrary } from '../src/library.ts';
 
 let pass = 0;
 let fail = 0;
@@ -1324,5 +1325,37 @@ console.log('\n[49] 四分类素材库、留影策略与跨扩展 visualPrompt')
   await lw.stop();
 }
 
+console.log('\n[换素材库目录：设置不能跟着重置]');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'life-lib-'));
+  const lib = new ImageLibrary(dir);
+  lib.saveSettings({ policy: 'off', cooldownMin: 0 });
+  ok(lib.getSettings().policy === 'off', '先设成「静默」');
+
+  const other = join(dir, 'another-place');
+  const r = lib.configure(other);
+  ok(r.problem === null, '换目录没报错', String(r.problem));
+  ok(lib.rootDir === other, '根目录确实换过去了');
+  /*
+   * 2026-11-18：设置原来在 `<库>/settings.json`，用户换保存目录后会悄悄回到默认。
+   * 配置页只写了「改完立即生效」，没说策略会重置 —— 她拍照的频率变了，人找不到原因。
+   */
+  ok(lib.getSettings().policy === 'off', '换目录把留影策略重置了 —— 用户以为只是换个地方存图');
+  ok(existsSync(join(dir, 'image-library-settings.json')), '设置文件应该在 dataDir 下，不在库目录里');
+}
+
+console.log('\n[老版本的 settings.json 要搬过来]');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'life-lib-legacy-'));
+  const legacyDir = join(dir, 'image-library');
+  mkdirSync(legacyDir, { recursive: true });
+  writeFileSync(join(legacyDir, 'settings.json'), JSON.stringify({ policy: 'active', cooldownMin: 30 }), 'utf8');
+
+  const lib = new ImageLibrary(dir);
+  const s = lib.getSettings();
+  ok(s.policy === 'active' && s.cooldownMin === 30, '升级后旧设置搬到了新位置', JSON.stringify(s));
+}
+
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);
+
 process.exit(fail ? 1 : 0);
