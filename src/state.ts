@@ -577,6 +577,10 @@ export interface ActKind {
   know?: number;
   /** 做完可能产生的情绪。 */
   mood?: { text: string; kind: 'good' | 'bad'; hours: number };
+  /** 轻量场景、穿搭与手边物品提示（供日记素材与跨扩展生图联动）。 */
+  scene?: string;
+  outfitHint?: string;
+  props?: string;
 }
 
 const r2 = (n: number) => Math.round(n * 1000) / 1000;
@@ -590,6 +594,9 @@ const mkAct = (
     perMin?: Partial<Record<VitalKey, number>>;
     know?: number;
     mood?: { text: string; kind: 'good' | 'bad'; hours: number };
+    scene?: string;
+    outfitHint?: string;
+    props?: string;
   } = {},
 ): ActKind => {
   const perMin: Partial<Record<VitalKey, number>> = opts.perMin ? { ...opts.perMin } : {};
@@ -598,95 +605,121 @@ const mkAct = (
       perMin[k as VitalKey] = r2(Number(v) / minutes);
     }
   }
-  return { id, label, minutes, cost, gain, perMin, know: opts.know, mood: opts.mood };
+  return { id, label, minutes, cost, gain, perMin, know: opts.know, mood: opts.mood, scene: opts.scene, outfitHint: opts.outfitHint, props: opts.props };
 };
 
 export const ACTS: Record<string, ActKind> = {
   // ---- 饮食类 ----
   feast: mkAct('feast', '吃顿好的', 60, 40, { food: 50, fun: 7, social: 2 }, {
     mood: { text: '吃得舒服，心里也顺', kind: 'good', hours: 3 },
+    scene: '街巷小馆子', outfitHint: '日常便装', props: '热菜和米饭',
   }),
   eat: mkAct('eat', '吃一顿', 40, 15, { food: 30 }),
   instant: mkAct('instant', '随便吃点', 15, 0, { food: 15 }, {
     mood: { text: '凑合一口，心里有点不是滋味', kind: 'bad', hours: 2 },
+    scene: '家里或巷口饭店', outfitHint: '日常便装', props: '家常菜',
+    scene: '家里餐桌', outfitHint: '居家服', props: '速食饼干或泡面',
   }),
   cook: mkAct('cook', '买菜自己做', 55, 10, { food: 36, fun: 8, energy: -4, clean: -2 }, {
     mood: { text: '自己开火煮了一顿热乎的', kind: 'good', hours: 3 },
+    scene: '自家厨房', outfitHint: '居家服系围裙', props: '青菜豆腐和锅铲',
   }),
   tea: mkAct('tea', '喝下午茶', 45, 28, { food: 16, fun: 16, social: 7 }, {
     mood: { text: '甜口配茶，下午慢了下来', kind: 'good', hours: 3 },
+    scene: '临水茶室', outfitHint: '浅色针织衫', props: '热茶和小点心',
   }),
   supper: mkAct('supper', '吃夜宵热汤面', 30, 18, { food: 24, fun: 6, clean: -2 }, {
     mood: { text: '夜里一碗热汤面，胃里暖和了', kind: 'good', hours: 2 },
+    scene: '夜宵摊', outfitHint: '外套加长裤', props: '热汤面',
   }),
 
   // ---- 休息与洗护类 ----
   sleep: mkAct('sleep', '睡觉', 8 * 60, 0, {}, {
     perMin: { energy: 10 / 60, food: -3.6 / 60, clean: -1 / 60, fun: 0, social: 0 },
+    scene: '卧室床铺', outfitHint: '睡衣',
   }),
   nap: mkAct('nap', '午睡小憩', 60, 0, { energy: 18, food: -3.6, clean: -1 }, {
     mood: { text: '眯了一小会儿，脑子轻快了些', kind: 'good', hours: 2 },
+    scene: '家里沙发或床边', outfitHint: '居家服', props: '薄毯',
   }),
   wash: mkAct('wash', '洗澡', 30, 0, { clean: 55, energy: -4 }, {
     mood: { text: '身上清爽了', kind: 'good', hours: 3 },
+    scene: '家里浴室', outfitHint: '浴袍或宽松睡衣',
   }),
   spa: mkAct('spa', '做 SPA 泡汤', 60, 120, { energy: 27, clean: 45, fun: 21, social: 3 }, {
     mood: { text: '泡完浑身松透了，贵是贵但真值', kind: 'good', hours: 4 },
+    scene: '养生汤屋', outfitHint: '宽松浴服', props: '热毛巾与香薰',
   }),
   sunbathe: mkAct('sunbathe', '塘边晒太阳', 40, 0, { energy: 6, fun: 14, food: -2 }, {
     mood: { text: '晒得暖洋洋的，什么都不想管', kind: 'good', hours: 3 },
+    scene: '芦花塘木栈道', outfitHint: '休闲外套',
   }),
   tidy: mkAct('tidy', '收拾屋子', 45, 0, { clean: 27, energy: -7, fun: -2 }, {
     mood: { text: '屋里整整齐齐，看着顺眼', kind: 'good', hours: 3 },
+    scene: '家里客厅与书桌', outfitHint: '居家服', props: '抹布与收纳篮',
   }),
 
   // ---- 社交与逛街类 ----
   meet: mkAct('meet', '跟人说说话', 90, 30, { social: 31, fun: 9, energy: -5 }, {
     mood: { text: '有人说话，心里踏实', kind: 'good', hours: 5 },
+    scene: '街角小店或茶馆', outfitHint: '得体日常装', props: '热饮',
   }),
   mall: mkAct('mall', '找朋友逛商场', 90, 81, { social: 29, fun: 34, energy: -9, clean: -4 }, {
     mood: { text: '逛了一圈热热闹闹的，脚有点酸但很开心', kind: 'good', hours: 4 },
+    scene: '城里商场', outfitHint: '出门逛街装', props: '购物袋和奶茶',
   }),
   cafe: mkAct('cafe', '去咖啡馆坐坐', 60, 30, { social: 15, fun: 18, food: 9, energy: 3 }, {
     mood: { text: '咖啡香配闲聊，待得很舒服', kind: 'good', hours: 3 },
+    scene: '街角咖啡馆', outfitHint: '休闲毛衣或风衣', props: '手冲咖啡和书',
   }),
   karaoke: mkAct('karaoke', '和朋友去唱歌', 120, 66, { social: 42, fun: 48, energy: -17, clean: -10, food: -7 }, {
     mood: { text: '唱爽了，嗓子有点哑但心情极好', kind: 'good', hours: 4 },
+    scene: 'KTV 包厢', outfitHint: '轻松外出装', props: '麦克风与果盘',
   }),
   picnic: mkAct('picnic', '塘边野餐', 90, 36, { food: 36, fun: 27, social: 20, clean: -5 }, {
     mood: { text: '吹着风在草地上吃东西，特别自在', kind: 'good', hours: 4 },
+    scene: '塘边草坪', outfitHint: '轻便春装', props: '野餐垫与点心盒',
   }),
   market: mkAct('market', '逛早市集市', 45, 0, { fun: 14, social: 8, clean: -4, energy: -4 }, {
     mood: { text: '集市上烟火气很足，逛着挺有意思', kind: 'good', hours: 3 },
+    scene: '早市街集市', outfitHint: '日常便装', props: '帆布袋',
   }),
   drink: mkAct('drink', '喝两口小酒', 60, 28, { fun: 27, social: 9, energy: -9 }, {
     mood: { text: '微醺，脑子轻了一点', kind: 'good', hours: 2 },
+    scene: '巷口小酒馆', outfitHint: '深色外套', props: '小酒杯',
   }),
 
   // ---- 娱乐、运动与提升类 ----
   study: mkAct('study', '看会儿书', 60, 0, { fun: 20, energy: -3 }, {
     know: KNOWLEDGE_PER_STUDY,
     mood: { text: '看进去一段，脑子亮了一下', kind: 'good', hours: 3 },
+    scene: '家里书桌旁', outfitHint: '舒适居家服', props: '书本与笔记本',
   }),
   play: mkAct('play', '找点乐子', 60, 22, { fun: 39, energy: -6 }, {
     mood: { text: '玩得挺高兴', kind: 'good', hours: 3 },
+    scene: '家里沙发或电玩角', outfitHint: '居家便装', props: '手柄或桌游',
   }),
   movie: mkAct('movie', '看场电影', 120, 36, { fun: 54, social: 6, energy: -6 }, {
     mood: { text: '看了一部好片子，还在回味', kind: 'good', hours: 4 },
+    scene: '城里电影院', outfitHint: '出门便装', props: '电影票与爆米花',
   }),
   museum: mkAct('museum', '逛展览美术馆', 90, 18, { fun: 25, energy: -7 }, {
     know: 3,
     mood: { text: '看了不少新奇东西，长了见识', kind: 'good', hours: 4 },
+    scene: '美术馆展厅', outfitHint: '文艺外套', props: '展览导览单',
   }),
   paint: mkAct('paint', '写生画画', 90, 0, { fun: 34, energy: -5, clean: -4 }, {
     know: 2,
     mood: { text: '画完一张，心里静了下来', kind: 'good', hours: 3 },
+    scene: '望水坡长椅', outfitHint: '耐脏帆布围裙与便装', props: '画板与水彩笔',
   }),
   workout: mkAct('workout', '跑步锻炼', 45, 0, { fun: 16, energy: -10, clean: -11, food: -5 }, {
     mood: { text: '出了一身汗，整个人通透了', kind: 'good', hours: 3 },
+    scene: '塘边跑道', outfitHint: '运动速干装与跑鞋', props: '毛巾与水壶',
   }),
   pond: mkAct('pond', '望水坡喂鸭看芦花', 40, 0, { fun: 14, social: 4, energy: -2 }, {
     mood: { text: '风吹过芦花，看着鸭子游水挺解压', kind: 'good', hours: 3 },
+    scene: '望水坡水边', outfitHint: '休闲外套', props: '一点面包碎',
   }),
 
   // ---- 控制指令（0 分钟） ----
@@ -1294,9 +1327,14 @@ export function advance(state: LifeState, now: Date): AdvanceResult {
               expiresAt: new Date(endAt.getTime() + actTask.mood.hours * 3_600_000).toISOString(),
             });
           }
+          const actDef = ACTS[actTask.id];
+          const sceneBit = actDef?.scene ? `在${actDef.scene}` : '';
+          const propBit = actDef?.props ? `（${actDef.props}）` : '';
           remember(
             state,
-            outOfCash ? `钱花光了，「${actTask.label}」只好先停下来。` : `${actTask.label}了。`,
+            outOfCash
+              ? `钱花光了，「${actTask.label}」只好先停下来。`
+              : `${sceneBit}${actTask.label}了${propBit}。`,
             endAt,
           );
           completed.push({

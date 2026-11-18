@@ -1243,6 +1243,14 @@ console.log('\n[48] 时间段制动作、新复合动作、打断惩罚与上班
     pushEvent: async (e) => { movePushed.push(e); return { ...e, blobs: [] }; },
   });
   await mw.tools().find((x) => x.name === 'life_act').handler({ kind: 'tea' });
+  const pubDuringTea = JSON.parse(readFileSync(join(moveDir, 'life-public.json'), 'utf8'));
+  ok(
+    pubDuringTea.activity && pubDuringTea.activity.id === 'tea'
+    && pubDuringTea.activity.scene === '临水茶室'
+    && pubDuringTea.activity.outfitHint === '浅色针织衫',
+    'life-public.json 广播进行中活动的 scene 与 outfitHint',
+    JSON.stringify(pubDuringTea.activity),
+  );
   const moveWhileBusy = await mw.panelInvoke('now', 'move', { tier: 'old' });
   ok(moveWhileBusy.ok === false && /停下来/.test(moveWhileBusy.reason || ''), '忙时点面板搬家返回明确拦阻原因', moveWhileBusy.reason);
   await mw.tools().find((x) => x.name === 'life_act').handler({ kind: 'cancel' });
@@ -1251,6 +1259,60 @@ console.log('\n[48] 时间段制动作、新复合动作、打断惩罚与上班
   ok(movePushed.some((e) => e.type === 'life.moved' && /老小区/.test(e.text)), '面板搬家后推送 life.moved 通知肥鱼');
   ok(readLedger(moveDir, 10).some((e) => e.source === 'life_move' && e.amount === 2400), '面板搬家押金记入账本');
   await mw.stop();
+
+  /* 5. 完成后 tellable 带出场景与手边物品细节 */
+  const sScene = freshState(t0);
+  applyAct(sScene, 'cafe', t0);
+  advance(sScene, new Date(t0.getTime() + ACTS.cafe.minutes * 60_000));
+  ok(
+    sScene.tellable.some((t) => /街角咖啡馆/.test(t.text) && /手冲咖啡/.test(t.text)),
+    '完成活动记入 tellable 时带出场景与物品细节',
+    sScene.tellable.map((t) => t.text).join(' | '),
+  );
+}
+
+console.log('\n[49] 四分类素材库、留影策略与跨扩展 visualPrompt');
+{
+  const libDir = mkdtempSync(join(tmpdir(), 'life-lib-'));
+  const lw = new LifeWorld({ cfg: { ...LIFE_DEFAULTS(), enabled: true }, dataDir: libDir, botName: '大肥鱼' });
+  await lw.start({
+    log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+    pushEvent: async (e) => ({ ...e, blobs: [] }),
+  });
+
+  const listSnap = await lw.panelInvoke('library', 'list');
+  ok(Array.isArray(listSnap.entries) && listSnap.entries.length >= 10, '素材库首次启动自动写入默认条目', String(listSnap.entries?.length));
+
+  /* 工具增改与检索 */
+  const libTool = lw.tools().find((x) => x.name === 'life_library');
+  ok(Boolean(libTool), '已注册 life_library 工具');
+  await libTool.handler({
+    action: 'upsert', category: 'outfits', id: 'autumn-coat', name: '秋日风衣',
+    aliases: '焦糖风衣', tags: '秋装,出门', appearance: '焦糖色长风衣配米色围巾',
+  });
+  const sr = await libTool.handler({ action: 'search', query: '焦糖' });
+  ok(/秋日风衣/.test(sr.text), 'life_library search 命中别名与描述', sr.text);
+
+  /* 面板上传 base64 参考图与留影策略设置 */
+  const samplePng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const up = await lw.panelInvoke('library', 'upsert', [{
+    category: 'props', id: 'test-cup', name: '测试陶杯',
+    appearance: '手工粗陶马克杯', imageDataUrls: [samplePng],
+  }]);
+  ok(up.ok && up.entry.images.length === 1 && up.entries.some((e) => e.id === 'test-cup' && e.imagePreviews?.length === 1), '面板 upsert 支持保存图片与回传预览');
+
+  const pol = await lw.panelInvoke('library', 'savePolicy', [{ policy: 'active', cooldownMin: 30 }]);
+  ok(pol.ok && pol.settings.policy === 'active' && pol.settings.cooldownMin === 30, '面板保存留影策略与冷却成功');
+
+  /* 开始 cafe 活动，检查 life-public.json 广播的 visualPrompt 与 imagePolicy */
+  await lw.tools().find((x) => x.name === 'life_act').handler({ kind: 'cafe' });
+  const pub = JSON.parse(readFileSync(join(libDir, 'life-public.json'), 'utf8'));
+  ok(pub.activity && /木质暖光街角咖啡馆/.test(pub.activity.visualPrompt || ''), 'life-public.json 广播出匹配场景库的外观 visualPrompt', pub.activity?.visualPrompt);
+  ok(pub.imagePolicy && pub.imagePolicy.policy === 'active' && pub.imagePolicy.cooldownMin === 30, 'life-public.json 携带 imagePolicy');
+
+  const del = await lw.panelInvoke('library', 'delete', [{ category: 'props', id: 'test-cup' }]);
+  ok(del.ok && !del.entries.some((e) => e.id === 'test-cup'), '面板 delete 正常删掉条目');
+  await lw.stop();
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

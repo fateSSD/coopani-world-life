@@ -359,6 +359,22 @@ function ensureStyle(root) {
 .lf-dp { margin: 0 0 10px; font-size: 13.5px; line-height: 1.75; color: #1f2937; white-space: pre-wrap; }
 .lf-dp:last-child { margin-bottom: 0; }
 .lf-dir { font-size: 11.5px; color: #9ca3af; word-break: break-all; margin: 4px 0 12px; }
+.lf-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.lf-tab[data-on="1"] { border-color: #2f6fed; background: #f0f5ff; color: #1d4ed8; font-weight: 600; }
+.lf-lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.lf-lib-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 9px; padding: 11px 12px; display: flex; flex-direction: column; gap: 6px; }
+.lf-lib-card .top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+.lf-lib-card .nm { font-size: 14px; font-weight: 600; }
+.lf-lib-card .alias { font-size: 11.5px; color: #6b7280; }
+.lf-lib-card .desc { font-size: 12.5px; color: #374151; line-height: 1.5; }
+.lf-lib-thumbs { display: flex; gap: 6px; flex-wrap: wrap; }
+.lf-lib-thumbs img { width: 52px; height: 52px; object-fit: cover; border-radius: 6px; border: 1px solid #e5e7eb; }
+.lf-form-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.lf-input, .lf-textarea, .lf-select { font: inherit; font-size: 12.5px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #1b1e24; }
+.lf-input { flex: 1 1 160px; }
+.lf-textarea { width: 100%; box-sizing: border-box; min-height: 60px; resize: vertical; margin-bottom: 8px; }
+.lf-drop { border: 1.5px dashed #cbd5e1; border-radius: 8px; padding: 10px; font-size: 12px; color: #64748b; text-align: center; cursor: pointer; margin-bottom: 8px; background: #f8fafc; }
+.lf-drop.over { border-color: #2f6fed; background: #eff6ff; color: #1d4ed8; }
 `;
   doc.head.append(s);
 }
@@ -1083,6 +1099,236 @@ export default {
           }, 30_000);
         };
         loop();
+      },
+    },
+    library: {
+      async mount(ctx) {
+        ensureStyle(ctx.root);
+        const app = el('div', 'lf');
+        ctx.root.append(app);
+
+        const CAT_LABELS = { characters: '人物', outfits: '服饰', scenes: '场景', props: '道具' };
+        const head = el('div', 'lf-head');
+        head.append(el('h1', null, '素材库与留影'));
+        const sub = el('p', 'lf-sub', '目录即库，按人物/服饰/场景/道具管理外观描述与参考图；同时控制跨扩展留影策略。');
+        const dirLine = el('div', 'lf-dir', '');
+
+        /* ---- 留影策略设置卡 ---- */
+        const policyCard = el('div', 'lf-card');
+        policyCard.append(el('h3', null, '留影策略与主动冷却'));
+        const pRow = el('div', 'lf-form-row');
+        const policySel = document.createElement('select');
+        policySel.className = 'lf-select';
+        for (const [val, lab] of [['off', '静默（不主动拍）'], ['milestone', '重要时刻（推荐）'], ['active', '积极留影']]) {
+          const op = document.createElement('option');
+          op.value = val;
+          op.textContent = lab;
+          policySel.append(op);
+        }
+        const cdInput = document.createElement('input');
+        cdInput.type = 'number';
+        cdInput.min = '0';
+        cdInput.max = '1440';
+        cdInput.className = 'lf-input';
+        cdInput.style.flex = '0 0 110px';
+        cdInput.placeholder = '冷却分钟';
+        const pSaveBtn = el('button', 'lf-btn', '保存设置');
+        pSaveBtn.type = 'button';
+        const pMsg = el('span', 'lf-msg', '');
+        pRow.append(policySel, document.createTextNode('冷却（分钟）：'), cdInput, pSaveBtn, pMsg);
+        policyCard.append(pRow);
+
+        /* ---- 分类标签栏 ---- */
+        const tabs = el('div', 'lf-tabs');
+        let curCat = 'characters';
+        let lastState = { entries: [], settings: { policy: 'milestone', cooldownMin: 60 }, dir: '' };
+
+        /* ---- 新建 / 编辑卡片 ---- */
+        const formCard = el('div', 'lf-card');
+        const formTitle = el('h3', null, '添加或更新条目');
+        const fRow = el('div', 'lf-form-row');
+        const nameIn = document.createElement('input');
+        nameIn.className = 'lf-input';
+        nameIn.placeholder = '名称（如：街角咖啡馆 / 居家服）';
+        const aliasIn = document.createElement('input');
+        aliasIn.className = 'lf-input';
+        aliasIn.placeholder = '别名，逗号分隔（可选）';
+        const tagIn = document.createElement('input');
+        tagIn.className = 'lf-input';
+        tagIn.placeholder = '标签，逗号分隔（可选）';
+        fRow.append(nameIn, aliasIn, tagIn);
+        const appIn = document.createElement('textarea');
+        appIn.className = 'lf-textarea';
+        appIn.placeholder = '外观/场景/物品画面描述（会拼进生图提示词）';
+        const dropZone = el('div', 'lf-drop', '点击选择或拖入 1-4 张参考图（可选）');
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'image/*';
+        fileInput.multiple = true;
+        fileInput.hidden = true;
+        const previewBox = el('div', 'lf-lib-thumbs');
+        previewBox.style.marginBottom = '8px';
+        let pendingDataUrls = [];
+        let editingId = '';
+        const btnRow = el('div', 'lf-form-row');
+        const submitBtn = el('button', 'lf-btn', '保存到素材库');
+        submitBtn.type = 'button';
+        const resetBtn = el('button', 'lf-btn', '清空重填');
+        resetBtn.type = 'button';
+        const fMsg = el('span', 'lf-msg', '');
+        btnRow.append(submitBtn, resetBtn, fMsg);
+        formCard.append(formTitle, fRow, appIn, dropZone, fileInput, previewBox, btnRow);
+
+        const grid = el('div', 'lf-lib-grid');
+        app.append(head, sub, dirLine, policyCard, tabs, formCard, grid);
+
+        const readImages = (files) => {
+          const picked = Array.from(files || []).filter((f) => /^image\//.test(f.type)).slice(0, 4);
+          if (!picked.length) return;
+          Promise.all(picked.map((f) => new Promise((res) => {
+            const fr = new FileReader();
+            fr.onload = () => res(typeof fr.result === 'string' ? fr.result : '');
+            fr.onerror = () => res('');
+            fr.readAsDataURL(f);
+          }))).then((urls) => {
+            pendingDataUrls = urls.filter(Boolean);
+            previewBox.innerHTML = '';
+            for (const u of pendingDataUrls) {
+              const img = document.createElement('img');
+              img.src = u;
+              previewBox.append(img);
+            }
+          });
+        };
+        dropZone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', () => readImages(fileInput.files));
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('over'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+        dropZone.addEventListener('drop', (e) => {
+          e.preventDefault();
+          dropZone.classList.remove('over');
+          readImages(e.dataTransfer && e.dataTransfer.files);
+        });
+
+        const resetForm = () => {
+          editingId = '';
+          nameIn.value = '';
+          aliasIn.value = '';
+          tagIn.value = '';
+          appIn.value = '';
+          pendingDataUrls = [];
+          previewBox.innerHTML = '';
+          formTitle.textContent = `在「${CAT_LABELS[curCat]}」下添加或更新条目`;
+        };
+        resetBtn.addEventListener('click', () => { resetForm(); fMsg.textContent = ''; });
+
+        const render = (r) => {
+          lastState = r || lastState;
+          dirLine.textContent = lastState.dir ? `目录：${lastState.dir}` : '';
+          if (lastState.settings) {
+            policySel.value = lastState.settings.policy || 'milestone';
+            cdInput.value = String(lastState.settings.cooldownMin ?? 60);
+          }
+          tabs.innerHTML = '';
+          for (const cat of Object.keys(CAT_LABELS)) {
+            const count = (lastState.entries || []).filter((x) => x.category === cat).length;
+            const tb = el('button', 'lf-btn lf-tab', `${CAT_LABELS[cat]} (${count})`);
+            tb.type = 'button';
+            if (cat === curCat) tb.dataset.on = '1';
+            tb.addEventListener('click', () => {
+              curCat = cat;
+              resetForm();
+              render(lastState);
+            });
+            tabs.append(tb);
+          }
+          formTitle.textContent = editingId
+            ? `编辑「${CAT_LABELS[curCat]}」条目（${editingId}）`
+            : `在「${CAT_LABELS[curCat]}」下添加或更新条目`;
+
+          grid.innerHTML = '';
+          const items = (lastState.entries || []).filter((x) => x.category === curCat);
+          if (!items.length) {
+            grid.append(el('p', 'lf-muted', '当前分类暂无条目，在上方填写保存即可。'));
+            return;
+          }
+          for (const it of items) {
+            const card = el('div', 'lf-lib-card');
+            const top = el('div', 'top');
+            top.append(el('span', 'nm', it.name || it.id));
+            top.append(el('span', 'alias', it.id));
+            card.append(top);
+            if (it.aliases && it.aliases.length) {
+              card.append(el('div', 'alias', `别名：${it.aliases.join('、')}`));
+            }
+            card.append(el('div', 'desc', it.appearance || '暂无外观描述'));
+            if (it.imagePreviews && it.imagePreviews.length) {
+              const thumbs = el('div', 'lf-lib-thumbs');
+              for (const src of it.imagePreviews) {
+                const img = document.createElement('img');
+                img.src = src;
+                thumbs.append(img);
+              }
+              card.append(thumbs);
+            }
+            const actRow = el('div', 'lf-form-row');
+            actRow.style.marginTop = 'auto';
+            actRow.style.marginBottom = '0';
+            const editBtn = el('button', 'lf-btn', '编辑');
+            editBtn.type = 'button';
+            editBtn.addEventListener('click', () => {
+              editingId = it.id;
+              nameIn.value = it.name || '';
+              aliasIn.value = (it.aliases || []).join(', ');
+              tagIn.value = (it.tags || []).join(', ');
+              appIn.value = it.appearance || '';
+              pendingDataUrls = [];
+              previewBox.innerHTML = '';
+              formTitle.textContent = `编辑「${CAT_LABELS[curCat]}」条目（${editingId}）`;
+            });
+            const delBtn = el('button', 'lf-btn', '删除');
+            delBtn.type = 'button';
+            delBtn.addEventListener('click', () => {
+              ctx.invoke('delete', [{ category: curCat, id: it.id }]).then((nr) => {
+                fMsg.textContent = `已删除 ${it.name}`;
+                render(nr);
+              }).catch((e) => { fMsg.textContent = (e && e.message) || '删除失败'; });
+            });
+            actRow.append(editBtn, delBtn);
+            card.append(actRow);
+            grid.append(card);
+          }
+        };
+
+        pSaveBtn.addEventListener('click', () => {
+          pMsg.textContent = '保存中…';
+          ctx.invoke('savePolicy', [{ policy: policySel.value, cooldownMin: Number(cdInput.value) || 0 }])
+            .then((nr) => { pMsg.textContent = '已保存 ✓'; render(nr); })
+            .catch((e) => { pMsg.textContent = (e && e.message) || '保存失败'; });
+        });
+
+        submitBtn.addEventListener('click', () => {
+          const nm = nameIn.value.trim();
+          if (!nm) { fMsg.textContent = '请填写条目名称'; return; }
+          fMsg.textContent = '保存中…';
+          ctx.invoke('upsert', [{
+            id: editingId || undefined,
+            category: curCat,
+            name: nm,
+            aliases: aliasIn.value,
+            tags: tagIn.value,
+            appearance: appIn.value,
+            imageDataUrls: pendingDataUrls.length ? pendingDataUrls : undefined,
+          }]).then((nr) => {
+            fMsg.textContent = '已保存 ✓';
+            resetForm();
+            render(nr);
+          }).catch((e) => { fMsg.textContent = (e && e.message) || '保存失败'; });
+        });
+
+        await ctx.invoke('list').then(render).catch((e) => {
+          dirLine.textContent = (e && e.message) || '读取失败';
+        });
       },
     },
   },

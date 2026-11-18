@@ -16,4 +16,6 @@ life-spend/
 # 里面有本机路径、邮箱别名的内部 ID、文档表格 ID，还有带用户邮箱的反馈台账。
 # 这个仓库当时是干净的（没人 add 过），但 .gitignore 里没有这一条 —— 补上防下次。
 .workbuddy/
-
+image-library/
+life-ledger.jsonl
+life-diary/

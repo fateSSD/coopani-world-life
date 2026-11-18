@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VersionCheck } from './version-check.ts';
 import { LifeDiaryStore } from './diary.ts';
+import { ImageLibrary, LIBRARY_CATEGORIES, LIBRARY_CATEGORY_LABEL, type LibraryCategory, type PhotoPolicyMode } from './library.ts';
 import type {
   Logger, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp, TriggerMode,
 } from 'cortico/core/types.ts';
@@ -75,6 +76,7 @@ export class LifeWorld implements World {
   private readonly opts: LifeWorldOptions;
   private readonly store: StateStore;
   private readonly diary: LifeDiaryStore;
+  public readonly library: ImageLibrary;
   private state: LifeState;
   private journey: JourneyView;
   private town: TownView = { ...BUILTIN_TOWN };
@@ -83,6 +85,7 @@ export class LifeWorld implements World {
     this.opts = opts;
     this.store = new StateStore(opts.dataDir);
     this.diary = new LifeDiaryStore(opts.dataDir);
+    this.library = new ImageLibrary(opts.dataDir);
     /*
      * 版本检查（2026-11-15，照 journey 那套搬过来的）。
      *
@@ -532,6 +535,22 @@ export class LifeWorld implements World {
         },
         settled: this.recentSettled.slice(-40),
         town: { id: this.town.id, name: this.town.name, weather: w.sky },
+        activity: (() => {
+          const a = this.state.activity;
+          if (!a || Date.parse(a.until) <= now.getTime()) return null;
+          const def = ACTS[a.id];
+          return {
+            id: a.id,
+            kind: a.kind,
+            label: a.label,
+            until: a.until,
+            scene: def?.scene ?? null,
+            outfitHint: def?.outfitHint ?? null,
+            props: def?.props ?? null,
+            visualPrompt: def ? this.library.composeVisualPrompt({ label: a.label, scene: def.scene, outfitHint: def.outfitHint, props: def.props }) : null,
+          };
+        })(),
+        imagePolicy: this.library.getSettings(),
       }, null, 2));
       renameSync(tmp, file);
     } catch { /* 广播不出去不影响她过日子 */ }
@@ -804,6 +823,7 @@ export class LifeWorld implements World {
       this.toolBuy(),
       this.toolDiaryWrite(),
       this.toolDiaryRead(),
+      this.toolLibrary(),
     ];
   }
 
@@ -832,16 +852,12 @@ export class LifeWorld implements World {
     return {
       name: 'life_act',
       description:
-        '你自己开始做一件事。**除了 wake 和 cancel，所有动作都需要花一段时间** —— '
-        + '五维和花销会随着时间流逝按分钟慢慢结算，不是一调用就瞬间加满。'
-        + '正在做一件事（或睡觉、上班）时不能同时做别的；想中途打断当前动作或早退，用 `cancel`（钱不退、会扫兴，上班早退也有惩罚）。'
-        + '吃有五档：吃顿好的 feast（60m/40元）、吃一顿 eat（40m/15元）、随便吃点 instant（15m/0元）、买菜自己做 cook（55m/10元）、吃夜宵热汤面 supper（30m/18元）；'
-        + '喝的有：喝下午茶 tea（45m/28元）、小酌一杯 drink（60m/25元）、泡咖啡馆 cafe（60m/30元）；'
-        + '休息/洗护/锻炼：睡一觉 sleep（8h）、打个盹 nap（45m）、洗个澡 wash（20m）、做SPA spa（60m/120元）、晒太阳 sunbathe（30m）、整理房间 tidy（40m）、健身房 workout（60m/35元）；'
-        + '休闲/社交/见识：看会儿书 study（60m/涨见识）、玩会儿 play（45m）、找朋友逛商场 mall（90m/81元）、逛早市/夜市 market（40m/20元）、公园野餐 picnic（90m/45元）、'
-        + '看场电影 movie（120m/36元）、去KTV唱歌 karaoke（120m/96元）、逛美术馆 museum（90m/40元）、画会儿画 paint（75m/12元）、跟人说说话 meet（30m）、在池塘边发呆 pond（30m）；'
-        + '控制：睡着时起来 wake、打断当前动作/早退 cancel。'
-        + '**这是你自己去做，不是别人让你做** —— 不想做就别做，说一句就行。',
+        '开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。'
+        + '吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；'
+        + '饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；'
+        + '休/护/动：sleep(8h) nap(60m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m)；'
+        + '闲/学/社：study(60m/涨见识) play(60m/22元) meet(90m/30元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；'
+        + '控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -1865,6 +1881,79 @@ export class LifeWorld implements World {
     };
   }
 
+  private toolLibrary(): ToolDef {
+    return {
+      name: 'life_library',
+      description: '查阅或维护四分类参考素材库（characters 人物 / outfits 服饰 / scenes 场景 / props 道具），或调整留影策略与冷却（action: list/search/upsert/delete/policy）。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['action'],
+        properties: {
+          action: { type: 'string', enum: ['list', 'search', 'upsert', 'delete', 'policy'], description: '操作类型' },
+          category: { type: 'string', enum: ['characters', 'outfits', 'scenes', 'props'], description: '素材分类（可选）' },
+          query: { type: 'string', description: 'search 时的关键词' },
+          id: { type: 'string', description: '条目 id（delete 必填，upsert 可选）' },
+          name: { type: 'string', description: '条目名称（upsert 必填）' },
+          aliases: { type: 'string', description: '别名，逗号分隔' },
+          tags: { type: 'string', description: '标签，逗号分隔' },
+          appearance: { type: 'string', description: '外观/场景/物品画面描述' },
+          policy: { type: 'string', enum: ['off', 'milestone', 'active'], description: '留影策略：off 静默 / milestone 重要时刻 / active 积极留影' },
+          cooldownMin: { type: 'integer', description: '主动留影冷却分钟数（0-1440）' },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const action = String(args?.action ?? '').trim();
+        const rawCat = String(args?.category ?? '').trim();
+        const cat = LIBRARY_CATEGORIES.includes(rawCat as LibraryCategory) ? (rawCat as LibraryCategory) : undefined;
+        if (action === 'list') {
+          const items = this.library.list(cat, false);
+          if (!items.length) return { text: '素材库该分类下暂无条目。' };
+          return {
+            text: items.map((e) => `[${LIBRARY_CATEGORY_LABEL[e.category]}] ${e.name}（id:${e.id}${e.aliases.length ? `，别名:${e.aliases.join('/')}` : ''}）：${e.appearance || '无外观描述'}`).join('\n'),
+          };
+        }
+        if (action === 'search') {
+          const q = String(args?.query ?? '').trim();
+          const items = this.library.search(q, cat);
+          if (!items.length) return { text: `没有找到包含「${q}」的素材条目。` };
+          return {
+            text: items.map((e) => `[${LIBRARY_CATEGORY_LABEL[e.category]}] ${e.name}（id:${e.id}）：${e.appearance || '无外观描述'}`).join('\n'),
+          };
+        }
+        if (action === 'upsert') {
+          const useCat: LibraryCategory = cat ?? 'props';
+          const name = String(args?.name ?? '').trim();
+          if (!name) return { text: '新增或修改素材时请填写 name。' };
+          const entry = this.library.upsert({
+            id: args?.id ? String(args.id) : undefined,
+            category: useCat,
+            name,
+            aliases: args?.aliases,
+            tags: args?.tags,
+            appearance: String(args?.appearance ?? ''),
+          });
+          return { text: `已保存 [${LIBRARY_CATEGORY_LABEL[entry.category]}] ${entry.name}（id:${entry.id}）。` };
+        }
+        if (action === 'delete') {
+          if (!cat || !args?.id) return { text: '删除素材需要指定 category 和 id。' };
+          const ok = this.library.remove(cat, String(args.id));
+          return { text: ok ? `已删除 ${cat}/${args.id}。` : `未找到 ${cat}/${args.id}。` };
+        }
+        if (action === 'policy') {
+          const next = this.library.saveSettings({
+            policy: args?.policy as PhotoPolicyMode | undefined,
+            cooldownMin: args?.cooldownMin !== undefined ? Number(args.cooldownMin) : undefined,
+          });
+          this.broadcastLife(new Date());
+          return { text: `留影设置已更新：策略 ${next.policy}，冷却 ${next.cooldownMin} 分钟。` };
+        }
+        return { text: '不支持的 action，请传 list / search / upsert / delete / policy。' };
+      },
+    };
+  }
+
   /**
    * 「她住哪儿」这一行。
    *
@@ -1919,6 +2008,7 @@ export class LifeWorld implements World {
         `见识：${s.knowledge}`,
       ].join('　·　'),
       'life.diary': this.diaryLine(j, now),
+      'life.library': this.library.summaryLine(),
       'life.goal': s.goals.length
         ? s.goals.map((g) => {
           if (g.done) return `${g.what}（已经做到了）`;
@@ -2059,6 +2149,11 @@ export class LifeWorld implements World {
           title: '生活日记与流水',
           description: '她以第一人称写下的日常日记，以及最近的流水与经历。',
         },
+        {
+          id: 'library',
+          title: '素材库与留影',
+          description: '人物、服饰、场景、道具四分类参考库（支持拖图入库）与三档留影冷却设置。',
+        },
       ],
       invoke: (panel, method, args) => this.panelInvoke(panel, method, args),
       config: lifeConfigGroups(),
@@ -2085,6 +2180,7 @@ export class LifeWorld implements World {
           { name: 'life.visits', description: '最近 7 天他来过几天。' },
           { name: 'life.tellable', description: '还没说出去的生活片段。' },
           { name: 'life.diary', description: '今天生活日记写了没（与旅行扩展分流）。' },
+          { name: 'life.library', description: '四分类素材库与留影策略摘要。' },
         ],
       }],
     };
@@ -2119,6 +2215,62 @@ export class LifeWorld implements World {
     const j = readJourney(this.opts.dataDir, now);
     this.journey = j;
     const s = snapshot(this.state, now);
+
+    if (panel === 'library') {
+      const raw = (Array.isArray(args) ? args[0] : args) as any;
+      if (method === 'list' || method === 'snapshot' || method === '') {
+        return {
+          entries: this.library.list(undefined, true),
+          settings: this.library.getSettings(),
+          dir: this.library.rootDir,
+        };
+      }
+      if (method === 'upsert') {
+        const cat = LIBRARY_CATEGORIES.includes(raw?.category) ? (raw.category as LibraryCategory) : 'props';
+        const entry = this.library.upsert({
+          id: raw?.id,
+          category: cat,
+          name: String(raw?.name ?? ''),
+          aliases: raw?.aliases,
+          tags: raw?.tags,
+          appearance: String(raw?.appearance ?? ''),
+          imageDataUrls: Array.isArray(raw?.imageDataUrls) ? raw.imageDataUrls : undefined,
+        });
+        this.broadcastLife(now);
+        return {
+          ok: true,
+          entry,
+          entries: this.library.list(undefined, true),
+          settings: this.library.getSettings(),
+          dir: this.library.rootDir,
+        };
+      }
+      if (method === 'delete') {
+        const cat = LIBRARY_CATEGORIES.includes(raw?.category) ? (raw.category as LibraryCategory) : 'props';
+        const ok = this.library.remove(cat, String(raw?.id ?? ''));
+        this.broadcastLife(now);
+        return {
+          ok,
+          entries: this.library.list(undefined, true),
+          settings: this.library.getSettings(),
+          dir: this.library.rootDir,
+        };
+      }
+      if (method === 'savePolicy') {
+        const settings = this.library.saveSettings({
+          policy: raw?.policy,
+          cooldownMin: raw?.cooldownMin !== undefined ? Number(raw.cooldownMin) : undefined,
+        });
+        this.broadcastLife(now);
+        return {
+          ok: true,
+          entries: this.library.list(undefined, true),
+          settings,
+          dir: this.library.rootDir,
+        };
+      }
+      throw new Error(`素材库页不认识这个方法：${method}`);
+    }
 
     if (panel === 'diary') {
       if (method === 'list' || method === 'snapshot' || method === '') {
