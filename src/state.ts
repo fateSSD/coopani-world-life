@@ -464,6 +464,19 @@ export interface LifeState {
    * 现在先记在这儿，醒来第一件事补发，补完清空。
    */
   deferred: VitalKey[];
+  /** 睡着期间达到紧急线的待发五维（醒来按 critical flush 级补发）。 */
+  deferredCritical?: VitalKey[];
+  /** 睡着期间见底归零的待发五维（醒来按 bottomed flush 级补发）。 */
+  deferredBottomed?: VitalKey[];
+  /** 一次性事实事件事务性发件箱（推送失败保留重试，成功恰好移出）。 */
+  pendingNotices?: PendingNotice[];
+}
+
+export interface PendingNotice {
+  id: string;
+  type: 'life.sick' | 'life.recovered' | 'life.low';
+  text: string;
+  trigger: 'flush' | 'debounce';
 }
 
 /* ------------------------------------------------------------------ */
@@ -841,6 +854,9 @@ export function freshState(now: Date = new Date()): LifeState {
     nagged: {},
     spendApplied: [],
     deferred: [],
+    deferredCritical: [],
+    deferredBottomed: [],
+    pendingNotices: [],
     knowledge: 0,
     fitness: FITNESS_INITIAL,
     certLast: {},
@@ -1025,6 +1041,18 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     nagged: (s.nagged && typeof s.nagged === 'object') ? s.nagged : {},
     spendApplied: arr(s.spendApplied).filter((x) => typeof x === 'string').slice(-120),
     deferred: arr<unknown>(s.deferred).filter((k): k is VitalKey => typeof k === 'string' && k in DECAY_PER_HOUR),
+    deferredCritical: arr<unknown>(s.deferredCritical).filter((k): k is VitalKey => typeof k === 'string' && k in DECAY_PER_HOUR),
+    deferredBottomed: arr<unknown>(s.deferredBottomed).filter((k): k is VitalKey => typeof k === 'string' && k in DECAY_PER_HOUR),
+    pendingNotices: arr<unknown>(s.pendingNotices).filter((x): x is PendingNotice => {
+      const o = x as Partial<PendingNotice> | null;
+      return Boolean(
+        o && typeof o === 'object'
+        && typeof o.id === 'string' && o.id.length > 0
+        && (o.type === 'life.sick' || o.type === 'life.recovered' || o.type === 'life.low')
+        && typeof o.text === 'string' && o.text.length > 0
+        && (o.trigger === 'flush' || o.trigger === 'debounce')
+      );
+    }),
     knowledge: Number.isFinite(Number(s.knowledge)) ? clamp100(Number(s.knowledge)) : 0,
     fitness: Number.isFinite(Number(s.fitness)) ? Math.max(FITNESS_MIN, clamp100(Number(s.fitness))) : FITNESS_INITIAL,
     certLast: (s.certLast && typeof s.certLast === 'object' && !Array.isArray(s.certLast))
@@ -1644,6 +1672,8 @@ export interface ActResult {
   workEarned?: number;
   /** 被打断的旧活动名称。 */
   interruptedLabel?: string;
+  /** cancel/wake 内部 advance() 返回的推进结算（供外部继续处理一次性事实）。 */
+  advanced?: AdvanceResult;
 }
 
 export function isAsleep(state: LifeState, now: Date): boolean {
@@ -1764,7 +1794,7 @@ export function applyAct(
     if (sleeping) {
       return applyAct(state, 'wake', now);
     }
-    advance(state, now);
+    const adv = advance(state, now);
     const cur = state.activity;
     if (!cur) {
       return {
@@ -1773,6 +1803,7 @@ export function applyAct(
         mood: null,
         cost: 0,
         cash: state.money.cash,
+        advanced: adv,
       };
     }
     const doneMins = Math.max(0, Math.round((now.getTime() - Date.parse(cur.from)) / 60_000));
@@ -1819,6 +1850,7 @@ export function applyAct(
       cash: state.money.cash,
       workEarned,
       interruptedLabel: cur.label,
+      advanced: adv,
     };
   }
 
@@ -1913,7 +1945,7 @@ export function applyAct(
       );
     }
     state.updatedAt = now.toISOString();
-    return { ok: true, vitals: state.vitals, mood, cost: 0, cash: state.money.cash };
+    return { ok: true, vitals: state.vitals, mood, cost: 0, cash: state.money.cash, advanced: r };
   }
 
   /* 醒着开启一个耗时动作：不再瞬时加减五维或一次性扣光钱，全部交由 advance() 按分钟流逝结算。 */

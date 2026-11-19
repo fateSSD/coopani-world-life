@@ -99,8 +99,14 @@ const extToMime = (file: string): string => {
 
 const atomicWriteJson = (file: string, data: unknown): void => {
   const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 6)}`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-  renameSync(tmp, file);
+  try {
+    writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+    renameSync(tmp, file);
+  } finally {
+    if (existsSync(tmp)) {
+      try { rmSync(tmp, { force: true }); } catch { /* 保留原始写入异常 */ }
+    }
+  }
 };
 
 export class ImageLibrary {

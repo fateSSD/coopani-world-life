@@ -843,7 +843,13 @@ console.log('\n[36] 二期：需求见底破例提醒（zero:key 独立额度）
   const w = new LifeWorld({ cfg, dataDir: dir, botName: '大肥鱼' });
   await w.start({
     log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
-    pushEvent: async (e) => { pushed.push(e); return { ...e, blobs: [] }; },
+    /* 现代宿主：resolve 只返回带 cursor 的已接受信封，投递结果稍后由 settled 回执确认。 */
+    pushEvent: async (e) => {
+      const envelope = { ...e, blobs: [], cursor: pushed.length + 1 };
+      pushed.push(envelope);
+      return envelope;
+    },
+    pushDeferred: (_spec, _opts) => {},
   });
   pushed.length = 0;
 
@@ -856,7 +862,14 @@ console.log('\n[36] 二期：需求见底破例提醒（zero:key 独立额度）
   await w.tools().find((x) => x.name === 'life_status').handler({});
   const zeroMsg = pushed.filter((e) => e.type === 'life.low' && /见底了/.test(e.text));
   ok(zeroMsg.length === 1, '今天报过 30 后，掉到 0 仍破例推一次见底提醒', zeroMsg.map((x) => x.text).join(' | '));
-  ok(w.state.nagged['zero:fun'] === today, '记下了 zero:fun 独立防打扰标记');
+  ok(w.state.nagged['zero:fun'] === undefined, '无 settled 回执时只接受不提交 zero:fun 额度');
+  ok(Boolean(zeroMsg[0]?.meta?.lifeAttempt) && zeroMsg[0]?.cursor === 1, '测试宿主保留 delivered 对账所需 meta 与 cursor');
+
+  /* cursor 不符的回执不能提交；真实宿主随后按原 meta + cursor 回 delivered。 */
+  w.onEventsSettled([{ ...zeroMsg[0], cursor: zeroMsg[0].cursor + 1 }], 'delivered');
+  ok(w.state.nagged['zero:fun'] === undefined, 'cursor 不符的 delivered 不提交 zero:fun 额度');
+  w.onEventsSettled([zeroMsg[0]], 'delivered');
+  ok(w.state.nagged['zero:fun'] === today, '真实 delivered 后记下 zero:fun 独立防打扰标记');
   await w.stop();
 }
 

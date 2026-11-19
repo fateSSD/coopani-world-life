@@ -1,21 +1,22 @@
-import { statSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VersionCheck } from './version-check.ts';
 import { LifeDiaryStore } from './diary.ts';
-import { ImageLibrary, LIBRARY_CATEGORIES, LIBRARY_CATEGORY_LABEL, type LibraryCategory, type PhotoPolicyMode } from './library.ts';
+import { ImageLibrary, LIBRARY_CATEGORIES, LIBRARY_CATEGORY_LABEL, type LibraryCategory, type LibrarySettings } from './library.ts';
 import type {
-  Logger, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp, TriggerMode,
+  Logger, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp, TriggerMode, EventTag, EventEnvelope, StoragePart,
 } from 'cortico/core/types.ts';
 import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
 import {
   ACTS, CRITICAL, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, LOW, MAX_PENDING, MAX_PLEDGES,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL,
-  advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyGift, asleepRefusal, busyRefusal, isAsleep, isBusy,
+  advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyGift, asleepRefusal, busyRefusal, freshState, isAsleep, isBusy,
   localDateKey, noteVisit, quoteMove, readyGoals,
   recentVisits, remember, snapshot, SLEEP_ENERGY_PER_HOUR,
   appendLedger, readLedger, marketPrices, weatherOf,
-  type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type Snapshot, type VitalKey,
+  type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type PendingNotice, type Snapshot, type VitalKey,
 } from './state.ts';
 import { JOBS, certOf, jobAllowedAt } from './jobs.ts';
 import {
@@ -38,6 +39,28 @@ export interface LifeWorldOptions {
   cfg: LifeConfigSection;
   dataDir: string;
   botName: string;
+  /** 可选时钟注入（供测试固定白昼窗口）。 */
+  now?: () => Date;
+}
+
+type CrossedLevel = 'crossed' | 'critical' | 'bottomed';
+
+/** 隐藏 World 可能只入队不 render；只给这段排队期设租约，render 后的在途事件不按时间回收。 */
+const DAY_WORK_QUEUE_LEASE_MS = 60_000;
+
+interface DeliveryAttempt {
+  id: string;
+  generation: number;
+  kind: 'notice' | 'crossed' | 'day' | 'goal';
+  acceptedAt: number;
+  cursor?: number;
+  noticeId?: string;
+  nagKey?: string;
+  vital?: VitalKey;
+  level?: CrossedLevel;
+  date?: string;
+  renderedAt?: number;
+  legacy?: boolean;
 }
 
 /**
@@ -66,6 +89,36 @@ function fmtSpan(ms: number): string {
   const min = Math.round(sec / 60);
   if (min < 90) return `${min} 分钟`;
   return `${(min / 60).toFixed(1)} 小时`;
+}
+
+/** 回滚也走临时文件 + rename；所有恢复错误都返回给调用方，绝不静默吞掉。 */
+function restoreFiles(entries: readonly { file: string; bytes: Buffer | null }[]): unknown[] {
+  const errors: unknown[] = [];
+  for (const { file, bytes } of entries) {
+    const tmp = `${file}.rollback-${process.pid}`;
+    try {
+      if (bytes === null) {
+        if (existsSync(file)) unlinkSync(file);
+      } else {
+        try {
+          writeFileSync(tmp, bytes);
+          renameSync(tmp, file);
+        } finally {
+          if (existsSync(tmp)) unlinkSync(tmp);
+        }
+      }
+    } catch (e) {
+      errors.push(e);
+    }
+  }
+  return errors;
+}
+
+function throwRollback(original: unknown, rollbackErrors: readonly unknown[]): never {
+  if (rollbackErrors.length) {
+    throw new AggregateError([original, ...rollbackErrors], '操作失败，且回滚未完整恢复；内存已还原，请检查磁盘权限或文件占用');
+  }
+  throw original;
 }
 
 export class LifeWorld implements World {
@@ -146,6 +199,83 @@ export class LifeWorld implements World {
    * 2026-11-15 端到端跑时抓到的。
    */
   private sessionBaselineSet = false;
+  /** 用户刚清过生活档案，且之后尚未产生新变动时为 true，防止 stop() 把空档案/旧内存写回复活。 */
+  private stateCleared = false;
+  /** 清理代次：旧 tick / 工具结算跨 await 返回后不得写入新状态。 */
+  private stateGeneration = 0;
+  /** 已入队但尚未收到宿主投递回执的白天提醒。 */
+  private dayWorkPending: { id: string; date: string; generation: number } | null = null;
+  /** 现代 resolve 仅表示接受；真实回执或旧宿主明确的假定 delivered 才能结清这些占位。 */
+  private readonly deliveryAttempts = new Map<string, DeliveryAttempt>();
+  /** 工具前结算单飞，防止同一病愈或越线被并发 flush 推两次。 */
+  private settleFlight: Promise<void> | null = null;
+  /** 当事件结算或推送写盘失败时置 true，确保下一跳/工具前重试补存。 */
+  private stateSaveDirty = false;
+
+  private now(): Date {
+    return this.opts.now?.() ?? new Date();
+  }
+
+  private newAttempt(kind: DeliveryAttempt['kind'], extra: Partial<DeliveryAttempt> = {}): DeliveryAttempt {
+    return {
+      id: `life-attempt-${randomUUID()}`,
+      generation: this.stateGeneration,
+      kind,
+      acceptedAt: Date.now(),
+      ...extra,
+    };
+  }
+
+  private hasAttempt(kind: DeliveryAttempt['kind'], key: string): boolean {
+    for (const a of this.deliveryAttempts.values()) {
+      if (a.generation !== this.stateGeneration || a.kind !== kind) continue;
+      if (kind === 'notice' && a.noticeId === key) return true;
+      if ((kind === 'crossed' || kind === 'goal') && a.nagKey === key) return true;
+    }
+    return false;
+  }
+
+  private forgetAttempt(attempt: DeliveryAttempt): void {
+    if (this.deliveryAttempts.get(attempt.id)?.id === attempt.id) this.deliveryAttempts.delete(attempt.id);
+    if (this.dayWorkPending?.id === attempt.id) this.dayWorkPending = null;
+  }
+
+  /**
+   * 只回收从未 render 的过期排队项：隐藏 World 静默 return 时不能永久占位。
+   * 已 render 的事件可能仍在等待 persona.onDelivery/delivered，同日只允许日期、代次或明确回执改变它。
+   */
+  private recoverDayWorkLatch(force = false): void {
+    const pending = this.dayWorkPending;
+    if (!pending) return;
+    const attempt = this.deliveryAttempts.get(pending.id);
+    if (
+      !attempt
+      || pending.generation !== this.stateGeneration
+      || attempt.generation !== pending.generation
+      || attempt.date !== pending.date
+    ) {
+      this.dayWorkPending = null;
+      return;
+    }
+    if (force) {
+      this.forgetAttempt(attempt);
+      return;
+    }
+    if (attempt.legacy || attempt.renderedAt !== undefined) return;
+    if (Date.now() - attempt.acceptedAt < DAY_WORK_QUEUE_LEASE_MS) return;
+    this.forgetAttempt(attempt);
+    this.log?.warn('模拟鱼生：现代 deferred 排队租约到期仍未 render，已释放闩锁等待重试；未消耗今日额度');
+  }
+
+  private saveDeliveredState(): void {
+    try {
+      this.store.save(this.state);
+      this.stateSaveDirty = false;
+    } catch (e) {
+      this.stateSaveDirty = true;
+      this.log?.warn(`模拟鱼生：投递后状态落盘失败 ${(e as Error).message}；已置脏，下一跳或 stop() 会补存`);
+    }
+  }
 
   /** 版本号与新版本检查。面板表头那个徽章读它。 */
   private readonly versionCheck: VersionCheck;
@@ -175,6 +305,7 @@ export class LifeWorld implements World {
     this.sessionBaselineSet = this.sessionMtime > 0;
     /* 刚起来算活着 —— 否则第一分钟灯就是红的，白白吓人一次。 */
     this.lastTickAt = Date.now();
+    this.broadcastLife(new Date());
     /* 查最新版：不 await，面板不该等网络。 */
     void this.versionCheck.startupRefresh();
     this.restartTimer();
@@ -188,9 +319,123 @@ export class LifeWorld implements World {
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    try { this.store.save(this.state); } catch { /* 退出时写不进去不该拦着关 */ }
+    if (!this.stateCleared) {
+      try {
+        this.store.save(this.state);
+        this.stateSaveDirty = false;
+      } catch (e) {
+        this.stateSaveDirty = true;
+        this.log?.warn(`模拟鱼生：stop() 存档失败 ${(e as Error).message}；内存与宿主句柄保留，可重试 stop() 补存`);
+        /* 明确让停止失败，而不是清空 host/log 后把唯一可恢复的内存状态悄悄丢掉。 */
+        throw e;
+      }
+    }
     this.host = null;
     this.log = null;
+  }
+
+  /**
+   * 交接结束钩子（同步入队进新 session 第一批）：
+   * render() 仅对内存状态副本做纯只读推演，不修改状态、不记账、不写盘，防止换代舍弃时误消费事件。
+   */
+  onHandoffEnded(): void {
+    const host = this.host;
+    if (!host) return;
+    /* 旧 session 未结清的占位按 discarded 处理：待发数据保留，允许新 session 补投。 */
+    for (const attempt of [...this.deliveryAttempts.values()]) this.forgetAttempt(attempt);
+    this.recoverDayWorkLatch(true);
+    const renderHandoff = (): string => {
+      const now = this.now();
+      const j = readJourney(this.opts.dataDir, now);
+      this.journey = j;
+      const previewState = structuredClone(this.state);
+      if (!this.stateCleared) {
+        advance(previewState, now, { phase: j.phase, hotelTier: j.hotelTier, modeId: j.modeId });
+      }
+      const s = snapshot(previewState, now);
+      const body = (Object.keys(VITAL_LABEL) as VitalKey[])
+        .map((k) => `${VITAL_LABEL[k]} ${Math.round(s.vitals[k])}`)
+        .join(' ');
+      const stateDesc = s.asleep
+        ? '在睡'
+        : (s.activity ? `正在「${s.activity.label}」` : '空闲');
+      const place = j.installed && j.phase === 'staying'
+        ? `在${j.cityName}`
+        : j.installed && j.phase === 'traveling'
+          ? `前往${j.toName || j.cityName}途中`
+          : this.town.name;
+      return `[交接恢复生活快照] ${place} · ${stateDesc}｜五维：${body}｜手上 ${Math.round(s.money.cash)} 元。`;
+    };
+    if (typeof host.pushDeferred === 'function' && host.pushDeferred.length > 0) {
+      host.pushDeferred({
+        type: 'life.handoff',
+        senderKey: LIFE_ID,
+        tags: ['snapshot'],
+        render: () => ({ text: renderHandoff() }),
+      }, { trigger: 'piggyback' });
+    } else {
+      const out = renderHandoff();
+      void host.pushEvent({
+        type: 'life.handoff',
+        source: this.id,
+        senderKey: LIFE_ID,
+        ts: this.now().toISOString(),
+        text: out,
+        tags: ['snapshot'],
+      }, { trigger: 'piggyback' }).catch((e: unknown) => {
+        this.log?.warn(`模拟鱼生：交接快照推不出去 ${(e as Error).message}`);
+      });
+    }
+  }
+
+  /** 只有一个提交口：现代真实 delivered 与旧宿主明确的假定 delivered 共用，discarded 绝不消费状态。 */
+  private settleDeliveryAttempt(attempt: DeliveryAttempt, outcome: 'delivered' | 'discarded'): void {
+    if (attempt.generation !== this.stateGeneration || this.deliveryAttempts.get(attempt.id)?.id !== attempt.id) return;
+    this.forgetAttempt(attempt);
+    if (outcome === 'discarded' || this.stateCleared) return;
+
+    let dirty = false;
+    if (attempt.kind === 'day') {
+      const today = localDateKey(this.now());
+      if (attempt.date === today) {
+        this.state.nagged['day:work'] = attempt.date;
+        dirty = true;
+      }
+    } else if (attempt.kind === 'notice' && attempt.noticeId) {
+      const q = this.state.pendingNotices ?? [];
+      this.state.pendingNotices = q.filter((n) => n.id !== attempt.noticeId);
+      dirty = true;
+    } else if ((attempt.kind === 'crossed' || attempt.kind === 'goal') && attempt.nagKey && attempt.date) {
+      this.state.nagged[attempt.nagKey] = attempt.date;
+      dirty = true;
+      if (attempt.kind === 'crossed' && attempt.vital && attempt.level) {
+        const field = attempt.level === 'bottomed'
+          ? 'deferredBottomed'
+          : attempt.level === 'critical' ? 'deferredCritical' : 'deferred';
+        const list = this.state[field] ?? [];
+        this.state[field] = list.filter((k) => k !== attempt.vital);
+      }
+    }
+    if (dirty) this.saveDeliveredState();
+  }
+
+  /**
+   * 宿主事件结算回执：attempt + generation + cursor + 原日期共同对账。
+   * 现代 accepted 不摘除任何待发项；discarded 只释放在途占位，下轮才能恰好补发一次。
+   */
+  onEventsSettled(events: readonly EventEnvelope[], outcome: 'delivered' | 'discarded'): void {
+    for (const ev of events) {
+      const id = ev.meta?.lifeAttempt;
+      if (typeof id !== 'string') continue;
+      const attempt = this.deliveryAttempts.get(id);
+      if (!attempt || attempt.generation !== this.stateGeneration) continue;
+      /* 即时事件必须同时匹配 resolve 时取得的 cursor；deferred 首次回执再绑定 cursor。 */
+      if (attempt.cursor !== undefined && attempt.cursor !== ev.cursor) continue;
+      if (attempt.cursor === undefined && attempt.legacy) continue;
+      if (attempt.date !== undefined && attempt.date !== ev.meta?.lifeDayDate) continue;
+      attempt.cursor = ev.cursor;
+      this.settleDeliveryAttempt(attempt, outcome);
+    }
   }
 
   /** `tickMs` 是热改的 —— 改了要重排定时器，否则要重启才生效。 */
@@ -245,7 +490,9 @@ export class LifeWorld implements World {
   private async tick(): Promise<void> {
     /* 先打点再干活：这一格记的是「定时器还活着」，不是「这一跳有活干」。 */
     this.lastTickAt = Date.now();
-    const now = new Date();
+    const now = this.now();
+    const generation = this.stateGeneration;
+    this.recoverDayWorkLatch();
 
     /* 先把热改接上：周期变了重排定时器，地址变了重读城名。 */
     const ms = Math.max(15_000, Number(this.cfg.tickMs) || 60_000);
@@ -272,6 +519,7 @@ export class LifeWorld implements World {
       this.lastTownUrl = townUrl;
       this.lastHomeCity = homeCity;
       this.town = await readTown(townUrl, homeCity);
+      if (generation !== this.stateGeneration) return;
       this.log?.info(`模拟鱼生：本城改成了 ${this.town.name}（${this.townSourceLabel()}）`);
     }
 
@@ -287,55 +535,44 @@ export class LifeWorld implements World {
     this.settleSpendRequests(now);
     this.broadcastLife(now);
     const r = advance(this.state, now, { phase: this.journey.phase, hotelTier: this.journey.hotelTier, modeId: this.journey.modeId });
-    if (r.hours <= 0) return;
+    if (r.hours <= 0) {
+      const hasRetriable = !this.stateCleared && (
+        (this.state.pendingNotices?.length ?? 0) > 0
+        || (!isAsleep(this.state, now) && (
+          (this.state.deferred?.length ?? 0) > 0
+          || (this.state.deferredCritical?.length ?? 0) > 0
+          || (this.state.deferredBottomed?.length ?? 0) > 0
+        ))
+      );
+      if (hasRetriable) {
+        await this.flushPendingNotices(generation);
+        if (generation !== this.stateGeneration) return;
+        await this.flushCrossed(r, now, generation);
+        if (generation !== this.stateGeneration) return;
+        this.stateSaveDirty = true;
+      }
+      if (this.stateSaveDirty && !this.stateCleared) {
+        try {
+          this.store.save(this.state);
+          this.stateSaveDirty = false;
+        } catch (e) {
+          this.log?.warn(`模拟鱼生：补存状态失败 ${(e as Error).message}`);
+        }
+      }
+      return;
+    }
 
-    this.settleCompleted(r, now);
+    this.stateCleared = false;
+    await this.settleAdvanceEffects(r, now, generation);
+    if (generation !== this.stateGeneration) return;
     let dirty = true;
 
-    /* 病了 —— 这条要紧，用 flush。 */
-    for (const c of r.caught) {
-      remember(this.state, c.text, now);
-      await this.push('life.sick', `${c.text}`, 'flush');
-    }
-    for (const c of r.recovered) {
-      remember(this.state, `${c.text.replace(/。$/, '')}，已经好了。`, now);
-      await this.push('life.recovered', `${c.text.replace(/。$/, '')}，已经好了。`, 'debounce');
-    }
-
-    /*
-     * 目标攒够了 —— **只给信号，不替她搬。**
-     *
-     * 「攒够 5200 就搬到新小区」是她自己的目标。代码替她执行，
-     * 这个目标就变成了一个定时器，不再是她的决定。
-     *
-     * 所以这里只说「钱够了」，搬不搬她自己判断：户型合不合适、要不要再攒点买下来、
-     * 这阵子想不想折腾 —— 这些理由代码都不知道。
-     */
     const today = localDateKey(now);
-    for (const g of readyGoals(this.state)) {
-      const key = `goal:${g.id}`;
-      if (this.state.nagged[key] === today) continue;
-      this.state.nagged[key] = today;
-      await this.push(
-        'life.goal',
-        `攒够了：「${g.what}」要的钱有了。手上 ${this.state.money.cash} 元，要 ${g.need} 元。`
-          + '搬不搬、什么时候搬，你自己看 —— 这只是一个数到齐了。',
-        'debounce',
-      );
+    if (this.dayWorkPending && this.dayWorkPending.date !== today) {
+      const old = this.deliveryAttempts.get(this.dayWorkPending.id);
+      if (old) this.forgetAttempt(old);
+      this.dayWorkPending = null;
     }
-
-    /*
-     * 掉过线的那几条 —— 按配置的密度说。
-     *
-     * **睡着时不推**（2026-11-15）：半夜被自己的饥饿叫醒，那不是提醒，是打扰。
-     * 但**不能连事实一起扔掉**（2026-11-17 修）：`crossed` 是一次性的，
-     * 丢掉之后醒来那一跳判的是「这一跳跨没跨」，永远不会再算到它，
-     * 于是那几条就此静音。现在先记进 `deferred`，醒来补发 —— 见 `flushCrossed`。
-     */
-    await this.flushCrossed(r, now);
-
-    /* 饿醒了要说一声 —— 见 `reportHungryWake`。 */
-    await this.reportHungryWake(r, now);
 
     /*
      * 白天未出工提醒（一天最多一次）：
@@ -351,33 +588,70 @@ export class LifeWorld implements World {
       && this.state.vitals.energy >= 50
       && this.state.vitals.food >= 20
       && this.state.job.lastAt !== today
+      && !this.dayWorkPending
       && this.shouldNag('day:work', now)
     ) {
-      this.state.nagged['day:work'] = today;
-      const goalGap = readyGoals(this.state).length === 0 && this.state.goals.length
-        ? this.state.goals.filter((g) => !g.done && g.need > this.state.money.cash)
-          .map((g) => `距「${g.what}」还差 ${g.need - this.state.money.cash} 元`).join('；')
-        : '';
-      const jobHint = this.state.job.what
-        ? `上次做的是「${this.state.job.what}」（${this.state.job.daily} 元/天）`
-        : '还没定固定活（可以先挑个零工）';
-      const cash = Math.round(this.state.money.cash);
-      const dailyBase = Math.max(15, Math.round(this.state.home.monthly / 30) + 15);
-      const tightHint = cash < dailyBase * 5
-        ? '，手头有点紧，出工能先把这几天的饭钱房租稳住。'
-        : `；出门能动用的旅费约 ${Math.round(cash * 0.7)} 元，想吃点好的、住得更舒心或攒钱去想去的地方，今天可以出工挣一笔，也可以读书考证提升自己。`;
-      await this.push(
-        'life.day',
-        `现在是白天（${DAYPART_LABEL[dayPart(at)]}），精力 ${Math.round(this.state.vitals.energy)}，今天还没出过工。`
+      const dayAttempt = this.newAttempt('day', { date: today });
+      const renderDayWork = (): string | null => {
+        const cur = this.now();
+        dayAttempt.renderedAt = Date.now();
+        if (dayAttempt.generation !== this.stateGeneration || this.dayWorkPending?.id !== dayAttempt.id) return null;
+        const curJ = readJourney(this.opts.dataDir, cur);
+        const curAt = herNow(curJ, cur);
+        const curHr = curAt.getHours();
+        const curToday = localDateKey(cur);
+        if (
+          curToday !== today
+          || isAsleep(this.state, cur)
+          || isBusy(this.state, cur)
+          || curHr < 9 || curHr > 17
+          || this.state.conditions.length > 0
+          || this.state.vitals.energy < 50
+          || this.state.vitals.food < 20
+          || this.state.job.lastAt === curToday
+          || !this.shouldNag('day:work', cur)
+        ) {
+          this.forgetAttempt(dayAttempt);
+          return null;
+        }
+        const goalGap = readyGoals(this.state).length === 0 && this.state.goals.length
+          ? this.state.goals.filter((g) => !g.done && g.need > this.state.money.cash)
+            .map((g) => `距「${g.what}」还差 ${g.need - this.state.money.cash} 元`).join('；')
+          : '';
+        const jobHint = this.state.job.what
+          ? `上次做的是「${this.state.job.what}」（${this.state.job.daily} 元/天）`
+          : '还没定固定活（可以先挑个零工）';
+        const cash = Math.round(this.state.money.cash);
+        const dailyBase = Math.max(15, Math.round(this.state.home.monthly / 30) + 15);
+        const tightHint = cash < dailyBase * 5
+          ? '，手头有点紧，出工能先把这几天的饭钱房租稳住。'
+          : `；出门能动用的旅费约 ${Math.round(cash * 0.7)} 元，想吃点好的、住得更舒心或攒钱去想去的地方，今天可以出工挣一笔，也可以读书考证提升自己。`;
+        return `现在是白天（${DAYPART_LABEL[dayPart(curAt)]}），精力 ${Math.round(this.state.vitals.energy)}，今天还没出过工。`
           + `${jobHint}；手上 ${cash} 元`
           + (goalGap ? `（${goalGap}）` : '')
-          + `${tightHint}怎么安排你自己定。`,
+          + `${tightHint}怎么安排你自己定。`;
+      };
+      this.dayWorkPending = { id: dayAttempt.id, date: today, generation };
+      const sent = await this.push(
+        'life.day',
+        '',
         'debounce',
+        {
+          tags: ['snapshot'],
+          deferredRender: renderDayWork,
+          attempt: dayAttempt,
+        },
       );
+      if (generation !== this.stateGeneration) return;
+      if (!sent) this.forgetAttempt(dayAttempt);
     }
 
-    if (dirty) {
-      try { this.store.save(this.state); } catch (e) {
+    if (dirty || this.stateSaveDirty) {
+      try {
+        this.store.save(this.state);
+        this.stateSaveDirty = false;
+      } catch (e) {
+        this.stateSaveDirty = true;
         /* 存不进去要说，但**不能把 tick 搞挂** —— 下一跳还会再来一次。 */
         this.log?.warn(`模拟鱼生：存档失败 ${(e as Error).message}`);
       }
@@ -391,65 +665,90 @@ export class LifeWorld implements World {
    * 这边管「什么时候该说」。合成一个函数的话，「在睡」这个判断会被
    * 复制到 tick 和工具入口两处 —— 漏一处就是半夜被吵。
    */
-  private async flushCrossed(r: AdvanceResult, now: Date): Promise<void> {
-    if (isAsleep(this.state, now)) {
-      /*
-       * 在睡：只记不说。`critical` / `bottomed` 也一起记 —— 醒来时按当时的真实值重算正文，
-       * 所以这里只存 key，不存「那会儿是多少」。
-       */
-      for (const k of [...r.crossed, ...r.critical, ...r.bottomed]) {
-        if (!this.state.deferred.includes(k)) this.state.deferred.push(k);
-      }
-      return;
-    }
-    const carry = this.state.deferred ?? [];
-    this.state.deferred = [];
-    /* 昨夜欠下的和这一跳新跨的合并去重：同一条只提一次。 */
-    const merged = [...new Set([...carry, ...r.crossed])];
-    if (!merged.length && !r.critical.length && !r.bottomed.length) return;
-    await this.reportCrossed(merged, now, r.bottomed, r.critical);
+  private async flushCrossed(r: AdvanceResult, now: Date, generation = this.stateGeneration): Promise<void> {
+    const crossed = this.state.deferred ?? (this.state.deferred = []);
+    const critical = this.state.deferredCritical ?? (this.state.deferredCritical = []);
+    const bottomed = this.state.deferredBottomed ?? (this.state.deferredBottomed = []);
+    const merge = (into: VitalKey[], keys: VitalKey[]) => {
+      for (const key of keys) if (!into.includes(key)) into.push(key);
+    };
+    merge(crossed, r.crossed);
+    merge(critical, r.critical);
+    merge(bottomed, r.bottomed);
+    if (isAsleep(this.state, now)) return;
+    if (!crossed.length && !critical.length && !bottomed.length) return;
+    await this.reportCrossed([], now, [], [], generation);
   }
 
   /**
-   * 这一跳里掉过线的那几条，按配置的密度说一句。
-   *
-   * **抽出来是因为现在有两个地方会推进时间**：`tick()` 和工具入口的
-   * `settleBeforeTool()`。两处各写一遍的话，工具入口那份漏掉 `crossed`，
-   * 后果是**开机后第一件事就是调工具，她饿了一夜却一句提醒都没有** ——
-   * `crossed` 判的是「这次推进跨过去的」，被工具消费掉之后 tick 再也看不到。
-   *
-   * 推送前再核一遍当前值（`vitals[key]`）：如果同一轮里她刚吃/刚洗补回去了，
-   * 不再推送过期提醒，以免把刚处理好的需求当成噪音。
+   * 越线事件在 delivered 前始终保留原数组与原严重级别；独立 crit:/zero: 额度也只由回执提交。
+   * 直接调用本方法时同样先并入 deferred，推送拒绝或 discarded 后可在 hours=0 的下一跳补发。
    */
   private async reportCrossed(
     crossed: VitalKey[],
     now: Date,
     bottomed: VitalKey[] = [],
     critical: VitalKey[] = [],
-  ): Promise<void> {
+    generation = this.stateGeneration,
+  ): Promise<{ unsentBottomed: VitalKey[]; unsentCritical: VitalKey[]; unsentCrossed: VitalKey[] }> {
     const today = localDateKey(now);
+    const low = this.state.deferred ?? (this.state.deferred = []);
+    const crit = this.state.deferredCritical ?? (this.state.deferredCritical = []);
+    const bot = this.state.deferredBottomed ?? (this.state.deferredBottomed = []);
+    const merge = (into: VitalKey[], keys: VitalKey[]) => {
+      for (const key of keys) if (!into.includes(key)) into.push(key);
+    };
+    merge(low, crossed);
+    merge(crit, critical);
+    merge(bot, bottomed);
     const seen = new Set<VitalKey>();
-    for (const key of bottomed) {
-      if (this.state.vitals[key] > 0) continue;
-      const zeroKey = `zero:${key}`;
-      if (!this.shouldNag(zeroKey, now)) continue;
-      await this.push('life.low', `见底了：${this.lowText(key, 0)}`, 'flush');
-      this.state.nagged[zeroKey] = today;
+    const unsent = () => ({
+      unsentBottomed: [...bot],
+      unsentCritical: [...crit],
+      unsentCrossed: [...low],
+    });
+    const remove = (list: VitalKey[], key: VitalKey) => {
+      const at = list.indexOf(key);
+      if (at >= 0) list.splice(at, 1);
+    };
+    const offer = async (
+      level: CrossedLevel,
+      key: VitalKey,
+      nagKey: string,
+      text: string,
+      trigger: TriggerMode,
+    ): Promise<boolean> => {
+      const attempt = this.newAttempt('crossed', { level, vital: key, nagKey, date: today });
+      await this.push('life.low', text, trigger, { attempt });
+      return generation === this.stateGeneration;
+    };
+
+    for (const key of [...bot]) {
+      if (this.state.vitals[key] > 0) { remove(bot, key); continue; }
+      remove(crit, key);
+      remove(low, key);
       seen.add(key);
+      if (this.hasAttempt('crossed', `zero:${key}`)) continue;
+      if (!this.shouldNag(`zero:${key}`, now)) { remove(bot, key); continue; }
+      if (!await offer('bottomed', key, `zero:${key}`, `见底了：${this.lowText(key, 0)}`, 'flush')) return unsent();
     }
-    for (const key of critical) {
-      if (seen.has(key) || this.state.vitals[key] >= CRITICAL) continue;
-      const critKey = `crit:${key}`;
-      if (!this.shouldNag(critKey, now)) continue;
-      await this.push('life.low', `很缺了：${this.lowText(key, Math.round(this.state.vitals[key]))}`, 'flush');
-      this.state.nagged[critKey] = today;
+    for (const key of [...crit]) {
+      if (seen.has(key)) continue;
+      if (this.state.vitals[key] >= CRITICAL) { remove(crit, key); continue; }
+      remove(low, key);
       seen.add(key);
+      if (this.hasAttempt('crossed', `crit:${key}`)) continue;
+      if (!this.shouldNag(`crit:${key}`, now)) { remove(crit, key); continue; }
+      if (!await offer('critical', key, `crit:${key}`, `很缺了：${this.lowText(key, Math.round(this.state.vitals[key]))}`, 'flush')) return unsent();
     }
-    for (const key of crossed) {
-      if (seen.has(key) || this.state.vitals[key] >= LOW || !this.shouldNag(key, now)) continue;
-      await this.push('life.low', this.lowText(key, Math.round(this.state.vitals[key])), 'debounce');
-      this.state.nagged[key] = today;
+    for (const key of [...low]) {
+      if (seen.has(key)) continue;
+      if (this.state.vitals[key] >= LOW) { remove(low, key); continue; }
+      if (this.hasAttempt('crossed', key)) continue;
+      if (!this.shouldNag(key, now)) { remove(low, key); continue; }
+      if (!await offer('crossed', key, key, this.lowText(key, Math.round(this.state.vitals[key])), 'debounce')) return unsent();
     }
+    return unsent();
   }
 
   /**
@@ -500,15 +799,124 @@ export class LifeWorld implements World {
     }
   }
 
-  private async settleBeforeTool(now: Date): Promise<void> {
-    const r = advance(this.state, now, { phase: this.journey.phase, hotelTier: this.journey.hotelTier, modeId: this.journey.modeId });
-    if (r.hours <= 0) return;
+  private enqueueNotice(item: PendingNotice): void {
+    const q = this.state.pendingNotices ?? (this.state.pendingNotices = []);
+    if (!q.some((x) => x.id === item.id)) q.push(item);
+  }
+
+  private async flushPendingNotices(generation = this.stateGeneration): Promise<void> {
+    const q = this.state.pendingNotices ?? [];
+    if (!q.length) return;
+    for (const n of [...q]) {
+      if (this.hasAttempt('notice', n.id)) continue;
+      const attempt = this.newAttempt('notice', { noticeId: n.id });
+      await this.push(n.type, n.text, n.trigger, { attempt });
+      if (generation !== this.stateGeneration) return;
+      /* 无论接受还是拒绝都不在这里摘除；只有 delivered 回执能出队。 */
+    }
+  }
+
+  private async settleAdvanceEffects(r: AdvanceResult, now: Date, generation = this.stateGeneration): Promise<void> {
     this.settleCompleted(r, now);
-    /* 工具能调，说明她已经醒了 —— `flushCrossed` 会走醒着那一支，昨夜欠的一起补。 */
-    await this.flushCrossed(r, now);
-    await this.reportHungryWake(r, now);
+    for (const c of r.caught) {
+      remember(this.state, c.text, now);
+      this.enqueueNotice({
+        id: `sick:${c.id}:${Math.round(now.getTime() / 1000)}`,
+        type: 'life.sick',
+        text: `${c.text}`,
+        trigger: 'flush',
+      });
+    }
+    for (const c of r.recovered) {
+      const recoveredMsg = `${String(c.text ?? '不舒服').replace(/。$/, '')}，已经好了。`;
+      remember(this.state, recoveredMsg, now);
+      this.enqueueNotice({
+        id: `rec:${c.id}:${Math.round(now.getTime() / 1000)}`,
+        type: 'life.recovered',
+        text: recoveredMsg,
+        trigger: 'debounce',
+      });
+    }
+    if (r.woke?.reason === 'hungry') {
+      this.enqueueNotice({
+        id: `wake:${this.state.asleepFrom}:${Math.round(now.getTime() / 1000)}`,
+        type: 'life.low',
+        text: `饿醒了，才睡了 ${Math.round(r.woke.hours)} 小时。饱腹 ${Math.round(this.state.vitals.food)}。`,
+        trigger: 'flush',
+      });
+    }
+    await this.flushPendingNotices(generation);
+    if (generation !== this.stateGeneration) return;
+    const today = localDateKey(now);
+    for (const g of readyGoals(this.state)) {
+      const key = `goal:${g.id}`;
+      if (this.state.nagged[key] === today || this.hasAttempt('goal', key)) continue;
+      const msg = `攒够了：「${g.what}」要的钱有了。手上 ${this.state.money.cash} 元，要 ${g.need} 元。`
+        + '搬不搬、什么时候搬，你自己看 —— 这只是一个数到齐了。';
+      const attempt = this.newAttempt('goal', { nagKey: key, date: today });
+      const sent = await this.push('life.goal', msg, 'debounce', { attempt });
+      if (generation !== this.stateGeneration) return;
+      if (!sent) this.forgetAttempt(attempt);
+    }
+    await this.flushCrossed(r, now, generation);
+  }
+
+  private async settleBeforeTool(now: Date): Promise<void> {
+    const generation = this.stateGeneration;
+    if (this.settleFlight) {
+      await this.settleFlight;
+      if (generation !== this.stateGeneration) throw new Error('生活档案已清理，本次工具前结算已取消，请重试');
+      if (Date.parse(this.state.updatedAt) >= now.getTime() && !this.stateSaveDirty) return;
+    }
+    const flight = this.settleBeforeToolInner(now, generation);
+    this.settleFlight = flight;
+    try {
+      await flight;
+      if (generation !== this.stateGeneration) throw new Error('生活档案已清理，本次工具前结算已取消，请重试');
+    } finally {
+      if (this.settleFlight === flight) this.settleFlight = null;
+    }
+  }
+
+  private async settleBeforeToolInner(now: Date, generation: number): Promise<void> {
+    const r = advance(this.state, now, { phase: this.journey.phase, hotelTier: this.journey.hotelTier, modeId: this.journey.modeId });
+    if (r.hours <= 0) {
+      const hasRetriable = !this.stateCleared && (
+        (this.state.pendingNotices?.length ?? 0) > 0
+        || (!isAsleep(this.state, now) && (
+          (this.state.deferred?.length ?? 0) > 0
+          || (this.state.deferredCritical?.length ?? 0) > 0
+          || (this.state.deferredBottomed?.length ?? 0) > 0
+        ))
+      );
+      if (!hasRetriable && !this.stateSaveDirty) return;
+      if (hasRetriable) {
+        await this.flushPendingNotices(generation);
+        if (generation !== this.stateGeneration) return;
+        await this.flushCrossed(r, now, generation);
+        if (generation !== this.stateGeneration) return;
+      }
+      this.broadcastLife(now);
+      try {
+        this.store.save(this.state);
+        this.stateSaveDirty = false;
+      } catch (e) {
+        this.stateSaveDirty = true;
+        this.log?.warn(`模拟鱼生：工具前补存失败 ${(e as Error).message}`);
+      }
+      return;
+    }
+    this.stateCleared = false;
+    await this.settleAdvanceEffects(r, now, generation);
+    if (generation !== this.stateGeneration) return;
     this.broadcastLife(now);
-    try { this.store.save(this.state); } catch { /* 后续动作或下一跳会再存 */ }
+    try {
+      this.store.save(this.state);
+      this.stateSaveDirty = false;
+    } catch (e) {
+      this.stateSaveDirty = true;
+      this.log?.warn(`模拟鱼生：工具前存档失败 ${(e as Error).message}`);
+    }
   }
 
   /**
@@ -522,12 +930,12 @@ export class LifeWorld implements World {
    */
   private recentSettled: { id: string; status: 'applied' | 'rejected' }[] = [];
 
-  private broadcastLife(now: Date): void {
+  private broadcastLife(now: Date, opts?: { strict?: boolean }): void {
+    const file = join(this.opts.dataDir, 'life-public.json');
+    const tmp = `${file}.tmp-${process.pid}`;
     try {
       const until = this.state.asleepUntil;
       const awake = !until || Date.parse(until) <= now.getTime();
-      const file = join(this.opts.dataDir, 'life-public.json');
-      const tmp = `${file}.tmp-${process.pid}`;
       /*
        * 旅行能动用多少：现金的 70%（2026-11-17 由 50% 上调）。
        *
@@ -569,10 +977,31 @@ export class LifeWorld implements World {
             visualPrompt: def ? this.library.composeVisualPrompt({ label: a.label, scene: def.scene, outfitHint: def.outfitHint, props: def.props }) : null,
           };
         })(),
+        libraryDir: this.library.rootDir,
         imagePolicy: this.library.getSettings(),
       }, null, 2));
       renameSync(tmp, file);
-    } catch { /* 广播不出去不影响她过日子 */ }
+    } catch (e) {
+      if (opts?.strict) throw e;
+      /* 广播不出去不影响日常运行 */
+    } finally {
+      if (existsSync(tmp)) {
+        try { unlinkSync(tmp); } catch { /* ignore cleanup error */ }
+      }
+    }
+  }
+
+  /** 策略文件与公开快照同一 strict 事务：广播失败就恢复旧配置，不向工具或面板报假成功。 */
+  private updateLibraryPolicy(patch: Partial<LibrarySettings>, now: Date): LibrarySettings {
+    const file = join(this.opts.dataDir, 'image-library-settings.json');
+    const previous = { file, bytes: existsSync(file) ? readFileSync(file) : null };
+    try {
+      const next = this.library.saveSettings(patch);
+      this.broadcastLife(now, { strict: true });
+      return next;
+    } catch (e) {
+      throwRollback(e, restoreFiles([previous]));
+    }
   }
 
   /**
@@ -807,19 +1236,82 @@ export class LifeWorld implements World {
     }
   }
 
-  private async push(type: string, text: string, trigger: TriggerMode): Promise<void> {
+  private async push(
+    type: string,
+    text: string,
+    trigger: TriggerMode,
+    opts?: { tags?: EventTag[]; deferredRender?: () => string | null; attempt?: DeliveryAttempt },
+  ): Promise<boolean> {
     const host = this.host;
-    if (!host) return;
+    if (!host) return false;
+    /* 两参 pushDeferred 是现代 deferred/settled 宿主的能力哨兵；旧宿主走明确的假定 delivered 降级。 */
+    const modernDelivery = typeof host.pushDeferred === 'function' && host.pushDeferred.length > 0;
+    const attempt = opts?.attempt;
+    if (attempt) this.deliveryAttempts.set(attempt.id, attempt);
+    const meta = attempt ? {
+      lifeAttempt: attempt.id,
+      lifeGeneration: attempt.generation,
+      ...(attempt.date ? { lifeDayDate: attempt.date } : {}),
+    } : undefined;
     try {
-      await host.pushEvent({
+      if (opts?.deferredRender && modernDelivery) {
+        const renderFn = opts.deferredRender;
+        host.pushDeferred({
+          type,
+          senderKey: LIFE_ID,
+          ...(opts.tags?.length ? { tags: opts.tags } : {}),
+          ...(meta ? { meta } : {}),
+          render: () => {
+            if (attempt) attempt.renderedAt = Date.now();
+            try {
+              const out = renderFn();
+              if (out) return { text: out };
+              if (attempt) this.forgetAttempt(attempt);
+              return null;
+            } catch (e) {
+              if (attempt) this.forgetAttempt(attempt);
+              throw e;
+            }
+          },
+        }, { trigger });
+        return true;
+      }
+      if (opts?.deferredRender && attempt) {
+        attempt.legacy = true;
+        attempt.renderedAt = Date.now();
+      }
+      const finalText = opts?.deferredRender ? opts.deferredRender() : text;
+      if (!finalText) {
+        if (attempt) this.forgetAttempt(attempt);
+        return false;
+      }
+      const envelope = await host.pushEvent({
         type,
         source: this.id,
         senderKey: LIFE_ID,
         ts: new Date().toISOString(),
-        text,
+        text: finalText,
+        ...(opts?.tags?.length ? { tags: opts.tags } : {}),
+        ...(meta ? { meta } : {}),
       }, { trigger });
+      if (attempt) {
+        if (attempt.generation !== this.stateGeneration || this.deliveryAttempts.get(attempt.id)?.id !== attempt.id) {
+          this.forgetAttempt(attempt);
+          return false;
+        }
+        attempt.cursor = envelope.cursor;
+        if (!modernDelivery) {
+          /* 旧宿主没有 settled：按技能契约明确假定 delivered，避免 outbox/额度闩锁永久阻塞。 */
+          this.log?.warn(`模拟鱼生：旧宿主无 deferred/settled，${type} 在 pushEvent 成功后按假定 delivered 降级提交`);
+          this.settleDeliveryAttempt(attempt, 'delivered');
+        }
+        /* 现代宿主 resolve 仅表示 accepted，仍须等待匹配的真实 delivered。 */
+      }
+      return true;
     } catch (e) {
+      if (attempt) this.forgetAttempt(attempt);
       this.log?.warn(`模拟鱼生：事件推不出去 ${(e as Error).message}`);
+      return false;
     }
   }
 
@@ -855,7 +1347,7 @@ export class LifeWorld implements World {
         + '在你准备说「我今天过得……」之前用它 —— 你嘴里的今天，得有这些做依据。'
         + '不需要问任何人就能看。',
       parameters: { type: 'object', additionalProperties: false, properties: {} },
-      tags: ['read'],
+      tags: ['read', 'snapshot'],
       handler: async () => {
         const now = new Date();
         await this.settleBeforeTool(now);
@@ -892,11 +1384,16 @@ export class LifeWorld implements World {
       },
       tags: ['write'],
       handler: async (args: any) => {
-        const now = new Date();
+        const now = this.now();
         await this.settleBeforeTool(now);
+        const generation = this.stateGeneration;
         const kindId = String(args?.kind ?? '');
         const r = applyAct(this.state, kindId, now);
         if (!r.ok) return { text: r.reason ?? '这件事做不了。' };
+        if (r.advanced && r.advanced.hours > 0) {
+          await this.settleAdvanceEffects(r.advanced, now, generation);
+          if (generation !== this.stateGeneration) return { text: '生活档案刚刚被清理，这次动作的旧结算已取消，请重新操作。' };
+        }
         if (r.cost > 0) {
           appendLedger(this.opts.dataDir, {
             id: `act-${kindId}-${now.getTime().toString(36)}`,
@@ -977,9 +1474,9 @@ export class LifeWorld implements World {
       name: 'life_work',
       description:
         '去上班/出工挣钱。**一天一次**，按你本地的自然日算，**而且需要占用一段完整工时** —— '
-        + '零工约 3–4 小时（80–95 元）、熟练活约 4.5–5 小时（130–145 元，需满 30 天）、'
-        + '有证岗 6 小时（220–240 元，需考证）、专业岗 7–8 小时（300–340 元，需考证+年头）。'
-        + '干活期间社交和娱乐不会掉，但精力、清爽和饱腹会按职业强度加速消耗；干完收工才发全薪。'
+        + '零工约 3–4 小时（80–95 元）、熟练活约 4.5–5 小时（130–150 元，需满 30 天）、'
+        + '有证岗 6 小时（210–240 元，需考证）、专业岗 7–8 小时（300–340 元，需考证+年头）。'
+        + '干活期间社交不会掉，但精力、清爽、饱腹和少量娱乐（5–6 点）会消耗；干完收工才发全薪。'
         + '中途可用 `life_act` 的 `cancel` 早退：干满 30 分钟按比例打六折、不满 30 分钟白干，都不涨工龄且当天不能重接。'
         + '精力低于 20 或正在做别的事时去不了。',
       parameters: {
@@ -1338,7 +1835,7 @@ export class LifeWorld implements World {
       description:
         '把一件拿不准的事挂起来，或者把挂着的处理掉。'
         + '**这一层不是待办** —— 它记的是「我卡在哪儿」：钱不够、没时间、得先问一句、自己没想清。'
-        + '卡点消了她自己就会做；悬太久（7 天）它会自己算了，那不是失败。'
+        + '卡点消了你自己就可以做；悬太久（7 天）它会自己算了，那不是失败。'
         + '传 id 表示这件事有下文了（做了、或者不做了），把它从悬着的里面拿掉。',
       parameters: {
         type: 'object',
@@ -1550,11 +2047,14 @@ export class LifeWorld implements World {
       handler: async (args: any) => {
         const now = new Date();
         await this.settleBeforeTool(now);
+        const generation = this.stateGeneration;
+        const cleared = () => ({ text: '生活档案刚刚被清理，这次旧购买操作已停止，未写入新档案。' });
         if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去买菜') };
         const pick = String(args?.stall_id ?? '').trim();
         const url = String(this.cfg.townUrl ?? '').trim();
         if (!pick) {
           const remote = url ? await fetchTownStalls(url) : { ok: false, stalls: [] };
+          if (generation !== this.stateGeneration) return cleared();
           if (remote.ok && remote.stalls.length) {
             return {
               text: `鱼市街今天摆出来的摊位：${remote.stalls.map((st) => `${st.item} ${st.price}元（${st.seller}，id:${st.id}）`).join('；')}。`,
@@ -1571,12 +2071,14 @@ export class LifeWorld implements World {
         let seller = '早市摊主';
         if (url) {
           const remote = await fetchTownStalls(url);
+          if (generation !== this.stateGeneration) return cleared();
           const match = remote.ok ? remote.stalls.find((st) => st.id === pick || st.item === pick) : null;
           if (match) {
             if (this.state.money.cash < match.price) {
               return { text: `「${match.item}」要 ${match.price} 元，手上只有 ${this.state.money.cash} 元。` };
             }
             const bought = await buyTownStall(url, match.id, this.opts.botName || 'fish', {});
+            if (generation !== this.stateGeneration) return cleared();
             if (!bought.ok) return { text: bought.reason ?? '没买成。' };
             item = bought.item || match.item;
             price = bought.price || match.price;
@@ -1596,6 +2098,7 @@ export class LifeWorld implements World {
           price = hit.price;
         }
 
+        if (generation !== this.stateGeneration) return cleared();
         this.state.money.cash -= price;
         this.state.money.spent += price;
         this.state.vitals.food = Math.min(100, this.state.vitals.food + 28);
@@ -1629,7 +2132,7 @@ export class LifeWorld implements World {
     const parts: string[] = [];
 
     const at = herNow(j, now);
-    const when = `${DAYPART_LABEL[dayPart(at)]}（她那边 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}）`;
+    const when = `${DAYPART_LABEL[dayPart(at)]}（当前时刻 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}）`;
     parts.push(`时间：${when}`);
 
     if (j.installed) {
@@ -1646,7 +2149,7 @@ export class LifeWorld implements World {
         : `钟比你${gap > 0 ? '快' : '慢'} ${Math.abs(gap).toFixed(1)} 小时`;
       parts.push(`位置：${phase}　·　${gapText}`);
     } else {
-      parts.push('位置：没装旅行扩展，不知道她在哪座城。日子照过。');
+      parts.push('位置：未安装旅行扩展，暂不知所在城市，日子照常过。');
     }
 
     /*
@@ -1966,11 +2469,10 @@ export class LifeWorld implements World {
           return { text: ok ? `已删除 ${cat}/${args.id}。` : `未找到 ${cat}/${args.id}。` };
         }
         if (action === 'policy') {
-          const next = this.library.saveSettings({
-            policy: args?.policy as PhotoPolicyMode | undefined,
+          const next = this.updateLibraryPolicy({
+            policy: args?.policy,
             cooldownMin: args?.cooldownMin !== undefined ? Number(args.cooldownMin) : undefined,
-          });
-          this.broadcastLife(new Date());
+          }, new Date());
           return { text: `留影设置已更新：策略 ${next.policy}，冷却 ${next.cooldownMin} 分钟。` };
         }
         return { text: '不支持的 action，请传 list / search / upsert / delete / policy。' };
@@ -2019,7 +2521,7 @@ export class LifeWorld implements World {
 
     return {
       'life.version': VERSION,
-      'life.now': `${DAYPART_LABEL[dayPart(at)]}，她那边 ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
+      'life.now': `${localDateKey(at)} ${DAYPART_LABEL[dayPart(at)]}`,
       'life.here': whereText || '（没装旅行扩展，不知道在哪座城）',
       'life.town': this.town.streets.length
         ? `${this.town.name}　·　${this.town.streets.join(' / ')}`
@@ -2190,16 +2692,16 @@ export class LifeWorld implements World {
         role: 'envPrompt',
         vars: [
           { name: 'life.version', description: '扩展版本。' },
-          { name: 'life.now', description: '她那边的时段与钟点。' },
-          { name: 'life.here', description: '她在哪座城、在不在路上（读旅行扩展）。' },
-          { name: 'life.town', description: '她住的那座城叫什么、有哪几条街。' },
-          { name: 'life.street', description: '她住哪条街；没选定时的说明。' },
-          { name: 'life.who', description: '她在做什么、住哪儿（含出差住店）、手上多少钱。' },
-          { name: 'life.goal', description: '她给自己定的目标，以及还差多少。' },
+          { name: 'life.now', description: '当前日期与时段（精确分钟看 life_status）。' },
+          { name: 'life.here', description: '所在城市或是否在途（联动旅行扩展）。' },
+          { name: 'life.town', description: '所住小镇名及街道。' },
+          { name: 'life.street', description: '所住街道或尚未选定提示。' },
+          { name: 'life.who', description: '职业/出工、住处档位、手上资金与见识。' },
+          { name: 'life.goal', description: '设定的目标及进度/差距。' },
           { name: 'life.body', description: '五条需求当前值。' },
           { name: 'life.low', description: '低于阈值的需求。' },
           { name: 'life.state', description: '身上的不舒服与眼下的情绪。' },
-          { name: 'life.has', description: '她给自己定的常态 / 在留意 / 想要各几件。' },
+          { name: 'life.has', description: '常态 / 在留意 / 想要各几件。' },
           { name: 'life.pending', description: '悬着的事与卡点。' },
           { name: 'life.pledge', description: '说好了还没做的；到期没做的单独标出来。' },
           { name: 'life.visits', description: '最近 7 天他来过几天。' },
@@ -2208,6 +2710,111 @@ export class LifeWorld implements World {
           { name: 'life.library', description: '四分类素材库与留影策略摘要。' },
         ],
       }],
+      storage: [
+        {
+          key: 'life.state',
+          label: '生活档案与五维状态',
+          kind: 'disk',
+          location: join(this.opts.dataDir, 'life-state.json'),
+          danger: true,
+          note: '清除后主档、.bak 备份、内存状态与公开投影一并重置，不可恢复。',
+          stat: () => {
+            const fp = join(this.opts.dataDir, 'life-state.json');
+            return existsSync(fp) ? `${Math.max(1, Math.ceil(statSync(fp).size / 1024))} KB（现金 ${Math.round(this.state.money.cash)} 元）` : '未生成';
+          },
+          clear: () => {
+            const fp = join(this.opts.dataDir, 'life-state.json');
+            const bak = `${fp}.bak`;
+            const prevState = this.state;
+            const prevCleared = this.stateCleared;
+            const prevPendingDay = this.dayWorkPending ? { ...this.dayWorkPending } : null;
+            const prevAttempts = new Map(this.deliveryAttempts);
+            const prevGeneration = this.stateGeneration;
+            const prevDirty = this.stateSaveDirty;
+            const prevFpBytes = existsSync(fp) ? readFileSync(fp) : null;
+            const prevBakBytes = existsSync(bak) ? readFileSync(bak) : null;
+            try {
+              this.stateGeneration += 1;
+              this.deliveryAttempts.clear();
+              if (existsSync(fp)) unlinkSync(fp);
+              if (existsSync(bak)) unlinkSync(bak);
+              const now = this.now();
+              this.state = freshState(now);
+              this.stateCleared = true;
+              this.dayWorkPending = null;
+              this.stateSaveDirty = false;
+              this.broadcastLife(now, { strict: true });
+              return '已清除生活档案（含 .bak 备份）并重置内存与公开快照。';
+            } catch (e) {
+              this.state = prevState;
+              this.stateCleared = prevCleared;
+              this.dayWorkPending = prevPendingDay;
+              this.deliveryAttempts.clear();
+              for (const [id, attempt] of prevAttempts) this.deliveryAttempts.set(id, attempt);
+              this.stateGeneration = prevGeneration;
+              this.stateSaveDirty = prevDirty;
+              throwRollback(e, restoreFiles([
+                { file: fp, bytes: prevFpBytes },
+                { file: bak, bytes: prevBakBytes },
+              ]));
+            }
+          },
+        },
+        {
+          key: 'life.ledger',
+          label: '日常收支账本流水',
+          kind: 'disk',
+          location: join(this.opts.dataDir, 'life-ledger.jsonl'),
+          danger: true,
+          note: '不可逆删除全部日常生活与打工收支流水明细。',
+          stat: () => `${readLedger(this.opts.dataDir, 1000).length} 条`,
+          clear: () => {
+            const fp = join(this.opts.dataDir, 'life-ledger.jsonl');
+            if (existsSync(fp)) unlinkSync(fp);
+            return '已清除收支流水文件。';
+          },
+        },
+        {
+          key: 'life.diary',
+          label: '第一人称生活日记',
+          kind: 'disk',
+          location: this.diary.current.dir,
+          danger: true,
+          note: '不可逆删除主日记目录、本机合并副本及 _bak 历史备份中的所有日记文件。',
+          stat: () => `${this.diary.count()} 天`,
+          clear: () => {
+            const { files, baks } = this.diary.clearAll();
+            return `已清理 ${files} 份生活日记文件与 ${baks} 份历史备份。`;
+          },
+        },
+        {
+          key: 'life.library',
+          label: '参考素材库策略配置',
+          kind: 'disk',
+          location: join(this.opts.dataDir, 'image-library-settings.json'),
+          danger: false,
+          note: '仅重置留影策略与主动留影冷却配置（只删策略配置文件，绝不删除参考图片与条目原件）。',
+          stat: () => {
+            const sf = join(this.opts.dataDir, 'image-library-settings.json');
+            const s = this.library.getSettings();
+            const mode = s.policy === 'off' ? '静默' : s.policy === 'active' ? '积极' : '重要时刻';
+            return existsSync(sf)
+              ? `自定义策略（${mode} · 冷却 ${s.cooldownMin} 分钟）`
+              : `默认策略（${mode}）`;
+          },
+          clear: () => {
+            const sf = join(this.opts.dataDir, 'image-library-settings.json');
+            const prevBytes = existsSync(sf) ? readFileSync(sf) : null;
+            try {
+              if (existsSync(sf)) unlinkSync(sf);
+              this.broadcastLife(this.now(), { strict: true });
+              return '已重置素材库策略配置为默认（未删除参考图片原件）。';
+            } catch (e) {
+              throwRollback(e, restoreFiles([{ file: sf, bytes: prevBytes }]));
+            }
+          },
+        },
+      ] satisfies StoragePart[],
     };
   }
 
@@ -2282,11 +2889,10 @@ export class LifeWorld implements World {
         };
       }
       if (method === 'savePolicy') {
-        const settings = this.library.saveSettings({
+        const settings = this.updateLibraryPolicy({
           policy: raw?.policy,
           cooldownMin: raw?.cooldownMin !== undefined ? Number(raw.cooldownMin) : undefined,
-        });
-        this.broadcastLife(now);
+        }, now);
         return {
           ok: true,
           entries: this.library.list(undefined, true),
@@ -2544,5 +3150,5 @@ export class LifeWorld implements World {
 const DESCRIBE_FILE = fileURLToPath(new URL('../describe.json', import.meta.url));
 export const LIFE_DESCRIBE = JSON.parse(readFileSync(DESCRIBE_FILE, 'utf8')) as {
   tools: { name: string; description: string; parameters: unknown; tags: string[]; summary: unknown }[];
-  events: { type: string; description: unknown; trigger: string }[];
-};;
+  events: { type: string; description: unknown; trigger: string; tags?: string[] }[];
+};

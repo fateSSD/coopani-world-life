@@ -9,9 +9,9 @@
  * 5. `problem`（不可写错误）与 `notice`（正常提示）分开。
  */
 import {
-  mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export interface LifeDiaryEntry {
   readonly dateKey: string;
@@ -332,5 +332,67 @@ export class LifeDiaryStore {
 
   count(): number {
     return this.allEntries().size;
+  }
+
+  /**
+   * 清空主目录与本机合并副本中的所有生活日记及 `_bak` 历史备份。
+   * 先留存全部字节；任一删除失败即恢复已删文件与备份目录，回滚失败与原错一起抛出。
+   */
+  clearAll(): { files: number; baks: number } {
+    const dirs = this.dir === this.local ? [this.local] : [this.dir, this.local];
+    const targets: { path: string; bytes: Buffer; backup: boolean }[] = [];
+    const bakDirs: string[] = [];
+    const deleted: { path: string; bytes: Buffer }[] = [];
+    let files = 0;
+    let baks = 0;
+    try {
+      for (const dir of dirs) {
+        if (!existsSync(dir)) continue;
+        for (const name of readdirSync(dir)) {
+          if (!MONTH_FILE.test(name) && !DAY_FILE.test(name)) continue;
+          const path = join(dir, name);
+          targets.push({ path, bytes: readFileSync(path), backup: false });
+        }
+        const bakDir = join(dir, '_bak');
+        if (!existsSync(bakDir)) continue;
+        bakDirs.push(bakDir);
+        for (const name of readdirSync(bakDir)) {
+          const path = join(bakDir, name);
+          targets.push({ path, bytes: readFileSync(path), backup: true });
+        }
+      }
+
+      for (const target of targets) {
+        unlinkSync(target.path);
+        deleted.push(target);
+        if (target.backup) baks += 1;
+        else files += 1;
+      }
+      for (const dir of bakDirs) {
+        if (readdirSync(dir).length === 0) rmSync(dir, { recursive: true });
+      }
+      return { files, baks };
+    } catch (e) {
+      const rollbackErrors: unknown[] = [];
+      for (const dir of bakDirs) {
+        try { mkdirSync(dir, { recursive: true }); } catch (err) { rollbackErrors.push(err); }
+      }
+      for (const item of deleted) {
+        try {
+          mkdirSync(dirname(item.path), { recursive: true });
+          writeFileSync(item.path, item.bytes);
+        } catch (err) {
+          rollbackErrors.push(err);
+        }
+      }
+      if (rollbackErrors.length) {
+        throw new AggregateError([e, ...rollbackErrors], '生活日记清理失败，且部分文件回滚失败；请检查磁盘权限或文件占用');
+      }
+      throw e;
+    } finally {
+      /* 成功、删除失败、回滚失败都必须丢弃旧缓存，不能继续展示清理前快照。 */
+      this.cacheKey = '';
+      this.cache.clear();
+    }
   }
 }

@@ -1,5 +1,15 @@
 # 变更记录
 
+## 1.0.0 — 2026-11-19（Cortico API v6 原语对齐、语义修复与行为级测试加固）
+
+- **Cortico API v6 对齐与语义修正**：
+  - 白天出工提醒 `life.day` 走两参 `host.pushDeferred` + `['snapshot']`，推迟至投递渲染当下重算条件、精力与现金再消耗 `nagged['day:work']`；
+  - 一次性结果 `life.recovered`、各项目标 `life.goal` 与五维越线 `life.low` 保持即时 `pushEvent`（不打互相覆盖的 `snapshot`），仅在成功推送后消耗当日额度；
+  - 新增同步生命周期钩子 `onHandoffEnded()`：独立事件类型 `life.handoff`（`piggyback` + `['snapshot']`），交接前先行结算时间并读取 `journey` 真实所在城市/在途位置；
+  - `webUi().storage` 新增 4 项存储清理：`life.state.clear()` 同步清理主档/`.bak`、重置内存与 `life-public.json` 且禁止 `stop()` 复活旧状态；`life.diary.clear()` 调用 `LifeDiaryStore.clearAll()` 一并清理自定义/本机合并目录及 `_bak` 历史备份，且均不吞文件系统异常；
+  - `life-public.json` 新增广播 `libraryDir`，供旅行扩展共享自定义素材库路径。
+- **前缀缓存保护与宣言对齐**：`envPromptVars()['life.now']` 改为日期+时段，去除分钟级钟面与「她那边」；修正 `life_work` 工资与消耗说明以对齐 `JOBS`/`LOAD` 实值；`describe.json` 同步对齐并登记 `life.handoff`、`life.goal` 与 `life_status` `snapshot` 标签；补全 `test/harness-sync.test.mjs` 行为级回归。
+
 ## 0.17.6 — 2026-11-18（面板 UI 补齐「体质」展示）
 
 - **面板展示体质（`fitness`）**：[world.ts](src/world.ts) 状态接口补充返回 `fitness`，面板 [panel-0.17.6.js](web/panel-0.17.6.js) 在「见识」下方同步展示当前「体质」数值与作用说明（并随版本号同步更新面板脚本文件名以清浏览器缓存）。
