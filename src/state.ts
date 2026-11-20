@@ -23,9 +23,13 @@
  *
  * 关机三天再开，不能让她一睁眼五条全 0 —— 那不是在惩罚她，是在惩罚用户。
  * 也不能当没过去（那她永远不饿）。
- * 折中：**离线按「她自己也在过日子」推演** —— 需求继续掉，但每满 24 小时
- * 精力回到 85（她睡了），并且总时长封顶 7 天。超过 7 天按 7 天算：
- * 再长的那段，她该是「一直在等你」，不是「快饿死了」。
+ * 折中：**离线按「她自己也在过日子」推演** —— 需求继续掉，但**每跨过一夜**
+ * （本地 23:00–07:00，至少盖住 4 小时）精力回到 85（她睡了），并且总时长封顶 7 天。
+ * 超过 7 天按 7 天算：再长的那段，她该是「一直在等你」，不是「快饿死了」。
+ *
+ * ⚠ 这条原来是「每满 24 小时」。**上班族的日子永远够不着 24 小时**（17 点走到次日 9 点
+ * 只有 16 小时），于是每一个工作日晚上都按「她醒着」结算，精力只降不升。
+ * 2026-11-20 由 Mr.Q 的「精力没恢复」抓到，判据见 `offlineNightHours`。
  */
 import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -547,6 +551,102 @@ export const LOW = 30;
 export const CRITICAL = 15;
 /** 单次推进最多按多少小时算。见文件头「离线的那段时间怎么办」。 */
 export const MAX_CATCHUP_HOURS = 7 * 24;
+
+/**
+ * 「夜里」从几点算到几点（本地时间）。
+ *
+ * 23 点到次日 7 点：正常人这个时段在睡，而**她离线的时候只能按这个假**。
+ */
+export const NIGHT_FROM_HOUR = 23;
+export const NIGHT_TO_HOUR = 7;
+
+/**
+ * 一段离线要盖住夜里多少小时，才算「她睡过了」。
+ *
+ * 4 小时不是拍的：小于这个数她只是躺了一下，按睡过算就是把白天折旧也一起抹掉。
+ * 反过来，晚上 11 点关、凌晨 1 点开（只盖 2 小时）不该补 —— 那是他回来得晚。
+ */
+export const NIGHT_SLEEP_MIN_HOURS = 4;
+
+/**
+ * 这段离线里，有几小时落在「夜里」。
+ *
+ * ## 为什么按夜算，不按满 24 小时算（2026-11-20 Mr.Q）
+ *
+ * 原来补睡的条件是 `floor(awakeHours / 24) > 0` —— **工作日一个晚上永远够不着**：
+ * 17 点关机、次日 9 点开机只有 16 小时，于是那一整夜按「她醒着」结算。
+ * 按公式跑一遍是 `100 − 4.6 × 15.7 ≈ 26.4`，面板上写着 28（差的 1.6 点 = 关机钟点的出入）——
+ * 也就是说她的精力在上班族的日子里**只降不升**，一夜掉 72 点。
+ *
+ * 现在改成数「跨过了几夜」：一夜盖住至少 `NIGHT_SLEEP_MIN_HOURS` 小时就算睡过。
+ * 只用来决定「补不补精力」，**不伪造睡眠时长、不挂「睡了一觉」那条**——
+ * 她真睡了的话 `asleepFrom/asleepUntil` 那条路已经结算过，这里是没被结算的那段。
+ *
+ * ## 光数夜不够：得把「她真睡过的那一段」挖掉（2026-11-20 当天回补）
+ *
+ * 第一版只数整段 `[fromMs, to]` 里的夜，于是**显式睡眠段被数了两遍**：
+ * 那一觉在 `advance()` 里已经结算过精力，这里又因为「这一夜盖满了」再补一次。
+ * 实测三组反例全部击穿（`test/offline-night.test.mjs` 钉住）：
+ *
+ * | 场景 | 实际 | 应该是 |
+ * |---|---|---|
+ * | 23:00 睡下、01:00 饿醒、硬熬到 09:00 | 精力 85 | 饿醒后一路掉 |
+ * | 23:00–07:00 睡满 8h，白天醒着 15h | 精力 100 | 约 31 |
+ * | 23:00–01:30 短睡，熬到 15:00 | 精力 85 | 一路掉 |
+ *
+ * 三条的共性：**她已经醒了**，之后是清醒的代价。补睡把「饿醒」「没睡够」这两个惩罚全抹平了。
+ *
+ * 所以两个参数：
+ * - `skip` —— 已结算的显式睡眠段，从夜里扣掉，不再算「她睡过」；
+ * - `fullNightOnly` —— 有睡眠记录时**只认整夜**（23:00–07:00 全 8 小时覆盖）。
+ *   反例 1 挖完还剩 01:00–09:00 盖住 6 小时，按 4 小时门槛照样会补，那不是「睡过」，
+ *   是「醒着熬到了天亮」。
+ *
+ * 没有睡眠记录时保持 4 小时容差 —— 17:30 关机、08:30 开机只盖 7.5 小时，
+ * 不能因为缺那半小时就当她没睡。
+ *
+ * 逐小时数而不是按区间切：跨天、跨多天、时钟跳变都只是同一个循环，
+ * 不用为「起点在夜里、终点在白天」再写一套分支。中国没有夏令时，逐小时不会有空洞。
+ */
+export function offlineNightHours(
+  fromMs: number,
+  toMs: number,
+  opts: { skip?: { from: number; to: number }; fullNightOnly?: boolean } = {},
+): number {
+  if (!(toMs > fromMs)) return 0;
+  /* 整夜 = 23→7 的全部小时。有睡眠记录时按这个门槛，少一分钟都不算。 */
+  const need = opts.fullNightOnly
+    ? NIGHT_TO_HOUR + 24 - NIGHT_FROM_HOUR
+    : NIGHT_SLEEP_MIN_HOURS;
+  const perNight = new Map<string, number>();
+  const firstSlot = Math.floor(fromMs / 3_600_000);
+  const lastSlot = Math.floor(toMs / 3_600_000);
+  for (let slot = firstSlot; slot <= lastSlot; slot++) {
+    const start = slot * 3_600_000;
+    const end = start + 3_600_000;
+    const d = new Date(start);
+    const h = d.getHours();
+    if (!(h >= NIGHT_FROM_HOUR || h < NIGHT_TO_HOUR)) continue;
+    let overlap = Math.min(toMs, end) - Math.max(fromMs, start);
+    /*
+     * 挖掉已经结算过的显式睡眠。
+     *
+     * 用逐小时相减而不是先切区间：睡眠段可能跨好几个小时、也可能只盖住某一小时的一部分，
+     * 相减一次就把「这一小时里她真正醒着的那部分」留下了。
+     */
+    if (opts.skip) {
+      const cut = Math.min(end, opts.skip.to) - Math.max(start, opts.skip.from);
+      if (cut > 0) overlap -= cut;
+    }
+    if (!(overlap > 0)) continue;
+    /* 归到「同一夜」：23 点之后算今天这一夜，0–6 点算昨天那一夜。 */
+    const key = localDateKey(h >= NIGHT_FROM_HOUR ? d : new Date(start - 24 * 3_600_000));
+    perNight.set(key, (perNight.get(key) ?? 0) + overlap / 3_600_000);
+  }
+  let total = 0;
+  for (const hrs of perNight.values()) if (hrs >= need) total += hrs;
+  return total;
+}
 
 /**
  * 读一次书涨多少见识（2026-11-17 Mr.Q；0.13.0 时是 4）。
@@ -1274,6 +1374,8 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
 
   let sleepHours = 0;
   let woke: WakeResult | null = null;
+  /** 这次结算里「显式睡眠」真的占了哪一段。补睡要把它挖掉，不能数两遍。 */
+  let sleepSeg: { from: number; to: number } | null = null;
 
   if (hadSleep) {
     /*
@@ -1294,6 +1396,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
     sleepHours = Math.max(0, (sleepEnd - lo) / 3_600_000);
     /* 7 天封顶之外的那部分睡眠不结算，按醒着算。 */
     sleepHours = Math.min(sleepHours, hours);
+    if (sleepHours > 0) sleepSeg = { from: lo, to: lo + sleepHours * 3_600_000 };
 
     /*
      * 醒来发生在 7 天封顶窗口之内（`sleepEnd > fromMs`）才结算 `woke` ——
@@ -1494,17 +1597,51 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   /*
    * 离线补睡。
    *
-   * 每满 24 小时她至少睡下过一次，精力回到 85。这样关机三天回来，
-   * 她是「有点饿、有点闷」，不是「快不行了」。
+   * 每**跨过一夜**（本地 23:00–07:00，至少盖住 4 小时）她至少睡下过一次，精力回到 85。
+   * 这样关机三天回来，她是「有点饿、有点闷」，不是「快不行了」。
    * 只补精力 —— 吃饭、洗澡、找乐子、见人这些**不能凭空补**，
    * 补了就等于「她不在的时候你替她过了日子」，那她的日子就不算她的。
    *
-   * **按醒着的小时数算天**（2026-11-15 改）：她真的睡过的那一段已经结算过了，
-   * 再按整段时间补一次，等于同一觉领两份。用 `awakeHours`，两边不会重叠。
+   * ## 判据从「醒着满 24 小时」改成「跨过一夜」（2026-11-20 Mr.Q 报的）
+   *
+   * 原来按 `floor(awakeHours / 24)` 算。**上班族的日子永远够不着这个数**：
+   * 17 点关机、次日 9 点开机只有 16 小时，那一整夜就按「她醒着」结算了。
+   * 他的原话是「她应该自己吃饭睡觉才对，可精力没恢复」，面板上是 28 ——
+   * 跑一遍旧公式：`100 − 4.6 × 15.7 ≈ 26.4`。差的 1.6 点落在「那天到底几点关机」上，
+   * 曲线是一条斜率固定的直线，不是巧合。
+   * 也就是说旧规则下她的精力在周一到周五**只降不升**，一夜掉 72 点。
+   *
+   * 现在按夜算。**仍然按醒着的小时数封顶**：她真的睡过的那一段
+   * （`asleepFrom/asleepUntil`）已经结算过，再按整段时间补一次等于同一觉领两份。
+   *
+   * ## 但「挖掉睡眠段」这件事第一版漏了（2026-11-20 当天回补）
+   *
+   * 只数整段的话，那一觉会被数第二遍 —— 实测三组反例全部击穿：
+   * 饿醒后硬熬 8 小时回 85、睡满 8h 再醒 15h 回 100、短睡 2.5h 熬 13.5h 回 85。
+   * **她已经醒了，之后是清醒的代价**，补睡不该把它抹平。
+   *
+   * 所以 `sleepSeg` 传下去当「已结算段」挖掉，并且有睡眠记录时只认整夜
+   * （那一夜 23:00–07:00 要不被睡眠占满才算「她离线时也睡了」）。
    */
   const wholeDays = Math.floor(awakeHours / 24);
-  if (wholeDays > 0) {
+  const nightSlept = Math.min(
+    offlineNightHours(fromMs, to, sleepSeg ? { skip: sleepSeg, fullNightOnly: true } : {}),
+    awakeHours,
+  );
+  if (wholeDays > 0 || nightSlept > 0) {
     state.vitals.energy = clamp100(Math.max(state.vitals.energy, 85));
+    /*
+     * 回上来了就把这一档的提醒配额清掉。
+     *
+     * 和显式睡眠醒来（`woke` 那段）、活动回精力那两处同一个规矩：精力已经回到
+     * `LOW + 15` 以上，当天再掉下去时还该提醒一次。不清的话凌晨提醒过一次，
+     * 傍晚真掉到 30 以下会被静音 —— 因为 `nagged.energy` 已经占着当天的位置。
+     */
+    if (state.vitals.energy >= LOW + 15 && state.nagged) {
+      delete state.nagged.energy;
+      delete state.nagged['crit:energy'];
+      delete state.nagged['zero:energy'];
+    }
   }
 
   /* ---------------- 住的开销 ---------------- */
