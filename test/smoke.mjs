@@ -257,10 +257,10 @@ console.log('\n[12] 快照');
   ok(snap.low[0].key === 'food', '缺得最狠的排前面', snap.low[0].key);
   ok(snap.unsaid.length === 1, '还没说出去的那条在');
   /*
-   * 十件：三档吃（feast / eat / instant）+ 睡 / 洗 / 玩 / 见人 / 做饭 / 小酌 + 「起来」。
+   * 二十九件事：含三档吃、睡、洗、玩、见人、闲聊、做饭、小酌、新复合动作 + wake / cancel。
    * `wake` 不是可有可无的补充 —— 睡着时所有动作都被拦，没有它她就永远醒不过来。
    */
-  ok(Object.keys(ACTS).length === 28, '二十八件事（含新复合动作、wake 与 cancel）', String(Object.keys(ACTS).length));
+  ok(Object.keys(ACTS).length === 29, '二十九件事（含 chat、复合动作、wake 与 cancel）', String(Object.keys(ACTS).length));
   ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
   ok(Boolean(ACTS.cancel) && ACTS.cancel.cost === 0, '「停下来」不花钱');
   ok(ACTS.feast.cost > ACTS.eat.cost && ACTS.eat.cost > ACTS.instant.cost, '三档饭价依次递减');
@@ -1417,6 +1417,39 @@ console.log('\n[50] 体质词条、豪华酒店稳住娱乐社交、交通消耗
     moodlet: { text: '在当地吃了顿顺口的好饭', kind: 'good', hours: 3 },
   }], t0);
   ok(settled[0]?.status === 'applied' && sEff.vitals.food === 75 && sEff.vitals.energy === 50 && sEff.fitness === 27 && sEff.moodlets.some((m) => /好饭/.test(m.text)), 'applySpend 支持 amount=0 五维/体质/心情反哺');
+}
+
+console.log('\n[51] 社交动作减负（meet 45m / chat 20m免费）与社交见底体感情绪');
+{
+  const t0 = new Date('2026-11-20T10:00:00Z');
+  ok(ACTS.meet.minutes === 45, 'meet 耗时已压短至 45 分钟', String(ACTS.meet.minutes));
+  ok(ACTS.chat.minutes === 20 && ACTS.chat.cost === 0 && ACTS.chat.gain.social === 18, 'chat 为 20 分钟 0 元 +18 社交');
+
+  const s = freshState(t0);
+  s.home.monthly = 0;
+  s.vitals = { food: 80, energy: 80, clean: 80, fun: 80, social: 20 };
+  const rChat = applyAct(s, 'chat', t0);
+  ok(rChat.ok && rChat.started && rChat.minutes === 20, '能开始跟人闲聊几句');
+  advance(s, new Date(t0.getTime() + ACTS.chat.minutes * 60_000));
+  ok(near(s.vitals.social, 38, 0.2) && s.money.cash === 3000, 'chat 完成 20m 不花钱且社交 20 → 38', `${s.vitals.social}/${s.money.cash}`);
+  ok(s.moodlets.some((m) => m.source === 'chat' && m.kind === 'good'), 'chat 完成后挂正向情绪');
+
+  /* 社交见底醒着推进挂 lonely 情绪，补到 >= 30 自动清除（动作与 applySpend 两条路径） */
+  const sLonely = freshState(t0);
+  sLonely.vitals = { food: 80, energy: 80, clean: 80, fun: 80, social: 0 };
+  advance(sLonely, new Date(t0.getTime() + 10 * 60_000));
+  ok(sLonely.moodlets.some((m) => m.source === 'lonely' && m.kind === 'bad'), '社交归零醒着推进挂上 lonely 负情绪');
+
+  applyAct(sLonely, 'meet', new Date(t0.getTime() + 10 * 60_000));
+  advance(sLonely, new Date(t0.getTime() + (10 + ACTS.meet.minutes) * 60_000));
+  ok(sLonely.vitals.social >= 30 && !sLonely.moodlets.some((m) => m.source === 'lonely'), '通过 meet 补回 >=30 后自动清除 lonely 情绪', String(sLonely.vitals.social));
+
+  const sSpend = freshState(t0);
+  sSpend.vitals = { food: 80, energy: 80, clean: 80, fun: 80, social: 0 };
+  advance(sSpend, new Date(t0.getTime() + 10 * 60_000));
+  ok(sSpend.moodlets.some((m) => m.source === 'lonely'), '反哺前存在 lonely 情绪');
+  applySpend(sSpend, [{ id: 'sp-soc-1', amount: 0, note: '和旅伴碰头', vitalsDelta: { social: 32 } }], new Date(t0.getTime() + 11 * 60_000));
+  ok(sSpend.vitals.social >= 30 && !sSpend.moodlets.some((m) => m.source === 'lonely'), 'applySpend 补回社交 >=30 后清除 lonely 情绪');
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

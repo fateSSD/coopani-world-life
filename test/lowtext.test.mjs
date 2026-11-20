@@ -78,6 +78,10 @@ test('提示里的数字和 ACTS 对得上（文案不许跑得比实现快）',
   assert.equal(actValue('meet', 'social'), 31);
   assert.match(caseOf('social'), /回 31/, '`meet` 的 social 是 31，文案写的不是 31');
 
+  assert.equal(actValue('chat', 'social'), 18);
+  assert.match(caseOf('social'), /回 18/, '`chat` 的 social 是 18，文案写的不是 18');
+  assert.match(caseOf('social'), /chat|闲聊/, '社交提示里必须给出 chat 闲聊轻路径');
+
   assert.equal(actValue('wash', 'clean'), 55);
   assert.match(caseOf('clean'), /回 55/);
 });

@@ -822,9 +822,13 @@ export const ACTS: Record<string, ActKind> = {
   }),
 
   // ---- 社交与逛街类 ----
-  meet: mkAct('meet', '跟人说说话', 90, 30, { social: 31, fun: 9, energy: -5 }, {
+  meet: mkAct('meet', '跟人说说话', 45, 30, { social: 31, fun: 9, energy: -5 }, {
     mood: { text: '有人说话，心里踏实', kind: 'good', hours: 5 },
-    scene: '街角小店或茶馆', outfitHint: '得体日常装', props: '热饮',
+    scene: '茶馆、街角小店或路边坐坐', outfitHint: '日常便装', props: '热饮',
+  }),
+  chat: mkAct('chat', '跟人闲聊几句', 20, 0, { social: 18, fun: 5, energy: -2 }, {
+    mood: { text: '跟人扯了几句闲话，没那么闷了', kind: 'good', hours: 3 },
+    scene: '手边随时（店里、路边或手机上）', outfitHint: '当前穿着', props: '热茶或手机',
   }),
   mall: mkAct('mall', '找朋友逛商场', 90, 81, { social: 29, fun: 34, energy: -9, clean: -4 }, {
     mood: { text: '逛了一圈热热闹闹的，脚有点酸但很开心', kind: 'good', hours: 4 },
@@ -1713,6 +1717,19 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   /* 过期的情绪清掉。按真实时刻判 —— 见文件头。 */
   state.moodlets = state.moodlets.filter((m) => Date.parse(m.expiresAt) > now.getTime());
 
+  /* 社交归零时给一条真实的孤单闷体感，避免模型看到 0 仍判成「不急」；补回安全线后即消。 */
+  if (state.vitals.social >= LOW) {
+    state.moodlets = state.moodlets.filter((m) => m.source !== 'lonely');
+  } else if (!isAsleep(state, now) && state.vitals.social <= 0 && !state.moodlets.some((m) => m.source === 'lonely')) {
+    state.moodlets.push({
+      id: `m-lonely-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      source: 'lonely',
+      text: '好久没跟人说上话了，安静得心里发闷',
+      kind: 'bad',
+      expiresAt: new Date(now.getTime() + 6 * 3_600_000).toISOString(),
+    });
+  }
+
   /*
    * 悬着的事过期就消。
    *
@@ -2145,6 +2162,7 @@ export function applyAct(
     study: ['书', '读书', '看书', '学', '课', '考试'],
     wash: ['洗', '澡'],
     meet: ['见', '朋友', '聊天', '说话'],
+    chat: ['聊天', '说话', '搭话', '朋友', '联系'],
     drink: ['酒', '喝'],
     mall: ['逛街', '商场', '买衣服'],
     movie: ['电影', '看片'],
@@ -2552,6 +2570,9 @@ export function applySpend(
             delete state.nagged[`zero:${k}`];
           }
         }
+      }
+      if (state.vitals.social >= LOW) {
+        state.moodlets = state.moodlets.filter((m) => m.source !== 'lonely');
       }
     }
     if (typeof r?.fitnessDelta === 'number' && Number.isFinite(r.fitnessDelta) && r.fitnessDelta !== 0) {

@@ -547,7 +547,7 @@ export class LifeWorld implements World {
       if (hasRetriable) {
         await this.flushPendingNotices(generation);
         if (generation !== this.stateGeneration) return;
-        await this.flushCrossed(r, now, generation);
+        await this.flushCrossed(r, now, generation, false);
         if (generation !== this.stateGeneration) return;
         this.stateSaveDirty = true;
       }
@@ -665,7 +665,12 @@ export class LifeWorld implements World {
    * 这边管「什么时候该说」。合成一个函数的话，「在睡」这个判断会被
    * 复制到 tick 和工具入口两处 —— 漏一处就是半夜被吵。
    */
-  private async flushCrossed(r: AdvanceResult, now: Date, generation = this.stateGeneration): Promise<void> {
+  private async flushCrossed(
+    r: AdvanceResult,
+    now: Date,
+    generation = this.stateGeneration,
+    checkSustained = true,
+  ): Promise<void> {
     const crossed = this.state.deferred ?? (this.state.deferred = []);
     const critical = this.state.deferredCritical ?? (this.state.deferredCritical = []);
     const bottomed = this.state.deferredBottomed ?? (this.state.deferredBottomed = []);
@@ -676,6 +681,27 @@ export class LifeWorld implements World {
     merge(critical, r.critical);
     merge(bottomed, r.bottomed);
     if (isAsleep(this.state, now)) return;
+    /* 持续见底/危急在跨日后仍允许每天重提一次，防止一次小幅回补后二次归零永久静音。 */
+    if (checkSustained && !this.stateCleared && this.cfg.notify !== 'off') {
+      const today = localDateKey(now);
+      for (const key of Object.keys(DECAY_PER_HOUR) as VitalKey[]) {
+        const val = this.state.vitals[key];
+        if (val <= 0) {
+          if (this.state.nagged[`zero:${key}`] !== today && !this.hasAttempt('crossed', `zero:${key}`)) {
+            merge(bottomed, [key]);
+          }
+        } else if (val < CRITICAL) {
+          if (
+            this.state.nagged[`crit:${key}`] !== today
+            && !this.hasAttempt('crossed', `crit:${key}`)
+            && this.state.nagged[`zero:${key}`] !== today
+            && !this.hasAttempt('crossed', `zero:${key}`)
+          ) {
+            merge(critical, [key]);
+          }
+        }
+      }
+    }
     if (!crossed.length && !critical.length && !bottomed.length) return;
     await this.reportCrossed([], now, [], [], generation);
   }
@@ -893,7 +919,7 @@ export class LifeWorld implements World {
       if (hasRetriable) {
         await this.flushPendingNotices(generation);
         if (generation !== this.stateGeneration) return;
-        await this.flushCrossed(r, now, generation);
+        await this.flushCrossed(r, now, generation, false);
         if (generation !== this.stateGeneration) return;
       }
       this.broadcastLife(now);
@@ -1222,17 +1248,21 @@ export class LifeWorld implements World {
          */
         return `娱乐 ${v}，${left}那时候人会发闷，看什么都提不起劲，坐也不是站也不是。`
           + `找点乐子回 39（22 元，要花 6 点精力）；不想花钱就看会儿书，回 20，顺带还涨见识。${tail}`;
-      case 'social':
+      case 'social': {
         /*
-         * 社交是唯一一条**免费路很慢**的：`meet` 一次回 31，而 `market` 只回 8、
-         * `pond` 只回 4。不给这两条，她看到「30 元」就只能拖到明天 ——
-         * 2026-11-17 Mr.Q 观察到的「吃饭会自动做、社交不动」就是这个造成的：
-         * 饱腹那条提示里明写了「实在没钱就随便吃点」，她有退路；
-         * 社交这条只说了付钱那一条，她没有。
+         * 区分在旅途中与在家：出门在外不催「回芦花塘逛早市/望水坡」，优先推不花钱、
+         * 随时可做的 `chat`（20m/+18）或短时 `meet`（45m/+31）。
          */
+        const inTrip = this.journey.installed && (this.journey.phase === 'staying' || this.journey.phase === 'traveling');
+        if (inTrip) {
+          return `社交 ${v}，${left}那时候会觉得太静，安静得能听见自己喘气。`
+            + '跟人说说话（meet）回 31（45 分钟，30 元，花 5 点精力）；不想花钱就跟人闲聊几句（chat，20 分钟回 18，出门在外随时能做）—— '
+            + `顺手聊一会儿就缓过来了，别把日子和旅途当成两张皮。${tail}`;
+        }
         return `社交 ${v}，${left}那时候会觉得屋里太静，安静得能听见自己喘气。`
-          + '跟人说说话回 31（30 元，花 5 点精力）；不想花钱就逛早市集市（回 8）或望水坡（回 4，出门在外也照样能调）—— '
-          + `慢一点，多走两趟也上来了。${tail}`;
+          + '跟人说说话（meet）回 31（45 分钟，30 元，花 5 点精力）；不想花钱就跟人闲聊几句（chat，20 分钟回 18），'
+          + `或者逛早市集市（market，回 8）、望水坡（pond，回 4）—— 抽空说两句话就缓过来了。${tail}`;
+      }
     }
   }
 
@@ -1367,7 +1397,7 @@ export class LifeWorld implements World {
         + '吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；'
         + '饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；'
         + '休/护/动：sleep(8h) nap(60m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m)；'
-        + '闲/学/社：study(60m/涨见识) play(60m/22元) meet(90m/30元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；'
+        + '闲/学/社：study(60m/涨见识) play(60m/22元) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；'
         + '控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。',
       parameters: {
         type: 'object',
@@ -1378,7 +1408,7 @@ export class LifeWorld implements World {
             type: 'string',
             enum: Object.keys(ACTS),
             description: '动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/wash/spa/sunbathe/tidy/workout/'
-              + 'study/play/mall/market/picnic/movie/karaoke/museum/paint/meet/pond/wake/cancel。',
+              + 'study/play/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。',
           },
         },
       },
