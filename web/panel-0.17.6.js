@@ -20,23 +20,22 @@ const TEXT = {
   zh: {
     loading: '读她的日子…',
     empty: '还没读到。',
-    helpTitle: '扩展名旁边那三盏灯怎么看？',
+    helpTitle: '三盏状态灯说明',
     helpOn: '绿',
-    helpOnDesc: '上一次是好的，正常。',
+    helpOnDesc: '连接与运行正常。',
     helpOff: '灰',
-    helpOffDesc: '没启用，不是坏了 —— 比如没装旅行扩展。不用管。',
+    helpOffDesc: '未启用（比如没装旅行扩展或未填同城地址），不是报错。',
     helpErr: '红',
-    helpErrDesc: '配好了但用不了，要去处理。原因和怎么办，鼠标停在灯上能看到。',
-    helpHint: '三盏灯分别是：过日子（她还在正常流逝时间吗）、本城（城名从你的服务器读到了吗）、旅行（知道她在哪座城吗）。',
-    fbLead: '有 bug，或者想让她能干什么？',
+    helpErrDesc: '已配置但异常，悬停看具体原因。',
+    helpHint: '依次代表：过日子 · 本城服务器 · 旅行同步。',
+    fbLead: '问题反馈与需求建议',
     fbBug: '复制诊断信息',
-    fbWant: '复制诊断信息（想加东西）',
+    fbWant: '复制状态（提建议）',
     fbOpenBug: '开 Issues 报 bug ↗',
     fbOpenWant: '开 Issues 提需求 ↗',
-    fbCopied: '已复制，粘过去就行',
+    fbCopied: '已复制 ✓',
     fbAddr: '仓库：',
-    fbWhy: '按钮只负责把版本和当前状态复制到剪贴板（不带任何身份信息）。'
-      + '点右边的链接去 GitHub 开一条，把复制的内容粘在正文里 —— 这样一眼能看出是哪个版本、什么状态。',
+    fbWhy: '先复制脱敏后的版本与状态，再点右侧链接粘进 Issue 正文。',
     who: '她是谁',
     visits: '他来过',
     visitDays: '这几天 {n} 天',
@@ -70,8 +69,7 @@ const TEXT = {
     moveTo: '搬过去',
     cantMove: '钱不够',
     moving: '搬…',
-    moveNote: '搬家要押两个月，一次付清。老房子的押金退不回来 —— 结清水电、赔墙上的钉子。'
-      + '这是你替她搬；她自己也会搬（life_move），走的是同一套账。',
+    moveNote: '押二付一（老房子押金退不回）；与她自主调用 `life_move` 共用同一本账。',
     noGoal: '还没给自己定目标。',
     left: '还差 ¥{n}',
     canNow: '够攒了，去办吧',
@@ -1137,7 +1135,7 @@ export default {
 
         const head = el('div', 'lf-head');
         head.append(el('h1', null, '她惦记的'));
-        const sub = el('p', 'lf-sub', '常态、留意、想买的东西与想去的地方、悬着的事与说好了的约定。');
+        const sub = el('p', 'lf-sub', '常态规律、在留意的事、想买与想去、悬着未决与说好的约定。');
         const goalsCard = el('div', 'lf-card');
         const cols = el('div', 'lf-cols');
         const habitsCard = el('div', 'lf-card');
@@ -1216,7 +1214,7 @@ export default {
 
         const head = el('div', 'lf-head');
         head.append(el('h1', null, '你和它'));
-        const sub = el('p', 'lf-sub', '只记来过几次、留下过什么物件、两边的家与街口消息；不做任何好感打分。');
+        const sub = el('p', 'lf-sub', '来访记录、留下的物件、两地对齐、街口黑板及我的鱼市街摊位（只列事实不打分）。');
         const cols = el('div', 'lf-cols');
         const visitsCard = el('div', 'lf-card');
         const giftsCard = el('div', 'lf-card');
@@ -1468,7 +1466,7 @@ export default {
         const CAT_LABELS = { characters: '人物', outfits: '服饰', scenes: '场景', props: '道具' };
         const head = el('div', 'lf-head');
         head.append(el('h1', null, '素材库与留影'));
-        const sub = el('p', 'lf-sub', '目录即库，按人物/服饰/场景/道具管理外观描述与参考图；同时控制跨扩展留影策略。');
+        const sub = el('p', 'lf-sub', '管理人物、服饰、场景、道具参考图，并设置跨扩展自动留影策略。');
         const dirLine = el('div', 'lf-dir', '');
 
         /* ---- 留影策略设置卡 ---- */

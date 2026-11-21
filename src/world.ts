@@ -3016,32 +3016,32 @@ export class LifeWorld implements World {
         {
           id: 'now',
           title: '她此刻',
-          description: '五条需求、身上舒不舒服、心里什么劲、手上在留意什么。',
+          description: '五条需求、职业手艺与装备、当前状态与搬家。',
         },
         {
           id: 'day',
           title: '一天 · 时间轴',
-          description: '今天从早到晚经历了什么、此刻在做什么、账本收支明细。',
+          description: '今日经历时间轴与当日收支流水。',
         },
         {
           id: 'wants',
           title: '她惦记的',
-          description: '日常规律、在留意的事、想做或想买的东西、悬着未决与说过要做的。',
+          description: '个人目标、常态、在留意、想要/想去与说好了的事。',
         },
         {
           id: 'relation',
           title: '你和它',
-          description: '最近来过几天、留下的小物件、旅行对齐与街口黑板（只列事实，不打分）。',
+          description: '来访天次、小物件、旅行对齐与鱼市街摊位回执（只列事实不打分）。',
         },
         {
           id: 'diary',
           title: '生活日记与流水',
-          description: '她以第一人称写下的日常日记，以及最近的流水与经历。',
+          description: '第一人称生活日记与近期流水。',
         },
         {
           id: 'library',
           title: '素材库与留影',
-          description: '人物、服饰、场景、道具四分类参考库（支持拖图入库）与三档留影冷却设置。',
+          description: '四分类参考图库与自动留影策略。',
         },
       ],
       invoke: (panel, method, args) => this.panelInvoke(panel, method, args),
