@@ -30,6 +30,8 @@
  * 数字都用整数：浮点数落盘会产生 43.00000000000001 这种垃圾，面板上也难看。
  */
 
+import type { SkillDomain } from './town-life.ts';
+
 /** 一档比一档贵，也一档比一档累。 */
 export type JobTier = 'odd' | 'skilled' | 'certified' | 'professional';
 
@@ -47,28 +49,24 @@ export interface JobDef {
   /** 她在话里怎么说这件事。也是 `life_work` 认的第二个名字。 */
   name: string;
   tier: JobTier;
+  /** 所属八大领域之一（烹饪/影像/文字/手作/体力/交际/办事/驾驶）。 */
+  domain: SkillDomain;
   /** 顶一天给多少。 */
   pay: number;
   /** 要哪张证。没有就是不要证。 */
   cert?: string;
+  /** 要什么设备或轻载具（如 ebike / folding_bike / camera / computer）。 */
+  equip?: string;
   /** 要出过多少天工才有资格。0 = 不要求。 */
   days?: number;
   /** 在哪儿能干：只在芦花塘家这边、随身带着走、还是外地也能接的短活。 */
   place: JobPlace;
   /** 材料/出车前垫付成本（元）。干完再结，不够垫付接不了。 */
   materialCost?: number;
-  /** 一天的代价。老版本是 −34 / −16 / −10 三样，这里按档加重，并加了社交。 */
-  /**
-   * 一天的代价。**五条都要动**（2026-11-17 Mr.Q：「不同的工作也得消耗五维」）。
-   *
-   * 原来只有精力、清爽、娱乐、社交四条 —— 少了饱腹。
-   * 结果是「干了一整天活回来不饿」，那三顿饭跟出不出工没关系，
-   * 一天的口粮就成了纯背景开销。加上之后：干重的就多饿，得吃得好一点才补得回来。
-   *
-   * `know` 是**反向的**：这一天涨多少见识（2026-11-17 Mr.Q 第二条
-   * 「见识其实在工作的过程中也是能增长的，而且越高级的工作增长应该越多」）。
-   * 所以它不写在 `gain` 里也不带负号 —— 见 `applyWork`。
-   */
+  /** 是否走 G 类「连续接单时段制」shift。 */
+  shift?: boolean;
+  /** 是否按五档完成度浮动定价（可能做砸亏材料钱，也可能做漂亮超额赚）。 */
+  hasVariance?: boolean;
   /** 干完这一班需要多少分钟。 */
   minutes: number;
   /** 这一班干完的总代价（在工作期间按分钟分摊扣减；社交与娱乐暂停日常衰减）。 */
@@ -108,40 +106,44 @@ const def = (
   name: string,
   tier: JobTier,
   pay: number,
-  extra: Partial<Pick<JobDef, 'cert' | 'days' | 'place' | 'materialCost' | 'minutes'>> = {},
-): JobDef => ({ id, name, tier, pay, place: 'home', minutes: DEFAULT_MINUTES[tier], load: LOAD[tier], ...extra });
+  domain: SkillDomain,
+  extra: Partial<Pick<JobDef, 'cert' | 'equip' | 'days' | 'place' | 'materialCost' | 'minutes' | 'shift' | 'hasVariance'>> = {},
+): JobDef => ({ id, name, tier, domain, pay, place: 'home', minutes: DEFAULT_MINUTES[tier], load: LOAD[tier], ...extra });
 
 /**
- * 十八种，四档 + 三档地点过滤（home / anywhere / destination）。
+ * 二十一项（含三期 G 类轻载具跑单三种 + 五档完成度手艺活），四档 + 三档地点过滤（home / anywhere / destination）。
  *
  * 城规有一条是「鱼不吃鱼」：没有渔业、没有鱼市、没有屠宰。
  * 加任何职业之前先拿这一条判一次。
  */
 export const JOBS: readonly JobDef[] = [
   // 零工：谁都能干，说走就走（3~4 小时）
-  def('porter', '搬货', 'odd', 90, { place: 'anywhere', minutes: 240 }),
-  def('shopkeeper', '看店', 'odd', 85, { place: 'home', minutes: 240 }),
-  def('waiter', '端盘子', 'odd', 90, { place: 'destination', minutes: 240 }),
-  def('delivery', '送外卖', 'odd', 95, { place: 'home', materialCost: 8, minutes: 210 }),
-  def('flyer', '发传单', 'odd', 80, { place: 'destination', minutes: 180 }),
+  def('porter', '搬货', 'odd', 90, 'labor', { place: 'anywhere', minutes: 240 }),
+  def('shopkeeper', '看店', 'odd', 85, 'social', { place: 'home', minutes: 240 }),
+  def('waiter', '端盘子', 'odd', 90, 'social', { place: 'destination', minutes: 240 }),
+  def('delivery', '送外卖', 'odd', 95, 'driving', { place: 'home', materialCost: 8, minutes: 210 }),
+  def('flyer', '发传单', 'odd', 80, 'labor', { place: 'destination', minutes: 180 }),
 
-  // 熟练工：干满一个月，或者有人介绍（5 小时）
-  def('kitchen', '后厨帮工', 'skilled', 140, { days: 30, place: 'destination', minutes: 300 }),
-  def('renovation', '装修队小工', 'skilled', 150, { days: 30, place: 'home', minutes: 300 }),
-  def('errand', '跑腿代办', 'skilled', 130, { days: 30, place: 'home', materialCost: 10, minutes: 270 }),
-  def('stall', '早市摆摊', 'skilled', 145, { days: 30, place: 'home', materialCost: 25, minutes: 270 }),
+  // 熟练工：干满一个月或凭轻载具上路（4~5 小时）
+  def('kitchen', '后厨帮工', 'skilled', 140, 'cooking', { days: 30, place: 'destination', minutes: 300, hasVariance: true }),
+  def('renovation', '装修队小工', 'skilled', 150, 'craft', { days: 30, place: 'home', minutes: 300, hasVariance: true }),
+  def('errand', '跑腿代办', 'skilled', 130, 'admin', { days: 30, place: 'home', materialCost: 10, minutes: 270, hasVariance: true }),
+  def('stall', '早市摆摊', 'skilled', 145, 'cooking', { days: 30, place: 'home', materialCost: 25, minutes: 270, hasVariance: true }),
+  def('rider_delivery', '跑平台送外卖', 'skilled', 135, 'driving', { cert: '健康证', equip: 'ebike', place: 'home', materialCost: 8, minutes: 240, shift: true, hasVariance: true }),
+  def('courier_ebike', '片区送快递', 'skilled', 150, 'driving', { equip: 'ebike', place: 'home', materialCost: 10, minutes: 240, shift: true, hasVariance: true }),
 
-  // 有证：一天的钱够她吃住两天，但那张证要一笔投入（6 小时）
-  def('caregiver', '护工', 'certified', 210, { cert: '护工证', place: 'home', minutes: 360 }),
-  def('driver', '网约车司机', 'certified', 230, { cert: '驾照', place: 'home', materialCost: 45, minutes: 360 }),
-  def('cook', '厨师', 'certified', 240, { cert: '厨师证', place: 'destination', minutes: 360 }),
-  def('electrician', '电工', 'certified', 220, { cert: '电工证', place: 'home', materialCost: 15, minutes: 360 }),
+  // 有证：一天的钱够她吃住两天，但那张证要一笔投入（4~6 小时）
+  def('caregiver', '护工', 'certified', 210, 'social', { cert: '护工证', place: 'home', minutes: 360 }),
+  def('driver', '网约车司机', 'certified', 230, 'driving', { cert: '驾照', place: 'home', materialCost: 45, minutes: 360, shift: true, hasVariance: true }),
+  def('designated_driver', '夜间代驾', 'certified', 220, 'driving', { cert: '驾照', equip: 'folding_bike', place: 'home', materialCost: 12, minutes: 240, shift: true, hasVariance: true }),
+  def('cook', '厨师', 'certified', 240, 'cooking', { cert: '厨师证', place: 'destination', minutes: 360, hasVariance: true }),
+  def('electrician', '电工', 'certified', 220, 'craft', { cert: '电工证', place: 'home', materialCost: 15, minutes: 360, hasVariance: true }),
 
   // 专业：证 + 经验，两个都要（7~8 小时）
-  def('nurse', '社区护士', 'professional', 330, { cert: '护士执业证', days: 30, place: 'home', minutes: 480 }),
-  def('teacher', '小学代课老师', 'professional', 320, { cert: '教师资格证', days: 30, place: 'home', minutes: 420 }),
-  def('accountant', '会计', 'professional', 340, { cert: '会计证', days: 30, place: 'anywhere', minutes: 420 }),
-  def('socialworker', '社区社工', 'professional', 300, { cert: '社工证', days: 30, place: 'home', minutes: 420 }),
+  def('nurse', '社区护士', 'professional', 330, 'social', { cert: '护士执业证', days: 30, place: 'home', minutes: 480, hasVariance: true }),
+  def('teacher', '小学代课老师', 'professional', 320, 'writing', { cert: '教师资格证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
+  def('accountant', '会计', 'professional', 340, 'admin', { cert: '会计证', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
+  def('socialworker', '社区社工', 'professional', 300, 'social', { cert: '社工证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
 ];
 
 /** 判断某份活在当前位置阶段能否接：在路上只能接 anywhere；在外地可接 anywhere+destination；在家可接 home+anywhere。 */
@@ -172,6 +174,7 @@ export function jobAllowedAt(job: JobDef, phase: 'home' | 'staying' | 'traveling
  * 社工证 550 要 45（要读的东西比驾照厚）。**价格是培训费，见识是门槛，两回事。**
  */
 export const CERTS: readonly { name: string; price: number; days: number; need: number }[] = [
+  { name: '健康证', price: 80, days: 1, need: 10 },
   { name: '护工证', price: 400, days: 1, need: 20 },
   { name: '电工证', price: 450, days: 1, need: 30 },
   { name: '驾照', price: 600, days: 1, need: 30 },

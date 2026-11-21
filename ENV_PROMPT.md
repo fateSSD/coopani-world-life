@@ -9,7 +9,9 @@
 - **目标**：{{life.goal}}
 - **五条**：{{life.body}}（缺：{{life.low}}）
 - **状态与心情**：{{life.state}} · 体质 {{life.fitness}}
+- **手艺与家伙**：{{life.skills}}
 - **手头记着**：{{life.has}} · {{life.visits}} · {{life.diary}}
+- **街口黑板报**：{{life.bulletin}}
 - **悬着的事**：{{life.pending}}
 - **说好了的事**：{{life.pledge}}
 - **素材库**：{{life.library}}
@@ -30,9 +32,11 @@
 | `life_act` | 开始一项活动（按分钟结算）或 `wake`（醒来）/ `cancel`（打断/早退） |
 | `life_work` | 去上班挣钱（一天一次，按职业工时走完发全薪；高级活也涨见识） |
 | `life_cert` | 考证（报名费先交不过不退，靠见识提高胜算，每证每天限考一次） |
+| `life_learn` | 报手艺培训班涨熟练度，或购置烤箱/缝纫机/微单/电脑/轻载具 |
 | `life_move` | 换住处（城中村/老小区/新小区/别墅区，押二，可往低处搬自救） |
 | `life_out` | 出门去某条街走走 |
-| `life_buy` | 在早市或鱼市街摊位买菜 |
+| `life_buy` | 去早市、灶前巷尾货或鱼市街摊位买菜并看街口黑板报 |
+| `life_stall` / `life_deals` | 在鱼市街摆摊挂货，以及看谁买走了自己的摊货（成交回执） |
 | `life_habit` / `life_watch` / `life_want` / `life_ask` / `life_pledge` | 记常态、留意的事、想要的东西、悬着的事、对他的承诺 |
 | `life_gift` | 收下他留给你的小礼物（每天最多一件） |
 | `life_diary_write` / `life_diary_read` | 写/读第一人称生活日记（若开着旅行扩展且人在外地，写 `journey_diary_write`） |

@@ -20,8 +20,8 @@ export interface LifeConfigSection extends WorldSection {
    * 现在按 journey 那套来 —— **本机填的优先，服务器是覆盖**。
    */
   homeCity: string;
-  /** 她住的那座城由哪台服务器定。填了 = 覆盖上面那座（所有人同一座城）。 */
-  townUrl: string;
+  /** 她住的那座城由哪台服务器定。填了 = 覆盖上面那座（支持单个 URL 或逗号/换行分隔多台，留位置兼容 F1 联邦）。 */
+  townUrl: string | string[];
   /** 她多久检查一次自己。**和「掉得快慢」无关**，只影响提醒的准时程度。 */
   tickMs: number;
   /** 阈值提醒的密度。 */
@@ -30,6 +30,19 @@ export interface LifeConfigSection extends WorldSection {
   diaryDir: string;
   /** 四分类参考素材库保存目录。留空 = 存在本机 dataDir/image-library；填了 = 存到指定目录。 */
   libraryDir: string;
+}
+
+export function parseTownUrls(raw: string | readonly string[] | undefined | null): string[] {
+  const arr = Array.isArray(raw) ? raw : String(raw || '').split(/[\n,]+/);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of arr) {
+    const u = String(item || '').trim().replace(/\/+$/, '').replace(/\/town\/info$/, '');
+    if (!u || seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  return out;
 }
 
 export const LIFE_DEFAULTS = (): LifeConfigSection => ({

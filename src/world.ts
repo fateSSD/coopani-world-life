@@ -8,21 +8,22 @@ import { ImageLibrary, LIBRARY_CATEGORIES, LIBRARY_CATEGORY_LABEL, type LibraryC
 import type {
   Logger, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp, TriggerMode, EventTag, EventEnvelope, StoragePart,
 } from 'cortico/core/types.ts';
-import { LIFE_ID, lifeConfigGroups, type LifeConfigSection } from './config.ts';
+import { LIFE_ID, lifeConfigGroups, parseTownUrls, type LifeConfigSection } from './config.ts';
 import {
   ACTS, CRITICAL, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, LOW, MAX_PENDING, MAX_PLEDGES,
-  PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL,
-  advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyGift, asleepRefusal, busyRefusal, freshState, isAsleep, isBusy,
-  localDateKey, noteVisit, quoteMove, readyGoals,
+  PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL, SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG,
+  advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyLearn, applyGift, asleepRefusal, busyRefusal, freshState, isAsleep, isBusy,
+  jobGate, localDateKey, noteVisit, quoteMove, readyGoals,
   recentVisits, remember, snapshot, SLEEP_ENERGY_PER_HOUR,
-  appendLedger, readLedger, marketPrices, weatherOf,
-  type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type PendingNotice, type Snapshot, type VitalKey,
+  appendLedger, readLedger, fullMarketPrices, weatherOf,
+  type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type PendingNotice, type Snapshot, type VitalKey, type SkillDomain,
 } from './state.ts';
 import { JOBS, certOf, jobAllowedAt } from './jobs.ts';
 import {
   BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown,
-  readPendingRequests, archivePendingRequest, fetchTownStalls, buyTownStall,
-  type JourneyView, type TownView,
+  readPendingRequests, archivePendingRequest, fetchTownStalls, buyTownStall, joinTown, readMeetUid,
+  postTownStall, fetchTownDeals, ackTownDeals,
+  type JourneyView, type TownView, type TownStall, type TownDeal,
 } from './bridge.ts';
 
 /**
@@ -277,6 +278,56 @@ export class LifeWorld implements World {
     }
   }
 
+  private townBulletin: string[] = [];
+  private lastBulletinFetchMs = 0;
+  private myStallsCache: TownStall[] = [];
+  private myDealsCache: TownDeal[] = [];
+  private unseenDealsCount = 0;
+
+  private townUrlKey(raw: unknown = this.cfg.townUrl): string {
+    return parseTownUrls(raw).join('|');
+  }
+
+  private async syncTownPresenceAndBulletin(now: Date, generation: number): Promise<void> {
+    const urls = parseTownUrls(this.cfg.townUrl);
+    if (!urls.length) return;
+    const today = localDateKey(now);
+    const uid = readMeetUid(this.opts.dataDir);
+    if (this.state.lastJoinedTownAt !== today && uid) {
+      const street = this.state.street || this.town.streets[0] || '';
+      try {
+        const res = await joinTown(this.cfg.townUrl, { uid, pet: this.opts.botName || 'fish', street });
+        if (generation !== this.stateGeneration) return;
+        if (res.ok) {
+          this.state.lastJoinedTownAt = today;
+          this.stateSaveDirty = true;
+        }
+      } catch { /* 网络失败下次重试 */ }
+    }
+    if (Date.now() - this.lastBulletinFetchMs >= 15 * 60_000) {
+      this.lastBulletinFetchMs = Date.now();
+      try {
+        const remote = await fetchTownStalls(this.cfg.townUrl);
+        if (generation !== this.stateGeneration) return;
+        if (remote.ok) {
+          this.townBulletin = remote.bulletin;
+          const myName = this.opts.botName || 'fish';
+          this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
+        }
+      } catch { /* 静默保留上次黑板 */ }
+      if (uid) {
+        try {
+          const d = await fetchTownDeals(this.cfg.townUrl, uid, { ack: false });
+          if (generation !== this.stateGeneration) return;
+          if (d.ok) {
+            this.myDealsCache = d.deals;
+            this.unseenDealsCount = d.unseen;
+          }
+        } catch { /* 静默保留上次成交 */ }
+      }
+    }
+  }
+
   /** 版本号与新版本检查。面板表头那个徽章读它。 */
   private readonly versionCheck: VersionCheck;
 
@@ -289,7 +340,7 @@ export class LifeWorld implements World {
     this.host = host;
     this.log = host.log;
     this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
-    this.lastTownUrl = String(this.cfg.townUrl || '').trim();
+    this.lastTownUrl = this.townUrlKey(this.cfg.townUrl);
     this.lastHomeCity = String(this.cfg.homeCity || '').trim();
     this.lastDiaryDir = String(this.cfg.diaryDir || '').trim();
     const dh = this.diary.configure(this.lastDiaryDir);
@@ -308,6 +359,9 @@ export class LifeWorld implements World {
     this.broadcastLife(new Date());
     /* 查最新版：不 await，面板不该等网络。 */
     void this.versionCheck.startupRefresh();
+    if (parseTownUrls(this.cfg.townUrl).length) {
+      void this.syncTownPresenceAndBulletin(new Date(), this.stateGeneration);
+    }
     this.restartTimer();
     host.log.info(
       `模拟鱼生已就绪：${this.town.name}（${this.townSourceLabel()}）`
@@ -350,7 +404,12 @@ export class LifeWorld implements World {
       this.journey = j;
       const previewState = structuredClone(this.state);
       if (!this.stateCleared) {
-        advance(previewState, now, { phase: j.phase, hotelTier: j.hotelTier, modeId: j.modeId });
+        advance(previewState, now, {
+          phase: j.phase,
+          hotelTier: j.hotelTier,
+          modeId: j.modeId,
+          journeyCity: j.installed ? j.cityName : '',
+        });
       }
       const s = snapshot(previewState, now);
       const body = (Object.keys(VITAL_LABEL) as VitalKey[])
@@ -497,7 +556,7 @@ export class LifeWorld implements World {
     /* 先把热改接上：周期变了重排定时器，地址变了重读城名。 */
     const ms = Math.max(15_000, Number(this.cfg.tickMs) || 60_000);
     if (ms !== this.lastTickMs) this.restartTimer();
-    const townUrl = String(this.cfg.townUrl || '').trim();
+    const townUrl = this.townUrlKey(this.cfg.townUrl);
     const homeCity = String(this.cfg.homeCity || '').trim();
     const diaryDir = String(this.cfg.diaryDir || '').trim();
     if (this.lastDiaryDir !== null && diaryDir !== this.lastDiaryDir) {
@@ -518,10 +577,13 @@ export class LifeWorld implements World {
     ) {
       this.lastTownUrl = townUrl;
       this.lastHomeCity = homeCity;
-      this.town = await readTown(townUrl, homeCity);
+      this.lastBulletinFetchMs = 0;
+      this.town = await readTown(this.cfg.townUrl, homeCity);
       if (generation !== this.stateGeneration) return;
       this.log?.info(`模拟鱼生：本城改成了 ${this.town.name}（${this.townSourceLabel()}）`);
     }
+    await this.syncTownPresenceAndBulletin(now, generation);
+    if (generation !== this.stateGeneration) return;
 
     this.journey = readJourney(this.opts.dataDir, now);
     /* presence 要在 advance 之前记 —— 它是「今天」的事，跟衰减无关。 */
@@ -534,7 +596,12 @@ export class LifeWorld implements World {
      */
     this.settleSpendRequests(now);
     this.broadcastLife(now);
-    const r = advance(this.state, now, { phase: this.journey.phase, hotelTier: this.journey.hotelTier, modeId: this.journey.modeId });
+    const r = advance(this.state, now, {
+      phase: this.journey.phase,
+      hotelTier: this.journey.hotelTier,
+      modeId: this.journey.modeId,
+      journeyCity: this.journey.installed ? this.journey.cityName : '',
+    });
     if (r.hours <= 0) {
       const hasRetriable = !this.stateCleared && (
         (this.state.pendingNotices?.length ?? 0) > 0
@@ -809,7 +876,13 @@ export class LifeWorld implements World {
           amount: c.workEarned,
           source: 'life_work',
           payee: '自己',
-          note: c.stoppedEarly ? `${c.label}（中途停工）` : c.label,
+          note: c.stoppedEarly
+            ? `${c.label}（中途停工）`
+            : c.shiftSummary
+              ? `${c.label}（${c.shiftSummary}）`
+              : c.gradeLabel
+                ? `${c.label}（${c.gradeLabel}）`
+                : c.label,
         });
       } else if (c.kind === 'act' && c.costPaid > 0) {
         appendLedger(this.opts.dataDir, {
@@ -905,7 +978,12 @@ export class LifeWorld implements World {
   }
 
   private async settleBeforeToolInner(now: Date, generation: number): Promise<void> {
-    const r = advance(this.state, now, { phase: this.journey.phase, hotelTier: this.journey.hotelTier, modeId: this.journey.modeId });
+    const r = advance(this.state, now, {
+      phase: this.journey.phase,
+      hotelTier: this.journey.hotelTier,
+      modeId: this.journey.modeId,
+      journeyCity: this.journey.installed ? this.journey.cityName : '',
+    });
     if (r.hours <= 0) {
       const hasRetriable = !this.stateCleared && (
         (this.state.pendingNotices?.length ?? 0) > 0
@@ -1353,6 +1431,7 @@ export class LifeWorld implements World {
       this.toolAct(),
       this.toolWork(),
       this.toolCert(),
+      this.toolLearn(),
       this.toolMove(),
       this.toolOut(),
       this.toolHabit(),
@@ -1362,6 +1441,8 @@ export class LifeWorld implements World {
       this.toolPledge(),
       this.toolGift(),
       this.toolBuy(),
+      this.toolStall(),
+      this.toolDeals(),
       this.toolDiaryWrite(),
       this.toolDiaryRead(),
       this.toolLibrary(),
@@ -1504,8 +1585,9 @@ export class LifeWorld implements World {
       name: 'life_work',
       description:
         '去上班/出工挣钱。**一天一次**，按你本地的自然日算，**而且需要占用一段完整工时** —— '
-        + '零工约 3–4 小时（80–95 元）、熟练活约 4.5–5 小时（130–150 元，需满 30 天）、'
-        + '有证岗 6 小时（210–240 元，需考证）、专业岗 7–8 小时（300–340 元，需考证+年头）。'
+        + '零工约 3–4 小时（80–95 元）、熟练活约 4.5–5 小时（130–150 元，需满 30 天或自备轻载具）、'
+        + '有证岗 6 小时（210–240 元，需考证，部分需电脑或电动车）、专业岗 7–8 小时（300–340 元，需考证+年头）。'
+        + '部分手艺与跑单活受该领域熟练度、精力与心情影响，收工会评五档完成度（砸了会少拿甚至亏本钱，漂亮多拿）；'
         + '干活期间社交不会掉，但精力、清爽、饱腹和少量娱乐（5–6 点）会消耗；干完收工才发全薪。'
         + '中途可用 `life_act` 的 `cancel` 早退：干满 30 分钟按比例打六折、不满 30 分钟白干，都不涨工龄且当天不能重接。'
         + '精力低于 20 或正在做别的事时去不了。',
@@ -1515,22 +1597,23 @@ export class LifeWorld implements World {
         properties: {
           what: {
             type: 'string',
-            description: '今天干什么活，一句话。不填就沿用上次那个。',
+            description: '今天干什么活，一句话。不填且之前没定过活时，会先按当前条件列出可接的 3–5 项。',
           },
         },
       },
       tags: ['write'],
       handler: async (args: any) => {
-        const now = new Date();
+        const now = this.now();
         await this.settleBeforeTool(now);
         const j = readJourney(this.opts.dataDir, now);
         this.journey = j;
         const phase = j.installed && (j.phase === 'staying' || j.phase === 'traveling') ? j.phase : 'home';
         const what = String(args?.what ?? '').trim();
         if (!what && !this.state.job.what) {
-          const avail = JOBS.filter((job) => jobAllowedAt(job, phase)).slice(0, 5);
+          const avail = JOBS.filter((job) => jobAllowedAt(job, phase) && jobGate(this.state, job, phase) === null).slice(0, 5);
+          const fallback = avail.length ? avail : JOBS.filter((job) => jobAllowedAt(job, phase)).slice(0, 5);
           return {
-            text: `现在可接的活（挑一个填进 what）：${avail.map((a) => `${a.name}（${a.pay}元/${a.minutes}分钟）`).join('、')}。`,
+            text: `现在可接的活（挑一个填进 what）：${fallback.map((a) => `${a.name}（${a.pay}元/${a.minutes}分钟${a.equip ? '·自备家伙' : ''}）`).join('、')}。`,
           };
         }
         const r = applyWork(this.state, what, now, phase);
@@ -1556,8 +1639,8 @@ export class LifeWorld implements World {
           const matTxt = r.materialPaid && r.materialPaid > 0 ? `已先垫付成本 ${r.materialPaid} 元。` : '';
           return {
             text: `去上「${this.state.job.what}」了，工时 ${r.minutes ?? 240} 分钟（预计 ${hh}:${mm} 收工），`
-              + `干完可得 ${r.expectedPay ?? 0} 元。${matTxt}`
-              + '干活期间社交和娱乐不会掉，但精力、清爽、饱腹会消耗；早退不满 30 分钟白干、满 30 分钟按比例打六折。',
+              + `预计标准工钱 ${r.expectedPay ?? 0} 元。${matTxt}`
+              + '干活期间社交不会掉，但精力、清爽、饱腹和少量娱乐会消耗；早退不满 30 分钟白干、满 30 分钟按比例打六折。',
           };
         }
 
@@ -1583,7 +1666,7 @@ export class LifeWorld implements World {
       name: 'life_cert',
       description:
         '去考一张证。花钱、花精力，**考不考得过看你见识够不够**。'
-        + '护工证 400（要见识 20）/ 电工证 450（30）/ 驾照 600（30）/ 厨师证 500（40）/ '
+        + '健康证 80（要见识 10）/ 护工证 400（20）/ 电工证 450（30）/ 驾照 600（30）/ 厨师证 500（40）/ '
         + '社工证 550（45）/ 教师资格证 700（55）/ 护士执业证 800（60）/ 会计证 750（65）。'
         + '**报名费先交，考不过不退**；见识越高，过的概率越大（见识 0 时只有一成半，够了就到九成）。'
         + '见识靠两样涨：`life_act` 的 study（看书，一次 6 点）和出工（越高级的活长得越多）；'
@@ -1602,7 +1685,7 @@ export class LifeWorld implements World {
       },
       tags: ['write'],
       handler: async (args: any) => {
-        const now = new Date();
+        const now = this.now();
         await this.settleBeforeTool(now);
         const r = applyCert(this.state, String(args?.cert ?? ''), now);
         if (!r.ok) return { text: r.reason ?? '没考成。' };
@@ -1667,7 +1750,7 @@ export class LifeWorld implements World {
       },
       tags: ['write'],
       handler: async (args: any) => {
-        const now = new Date();
+        const now = this.now();
         await this.settleBeforeTool(now);
         const tier = String(args?.tier ?? '');
         if (!(tier in HOME_TIER_COST)) {
@@ -1714,7 +1797,7 @@ export class LifeWorld implements World {
       },
       tags: ['write'],
       handler: async (args: any) => {
-        const now = new Date();
+        const now = this.now();
         await this.settleBeforeTool(now);
         /* 睡着或正在干别的事时出不了门。这条路不在 `applyAct` 里 —— 它自己改 vitals，得单独拦。 */
         if (isBusy(this.state, now)) {
@@ -2051,7 +2134,7 @@ export class LifeWorld implements World {
       },
       tags: ['write'],
       handler: async (args: any) => {
-        const now = new Date();
+        const now = this.now();
         await this.settleBeforeTool(now);
         const r = applyGift(this.state, String(args?.what ?? ''), String(args?.from ?? '他'), now);
         if (!r.ok) return { text: r.reason ?? '今天留不下了。' };
@@ -2061,90 +2144,303 @@ export class LifeWorld implements World {
     };
   }
 
-  private toolBuy(): ToolDef {
+  private toolLearn(): ToolDef {
     return {
-      name: 'life_buy',
+      name: 'life_learn',
       description:
-        '去芦花塘鱼市街或早市看看今天有什么可买的（不传参数看摊位与菜价，传 stall_id 或菜名就买下来）。',
+        '报名手艺培训班（烹饪/影像/文字/手作/体力/交际/办事/驾驶）或购置工具与轻载具（如家用小烤箱/老式缝纫机/二手胶片微单/二手笔记本电脑/折叠自行车/二手电动车）。'
+        + '不传参数先看可报课程与待买装备清单；传入名称或 id 即上课扣精力长熟练度，或花钱把家伙配齐（配齐后才能接对应手艺单和跑单活）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          stall_id: { type: 'string', description: '摊位 id 或早市菜名；不填则先逛逛看看价。' },
+          what: {
+            type: 'string',
+            description: '要报名的课程名/领域，或要购买的装备/轻载具名。不填先看清单和当前熟练度。',
+          },
         },
       },
       tags: ['write'],
       handler: async (args: any) => {
-        const now = new Date();
+        const now = this.now();
+        await this.settleBeforeTool(now);
+        const what = String(args?.what ?? '').trim();
+        if (!what || what === 'list') {
+          const skillsLine = (Object.keys(SKILL_DOMAIN_LABEL) as SkillDomain[])
+            .map((k) => `${SKILL_DOMAIN_LABEL[k]} ${Math.round(this.state.skills[k] ?? 0)}`)
+            .join(' / ');
+          const gearOwned = this.state.gear.length
+            ? this.state.gear.map((id) => EQUIP_CATALOG.find((e) => e.id === id)?.name ?? id).join('、')
+            : '暂无';
+          const courses = TRAIN_COURSES.map((c) => `${c.name}（${SKILL_DOMAIN_LABEL[c.domain]}，${c.price}元）`).join('；');
+          const equips = EQUIP_CATALOG.filter((e) => !this.state.gear.includes(e.id))
+            .map((e) => `${e.name}（${e.price}元）`).join('；');
+          return {
+            text: `当前熟练度：${skillsLine}。已备家伙：${gearOwned}。\n`
+              + `可报培训：${courses}。\n`
+              + `${equips ? `可买装备/载具：${equips}。` : '清单装备都已配齐。'}`,
+          };
+        }
+        const r = applyLearn(this.state, what, now);
+        if (!r.ok) return { text: r.reason ?? '这次没办成。' };
+        if (r.paid > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `learn-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paid,
+            source: 'life_learn',
+            payee: r.kind === 'equip' ? '镇上五金二手店' : '镇民夜校培训',
+            note: `${r.kind === 'equip' ? '购置' : '培训'}：${r.name}`,
+          });
+        }
+        try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
+        this.broadcastLife(now);
+        return {
+          text: r.kind === 'equip'
+            ? `买下「${r.name}」了，花了 ${r.paid} 元，手上剩 ${Math.round(r.cash)} 元。对应的手艺活或跑单活现在能接了。`
+            : `上完了「${r.name}」，花了 ${r.paid} 元，${r.domain ? SKILL_DOMAIN_LABEL[r.domain] : ''}熟练度到 ${r.domainExp ?? 0}，手上剩 ${Math.round(r.cash)} 元。`,
+        };
+      },
+    };
+  }
+
+  private toolBuy(): ToolDef {
+    return {
+      name: 'life_buy',
+      description:
+        '去芦花塘早市街、灶前巷或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来）。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          stall_id: { type: 'string', description: '摊位 id 或早市/尾货/节气菜名；不填则先逛逛看看价。' },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const now = this.now();
         await this.settleBeforeTool(now);
         const generation = this.stateGeneration;
         const cleared = () => ({ text: '生活档案刚刚被清理，这次旧购买操作已停止，未写入新档案。' });
         if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去买菜') };
         const pick = String(args?.stall_id ?? '').trim();
-        const url = String(this.cfg.townUrl ?? '').trim();
+        const hasTownUrl = parseTownUrls(this.cfg.townUrl).length > 0;
         if (!pick) {
-          const remote = url ? await fetchTownStalls(url) : { ok: false, stalls: [] };
+          const remote = hasTownUrl ? await fetchTownStalls(this.cfg.townUrl) : { ok: false, stalls: [], bulletin: [] as string[] };
           if (generation !== this.stateGeneration) return cleared();
+          if (remote.ok) this.townBulletin = remote.bulletin;
+          const local = fullMarketPrices(now);
+          const s = snapshot(this.state, now);
+          const winTxt = s.streetWindow ? `此刻「${s.streetWindow.place}${s.streetWindow.label}」开着（${s.streetWindow.hint}）。` : '';
+          const boardTxt = this.townBulletin.length ? `\n街口黑板报：${this.townBulletin.slice(0, 3).join('；')}` : '';
           if (remote.ok && remote.stalls.length) {
             return {
-              text: `鱼市街今天摆出来的摊位：${remote.stalls.map((st) => `${st.item} ${st.price}元（${st.seller}，id:${st.id}）`).join('；')}。`,
+              text: `${winTxt}鱼市街今天摆出来的摊位：${remote.stalls.map((st) => `${st.item} ${st.price}元（${st.seller}，id:${st.id}）`).join('；')}。${boardTxt}`,
             };
           }
-          const local = marketPrices(now);
           return {
-            text: `早市今天菜价：${local.map((p) => `${p.item} ${p.price}元/${p.unit}`).join('；')}。想买哪个把名字写进 stall_id。`,
+            text: `${winTxt}${s.solarTerm.name}市集菜价：${local.map((p) => `${p.item}${p.discounted ? '[特惠]' : ''} ${p.price}元/${p.unit}`).join('；')}。想买哪个把名字写进 stall_id。${boardTxt}`,
           };
         }
 
         let item = '';
         let price = 0;
         let seller = '早市摊主';
-        if (url) {
-          const remote = await fetchTownStalls(url);
+        let localTag = '';
+        let isRemote = false;
+        let isFreshVeg = false;
+        let foodGain = 28;
+        let funGain = 6;
+        if (hasTownUrl) {
+          const remote = await fetchTownStalls(this.cfg.townUrl);
           if (generation !== this.stateGeneration) return cleared();
+          if (remote.ok) this.townBulletin = remote.bulletin;
           const match = remote.ok ? remote.stalls.find((st) => st.id === pick || st.item === pick) : null;
           if (match) {
             if (this.state.money.cash < match.price) {
               return { text: `「${match.item}」要 ${match.price} 元，手上只有 ${this.state.money.cash} 元。` };
             }
-            const bought = await buyTownStall(url, match.id, this.opts.botName || 'fish', {});
+            const buyerUid = readMeetUid(this.opts.dataDir);
+            if (!buyerUid) {
+              return { text: '缺少本机 uid（先跟城里连一次碰面生成 uid 后再在鱼市街摊位买东西）。' };
+            }
+            const bought = await buyTownStall(this.cfg.townUrl, match.id, this.opts.botName || 'fish', { buyerUid });
             if (generation !== this.stateGeneration) return cleared();
             if (!bought.ok) return { text: bought.reason ?? '没买成。' };
+            isRemote = true;
             item = bought.item || match.item;
             price = bought.price || match.price;
             seller = bought.seller || match.seller;
+            isFreshVeg = Boolean(bought.freshVeg ?? match.freshVeg);
           }
         }
         if (!item) {
-          const local = marketPrices(now);
+          const local = fullMarketPrices(now);
           const hit = local.find((p) => p.item === pick || p.item.includes(pick));
           if (!hit) {
-            return { text: `没找着「${pick}」，今天早市有：${local.map((p) => p.item).join('、')}。` };
+            return { text: `没找着「${pick}」，今天摊上有：${local.map((p) => p.item).join('、')}。` };
           }
           if (this.state.money.cash < hit.price) {
             return { text: `「${hit.item}」要 ${hit.price} 元，手上只有 ${this.state.money.cash} 元。` };
           }
           item = hit.item;
           price = hit.price;
+          localTag = hit.tag ?? '';
+          isFreshVeg = Boolean(hit.freshVeg);
+          if (typeof hit.foodGain === 'number') foodGain = hit.foodGain;
+          if (typeof hit.funGain === 'number') funGain = hit.funGain;
         }
 
         if (generation !== this.stateGeneration) return cleared();
         this.state.money.cash -= price;
         this.state.money.spent += price;
-        this.state.vitals.food = Math.min(100, this.state.vitals.food + 28);
-        this.state.vitals.fun = Math.min(100, this.state.vitals.fun + 6);
-        remember(this.state, `在${seller}那儿买了${item}（${price} 元）。`, now);
+        if (foodGain > 0) this.state.vitals.food = Math.min(100, this.state.vitals.food + foodGain);
+        if (funGain > 0) this.state.vitals.fun = Math.min(100, this.state.vitals.fun + funGain);
+        if (isFreshVeg) {
+          this.state.freshVegUntil = new Date(now.getTime() + 24 * 3_600_000).toISOString();
+        }
+        const placePhrase = isRemote
+          ? `在${seller}那儿`
+          : (localTag ? `在${localTag}的摊子上` : '在早市');
+        remember(this.state, `${placePhrase}买了${item}（${price} 元）。`, now);
         appendLedger(this.opts.dataDir, {
           id: `buy-${now.getTime().toString(36)}`,
           ts: now.toISOString(),
           kind: 'expense',
           amount: price,
           source: 'life_buy',
-          payee: seller,
+          payee: isRemote ? seller : '早市摊主',
           note: `买菜：${item}`,
         });
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
-        return { text: `买了${item}，花了 ${price} 元（${seller}）。手上还剩 ${this.state.money.cash} 元。` };
+        return {
+          text: `买了${item}，花了 ${price} 元（${isRemote ? seller : (localTag || '早市摊主')}）。`
+            + `${isFreshVeg ? '新鲜水灵，今天下厨特别香。' : ''}手上还剩 ${this.state.money.cash} 元。`,
+        };
+      },
+    };
+  }
+
+  private toolStall(): ToolDef {
+    return {
+      name: 'life_stall',
+      description:
+        '去芦花塘鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。'
+        + '价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          item: { type: 'string', description: '卖什么东西，不填则查看自己此刻挂着的摊位。' },
+          price: { type: 'number', description: '定价（1–999 元）。' },
+          stock: { type: 'number', description: '准备卖几份（1–99，默认 3）。' },
+          fresh_veg: { type: 'boolean', description: '是否新鲜蔬菜果品（默认 false）。' },
+          note: { type: 'string', description: '摊头吆喝的一句话（可选）。' },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const now = this.now();
+        await this.settleBeforeTool(now);
+        const generation = this.stateGeneration;
+        const cleared = () => ({ text: '生活档案刚刚被清理，这次旧挂摊操作已取消。' });
+        const hasTownUrl = parseTownUrls(this.cfg.townUrl).length > 0;
+        if (!hasTownUrl) return { text: '还没配置城服务器地址，没法上鱼市街摆摊。' };
+
+        const item = String(args?.item ?? '').trim();
+        const myName = this.opts.botName || 'fish';
+        if (!item) {
+          const remote = await fetchTownStalls(this.cfg.townUrl);
+          if (generation !== this.stateGeneration) return cleared();
+          if (!remote.ok) return { text: '鱼市街这会儿连不上，稍后再看看。' };
+          this.townBulletin = remote.bulletin;
+          const mine = remote.stalls.filter((s) => s.seller === myName);
+          this.myStallsCache = mine;
+          if (!mine.length) return { text: '鱼市街上目前还没有你挂着的摊子。想摆摊就传 item 和 price。' };
+          return {
+            text: `鱼市街你现在挂着的摊子：${mine.map((s) => `${s.item}（${s.price}元，剩${s.stock}份${s.freshVeg ? '·鲜蔬' : ''}，id:${s.id}）`).join('；')}。`,
+          };
+        }
+
+        if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去摆摊') };
+        const uid = readMeetUid(this.opts.dataDir);
+        if (!uid) return { text: '缺少本机 uid，没法在鱼市街实名挂摊。' };
+        const price = Math.round(Number(args?.price));
+        const stock = args?.stock !== undefined ? Math.round(Number(args.stock)) : 3;
+        if (!Number.isFinite(price) || price < 1 || price > 999) {
+          return { text: '定价得填 1–999 之间的整数元。' };
+        }
+        if (!Number.isFinite(stock) || stock < 1 || stock > 99) {
+          return { text: '份数得填 1–99 之间的整数。' };
+        }
+        const freshVeg = Boolean(args?.fresh_veg);
+        const note = String(args?.note ?? '').trim();
+
+        const res = await postTownStall(this.cfg.townUrl, {
+          uid, pet: myName, item, price, stock, freshVeg, kind: 'goods', note,
+        });
+        if (generation !== this.stateGeneration) return cleared();
+        if (!res.ok) return { text: res.reason ?? '挂摊没成功。' };
+
+        const remote = await fetchTownStalls(this.cfg.townUrl);
+        if (generation !== this.stateGeneration) return cleared();
+        if (remote.ok) {
+          this.townBulletin = remote.bulletin;
+          this.myStallsCache = remote.stalls.filter((s) => s.seller === myName);
+        }
+        remember(this.state, `在鱼市街挂出摊子：${res.item}（${res.price} 元，${res.stock} 份）。`, now);
+        try { this.store.save(this.state); } catch { /* ignore */ }
+        return {
+          text: `摊子挂上鱼市街了：${res.item}，定价 ${res.price} 元、共 ${res.stock} 份（id:${res.id}）。被人买走后可以在 life_deals 看到是谁买走了。`,
+        };
+      },
+    };
+  }
+
+  private toolDeals(): ToolDef {
+    return {
+      name: 'life_deals',
+      description:
+        '看看自己在鱼市街的摊位有没有被人买走，返回最近成交回执（谁买了什么、几份，以及未读条数），并顺手把看过的回执标成已读。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ack: { type: 'boolean', description: '看完是否顺手把未读回执标成已读（默认 true）。' },
+        },
+      },
+      tags: ['read'],
+      handler: async (args: any) => {
+        const now = this.now();
+        await this.settleBeforeTool(now);
+        const generation = this.stateGeneration;
+        const cleared = () => ({ text: '生活档案刚刚被清理，旧查账结果已丢弃。' });
+        if (!parseTownUrls(this.cfg.townUrl).length) {
+          return { text: '还没配置城服务器地址，没有鱼市街成交记录。' };
+        }
+        const uid = readMeetUid(this.opts.dataDir);
+        if (!uid) return { text: '缺少本机 uid，查不到自己的成交回执。' };
+        const shouldAck = args?.ack !== false;
+        const res = await fetchTownDeals(this.cfg.townUrl, uid, { ack: shouldAck });
+        if (generation !== this.stateGeneration) return cleared();
+        if (!res.ok) return { text: res.reason ?? '查回执失败了。' };
+
+        const newOnes = res.deals.filter((d) => !d.seen);
+        this.myDealsCache = res.deals.map((d) => (shouldAck ? { ...d, seen: true } : d));
+        this.unseenDealsCount = shouldAck ? res.unseen : res.unseen;
+        if (!res.deals.length) return { text: '鱼市街这边还没有你的摊位成交记录。' };
+
+        if (shouldAck && newOnes.length > 0) {
+          const summary = newOnes.slice(0, 3).map((d) => `${d.buyerPet}买走了${d.qty}份${d.item}`).join('、');
+          remember(this.state, `看过鱼市街成交回执：${summary}。`, now);
+          try { this.store.save(this.state); } catch { /* ignore */ }
+        }
+        const lines = res.deals.slice(0, 10).map((d) =>
+          `${d.seen ? '' : '[新] '}${d.buyerPet} 买走 ${d.qty} 份「${d.item}」${d.note ? `（留言：${d.note}）` : ''}`);
+        return {
+          text: `最近鱼市街成交回执（共 ${res.deals.length} 条，新未读 ${newOnes.length} 条${shouldAck && newOnes.length ? '，已标为已读' : ''}）：\n${lines.join('\n')}`,
+        };
       },
     };
   }
@@ -2304,6 +2600,19 @@ export class LifeWorld implements World {
     /* 街名可能一条都没有（用户只填了城名）—— 那时候不说「城里有：」。 */
     if (this.town.streets.length) parts.push(`城里有：${this.town.streets.join(' / ')}`);
 
+    const skillPairs = (Object.keys(SKILL_DOMAIN_LABEL) as SkillDomain[])
+      .filter((k) => (s.skills[k] ?? 0) > 0)
+      .map((k) => `${SKILL_DOMAIN_LABEL[k]} ${Math.round(s.skills[k] ?? 0)}`);
+    if (skillPairs.length) parts.push(`手艺经验：${skillPairs.join('、')}`);
+    if (s.gear.length) {
+      parts.push(`已备家伙：${s.gear.map((id) => EQUIP_CATALOG.find((e) => e.id === id)?.name ?? id).join('、')}`);
+    }
+    if (s.freshVeg) parts.push('菜篮：刚从早市带回鲜蔬，下厨特别香');
+    const winTxt = s.streetWindow ? ` · 此刻${s.streetWindow.place}${s.streetWindow.label}开着` : '';
+    parts.push(`时令天气：${s.weather.sky} · ${s.weather.seasonNote}${winTxt}`);
+    if (this.townBulletin.length) parts.push(`街口黑板报：${this.townBulletin.slice(0, 2).join('；')}`);
+    if (this.unseenDealsCount > 0) parts.push(`鱼市街摊位有 ${this.unseenDealsCount} 笔新成交待看（用 life_deals）`);
+
     parts.push(this.diaryLine(j, now));
     const digest = this.recentLedgerDigest(now);
     if (digest) parts.push(`最近流水：${digest}`);
@@ -2359,7 +2668,7 @@ export class LifeWorld implements World {
       },
       tags: ['write'],
       handler: async (args: any) => {
-        const now = new Date();
+        const now = this.now();
         await this.settleBeforeTool(now);
         const j = readJourney(this.opts.dataDir, now);
         this.journey = j;
@@ -2607,7 +2916,14 @@ export class LifeWorld implements World {
       'life.tellable': s.unsaid.length
         ? s.unsaid.map((t) => `- ${t.text}`).join('\n')
         : '（这会儿没有攒着想说的）',
-      'life.weather': `${s.weather.sky}　·　${s.weather.seasonNote}`,
+      'life.weather': `${s.weather.sky}　·　${s.weather.seasonNote}${s.streetWindow ? `　·　${s.streetWindow.place}${s.streetWindow.label}` : ''}`,
+      'life.skills': [
+        (Object.keys(SKILL_DOMAIN_LABEL) as SkillDomain[])
+          .filter((k) => (s.skills[k] ?? 0) > 0)
+          .map((k) => `${SKILL_DOMAIN_LABEL[k]} ${Math.round(s.skills[k] ?? 0)}`).join(' / ') || '手艺起步中',
+        s.gear.length ? `家伙：${s.gear.map((id) => EQUIP_CATALOG.find((e) => e.id === id)?.name ?? id).join('、')}` : '暂无自备家伙',
+      ].join('　·　'),
+      'life.bulletin': this.townBulletin.length ? this.townBulletin.slice(0, 3).join('；') : '（今天街口黑板还没有新消息）',
     };
   }
 
@@ -2653,7 +2969,8 @@ export class LifeWorld implements World {
 
     /* ---- 本城 ---- */
     const host = (() => {
-      try { return new URL(String(this.cfg.townUrl || '')).host; } catch { return ''; }
+      const firstUrl = parseTownUrls(this.cfg.townUrl)[0] ?? '';
+      try { return new URL(firstUrl).host; } catch { return ''; }
     })();
     const town: WorldLamp = this.town.source === 'server'
       ? { label: '本城', state: 'online', hint: `从 ${host} 读的：${this.town.name}` }
@@ -2702,6 +3019,21 @@ export class LifeWorld implements World {
           description: '五条需求、身上舒不舒服、心里什么劲、手上在留意什么。',
         },
         {
+          id: 'day',
+          title: '一天 · 时间轴',
+          description: '今天从早到晚经历了什么、此刻在做什么、账本收支明细。',
+        },
+        {
+          id: 'wants',
+          title: '她惦记的',
+          description: '日常规律、在留意的事、想做或想买的东西、悬着未决与说过要做的。',
+        },
+        {
+          id: 'relation',
+          title: '你和它',
+          description: '最近来过几天、留下的小物件、旅行对齐与街口黑板（只列事实，不打分）。',
+        },
+        {
           id: 'diary',
           title: '生活日记与流水',
           description: '她以第一人称写下的日常日记，以及最近的流水与经历。',
@@ -2738,6 +3070,9 @@ export class LifeWorld implements World {
           { name: 'life.tellable', description: '还没说出去的生活片段。' },
           { name: 'life.diary', description: '今天生活日记写了没（与旅行扩展分流）。' },
           { name: 'life.library', description: '四分类素材库与留影策略摘要。' },
+          { name: 'life.weather', description: '当前天气、二十四节气与芦花塘开市时段。' },
+          { name: 'life.skills', description: '八大领域手艺熟练度与已配设备/载具。' },
+          { name: 'life.bulletin', description: '芦花塘《街口黑板报》最近动态。' },
         ],
       }],
       storage: [
@@ -2967,6 +3302,46 @@ export class LifeWorld implements World {
       throw new Error(`生活日记页不认识这个方法：${method}`);
     }
 
+    if (panel === 'day') {
+      if (method === 'snapshot' || method === 'list' || method === '') {
+        const today = localDateKey(now);
+        const allLedger = readLedger(this.opts.dataDir, 80);
+        const todayLedger = allLedger.filter((e) => localDateKey(new Date(e.ts)) === today);
+        const todayTellable = [...this.state.tellable]
+          .filter((t) => localDateKey(new Date(t.at)) === today)
+          .reverse();
+        const recentTellable = [...this.state.tellable].reverse().slice(0, 20);
+        return {
+          ...this.panelSnapshot(now),
+          today,
+          todayLedger,
+          todayTellable,
+          recentTellable,
+        };
+      }
+      throw new Error(`一天时间轴页不认识这个方法：${method}`);
+    }
+
+    if (panel === 'wants') {
+      if (method === 'snapshot' || method === 'list' || method === '') {
+        return this.panelSnapshot(now);
+      }
+      throw new Error(`她惦记的页不认识这个方法：${method}`);
+    }
+
+    if (panel === 'relation') {
+      if (method === 'snapshot' || method === 'list' || method === '') {
+        return {
+          ...this.panelSnapshot(now),
+          bulletin: [...this.townBulletin],
+          myStalls: [...this.myStallsCache],
+          deals: [...this.myDealsCache],
+          unseenDeals: this.unseenDealsCount,
+        };
+      }
+      throw new Error(`你和它页不认识这个方法：${method}`);
+    }
+
     if (method === 'move') {
       await this.settleBeforeTool(now);
       const raw = Array.isArray(args) ? args[0] : args;
@@ -3037,6 +3412,11 @@ export class LifeWorld implements World {
           city: j.cityName,
           to: j.toName,
           staleSec: j.staleSec,
+          homeName: j.homeName,
+          restUntil: j.restUntil,
+          tripWork: j.tripWork,
+          partyWith: j.partyWith,
+          partyDays: j.partyDays,
         },
         town: {
           id: this.town.id,
@@ -3127,6 +3507,20 @@ export class LifeWorld implements World {
         pledges: s.pledges.map((x) => ({ ...x, overdue: false })),
         overdue: s.overdue.map((x) => ({ ...x, overdue: true })),
         visitedDays: s.visitedDays,
+        presence: this.state.presence.slice(-14),
+        skills: s.skills,
+        skillLabels: SKILL_DOMAIN_LABEL,
+        trained: s.trained,
+        gear: s.gear,
+        equipCatalog: EQUIP_CATALOG,
+        shift: s.shift,
+        solarTerm: s.solarTerm,
+        streetWindow: s.streetWindow,
+        freshVeg: s.freshVeg,
+        bulletin: [...this.townBulletin],
+        myStalls: [...this.myStallsCache],
+        deals: [...this.myDealsCache],
+        unseenDeals: this.unseenDealsCount,
         recovered: this.recovered,
         /*
          * 反馈用的那一份。

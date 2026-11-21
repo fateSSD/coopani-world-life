@@ -34,6 +34,14 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { type JobDef, findJob, certOf, CERTS, jobAllowedAt } from './jobs.ts';
+import {
+  SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, findCourse, findEquip,
+  rollWorkGrade, solarTermOf, streetWindowOf, marketCatalogOf, isLateNightQuiet, buildDreamSlice,
+  type SkillDomain, type SolarTermInfo, type StreetWindow, type MarketItem,
+} from './town-life.ts';
+
+export type { SkillDomain, SolarTermInfo, StreetWindow, MarketItem };
+export { SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, solarTermOf, streetWindowOf, rollWorkGrade };
 
 /* ------------------------------------------------------------------ */
 /* 类型                                                                */
@@ -376,6 +384,19 @@ export interface ActiveTask {
   mood?: { text: string; kind: 'good' | 'bad'; hours: number };
 }
 
+/** G 类轻载具/司机连续接单时段（§4.15）。 */
+export interface ShiftState {
+  jobId: string;
+  label: string;
+  vehicleId: string;
+  rentPaid: number;
+  startedAt: string;
+  minutes: number;
+  ordersDone: number;
+  ordersMissed: number;
+  earnedSoFar: number;
+}
+
 export interface LifeState {
   version: number;
   /** 上一次推进的时刻。衰减的起点，**必须是真实时刻**。 */
@@ -472,8 +493,20 @@ export interface LifeState {
   deferredCritical?: VitalKey[];
   /** 睡着期间见底归零的待发五维（醒来按 bottomed flush 级补发）。 */
   deferredBottomed?: VitalKey[];
-  /** 一次性事实事件事务性发件箱（推送失败保留重试，成功恰好移出）。 */
+  /** 一次性的结算通知发件箱（推送失败保留重试，成功恰好移出）。 */
   pendingNotices?: PendingNotice[];
+  /** 八大领域经验（0–100，三期 §4.10）。 */
+  skills?: Partial<Record<SkillDomain, number>>;
+  /** 各领域上过几次培训课（降低做砸风险，提高下限）。 */
+  trained?: Partial<Record<SkillDomain, number>>;
+  /** 已买断的工具与轻载具 id（如 oven/sewing/camera/computer/folding_bike/ebike）。 */
+  gear?: string[];
+  /** G 类连续接单跑单时段状态。 */
+  shift?: ShiftState | null;
+  /** 早市街买回来的带露水鲜蔬有效期（ISO）。 */
+  freshVegUntil?: string;
+  /** 最近一次向 `/town/join` 报到的本地日期（按天去重）。 */
+  lastJoinedTownAt?: string;
 }
 
 export interface PendingNotice {
@@ -720,6 +753,9 @@ export interface AdvanceExt {
   phase?: '' | 'home' | 'staying' | 'traveling';
   hotelTier?: '' | 'budget' | 'comfort' | 'view' | 'luxury';
   modeId?: string;
+  journeyCity?: string;
+  gradeRoll?: number;
+  dreamRoll?: number;
 }
 
 /** 她的行为表。除了 wake / cancel，每件事都要花一段真实时间，按分钟慢慢生效。 */
@@ -967,6 +1003,12 @@ export function freshState(now: Date = new Date()): LifeState {
     asleepFrom: '',
     asleepUntil: '',
     activity: null,
+    skills: {},
+    trained: {},
+    gear: [],
+    shift: null,
+    freshVegUntil: '',
+    lastJoinedTownAt: '',
   };
 }
 
@@ -1169,6 +1211,49 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     asleepFrom: normAsleepFrom(s, now),
     asleepUntil: normAsleepUntil(s, now),
     activity: normActivity(s.activity, now),
+    skills: normSkillMap(s.skills),
+    trained: normIntMap(s.trained),
+    gear: arr<unknown>(s.gear).filter((x): x is string => typeof x === 'string' && x.length > 0),
+    shift: normShift(s.shift),
+    freshVegUntil: typeof s.freshVegUntil === 'string' ? s.freshVegUntil : '',
+    lastJoinedTownAt: typeof s.lastJoinedTownAt === 'string' ? s.lastJoinedTownAt : '',
+  };
+}
+
+function normSkillMap(v: unknown): Partial<Record<SkillDomain, number>> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out: Partial<Record<SkillDomain, number>> = {};
+  for (const k of Object.keys(SKILL_DOMAIN_LABEL) as SkillDomain[]) {
+    const n = Number((v as Record<string, unknown>)[k]);
+    if (Number.isFinite(n) && n > 0) out[k] = clamp100(n);
+  }
+  return out;
+}
+
+function normIntMap(v: unknown): Partial<Record<SkillDomain, number>> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out: Partial<Record<SkillDomain, number>> = {};
+  for (const k of Object.keys(SKILL_DOMAIN_LABEL) as SkillDomain[]) {
+    const n = Math.round(Number((v as Record<string, unknown>)[k]));
+    if (Number.isFinite(n) && n > 0) out[k] = n;
+  }
+  return out;
+}
+
+function normShift(v: unknown): ShiftState | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const o = v as Partial<ShiftState>;
+  if (typeof o.jobId !== 'string' || !o.jobId || typeof o.startedAt !== 'string') return null;
+  return {
+    jobId: o.jobId,
+    label: String(o.label ?? o.jobId),
+    vehicleId: String(o.vehicleId ?? ''),
+    rentPaid: Math.max(0, Number(o.rentPaid) || 0),
+    startedAt: o.startedAt,
+    minutes: Math.max(1, Number(o.minutes) || 240),
+    ordersDone: Math.max(0, Math.round(Number(o.ordersDone) || 0)),
+    ordersMissed: Math.max(0, Math.round(Number(o.ordersMissed) || 0)),
+    earnedSoFar: Math.max(0, Math.round(Number(o.earnedSoFar) || 0)),
   };
 }
 
@@ -1296,6 +1381,9 @@ export interface CompletedTask {
   workEarned: number;
   stoppedEarly?: boolean;
   reason?: string;
+  gradeLabel?: string;
+  gradeText?: string;
+  shiftSummary?: string;
 }
 
 export interface AdvanceResult {
@@ -1485,20 +1573,72 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
         if (actTask.kind === 'work') {
           const doneMins = Math.max(0, (hi - aFrom) / 60_000);
           const ratio = Math.min(1, doneMins / Math.max(1, actTask.minutes));
-          const earned = outOfCash
-            ? Math.round((actTask.workPay ?? 0) * ratio * 0.6)
-            : Math.round(actTask.workPay ?? 0);
+          const def = findJob(actTask.id);
+          let earned = Math.round(actTask.workPay ?? 0);
+          let gradeLabel: string | undefined;
+          let gradeText: string | undefined;
+          let gradeKind: ReturnType<typeof rollWorkGrade>['grade'] | undefined;
+
+          if (outOfCash) {
+            earned = Math.round((actTask.workPay ?? 0) * ratio * 0.6);
+          } else if (def?.hasVariance) {
+            const exp = def.domain ? (state.skills[def.domain] ?? 0) : 0;
+            const trainedCnt = def.domain ? (state.trained[def.domain] ?? 0) : 0;
+            const endMs = endAt.getTime();
+            const hasFreshVeg = Boolean(state.freshVegUntil && Date.parse(state.freshVegUntil) > endMs);
+            const g = rollWorkGrade({
+              domainExp: exp,
+              trainedCount: trainedCnt,
+              energy: state.vitals.energy,
+              hasBadCond: state.conditions.length > 0,
+              hasHangover: state.conditions.some((c) => c.id === 'hangover'),
+              hasBadMood: state.moodlets.some((m) => m.kind === 'bad' && Date.parse(m.expiresAt) > endMs),
+              hasGoodMood: state.moodlets.some((m) => m.kind === 'good' && Date.parse(m.expiresAt) > endMs),
+              hasFreshVeg,
+              domain: def.domain,
+              jobName: actTask.label,
+              roll: ext?.gradeRoll,
+            });
+            gradeLabel = g.label;
+            gradeText = g.text;
+            gradeKind = g.grade;
+            earned = gradeKind === 'smash' && def.materialCost && def.materialCost > 0
+              ? 0
+              : Math.round((actTask.workPay ?? 0) * g.mult);
+          }
+
           if (earned > 0) {
             state.money.cash += earned;
             state.money.earned += earned;
           }
           if (!outOfCash) {
             state.job.days += 1;
+            if (def?.domain) {
+              const gain = def.tier === 'odd' ? 2 : def.tier === 'skilled' ? 3 : def.tier === 'cert' ? 3.5 : 4;
+              state.skills[def.domain] = Math.min(100, (state.skills[def.domain] ?? 0) + gain);
+            }
             if (PHYSICAL_JOB_IDS.has(actTask.id)) {
               state.fitness = Math.min(FITNESS_MAX, state.fitness + 1.5);
             }
           }
-          remember(state, `${actTask.label}，挣了 ${earned} 元。`, endAt);
+
+          let shiftSummary: string | undefined;
+          if (state.shift && state.shift.jobId === actTask.id) {
+            const baseOrders = gradeKind === 'brilliant' ? 11 : gradeKind === 'good' ? 9 : gradeKind === 'smash' ? 4 : gradeKind === 'passable' ? 5 : 7;
+            const ordersDone = outOfCash ? Math.max(1, Math.round(baseOrders * ratio)) : baseOrders;
+            const ordersMissed = gradeKind === 'smash' ? 2 : gradeKind === 'passable' ? 1 : 0;
+            shiftSummary = `这一班跑了 ${ordersDone} 单${ordersMissed > 0 ? `（超时 ${ordersMissed} 单）` : ''}，入账 ${earned} 元`;
+            state.shift = null;
+          }
+
+          const recText = shiftSummary
+            ? `${actTask.label}收工：${shiftSummary}。`
+            : gradeKind === 'smash' && def?.materialCost && def.materialCost > 0
+              ? `${actTask.label}（${gradeLabel}），客人退了货一分没挣到，前面垫的 ${def.materialCost} 元本钱没收回来。`
+              : gradeLabel
+                ? `${actTask.label}（${gradeLabel}），挣了 ${earned} 元。`
+                : `${actTask.label}，挣了 ${earned} 元。`;
+          remember(state, recText, endAt);
           completed.push({
             kind: 'work',
             id: actTask.id,
@@ -1506,6 +1646,9 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             costPaid: totalPaid,
             workEarned: earned,
             stoppedEarly: outOfCash,
+            gradeLabel,
+            gradeText,
+            shiftSummary,
           });
         } else {
           if (actTask.mood && !outOfCash) {
@@ -1712,6 +1855,22 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
         : `睡了一觉，${Math.round(w.hours)} 小时。`,
       now,
     );
+    if (w.reason !== 'hungry' && w.hours >= 4) {
+      const recentTail = state.tellable.slice(-2).some((t) => t.text.startsWith('半梦半醒') || t.text.startsWith('梦里'));
+      if (!recentTail) {
+        const overdueCount = state.pledges.filter((p) => Date.parse(p.dueAt) <= now.getTime()).length;
+        const dream = buildDreamSlice({
+          wants: state.wants,
+          pledges: state.pledges,
+          overdueCount,
+          recentTexts: state.tellable.slice(-6).map((t) => t.text),
+          journeyCity: ext?.journeyCity,
+          lowEnergy: before.energy < 25,
+          roll: ext?.dreamRoll,
+        });
+        if (dream) remember(state, dream, now);
+      }
+    }
   }
 
   /* 过期的情绪清掉。按真实时刻判 —— 见文件头。 */
@@ -1982,6 +2141,7 @@ export function applyAct(
         expiresAt: new Date(now.getTime() + 3 * 3_600_000).toISOString(),
       };
       remember(state, `「${cur.label}」干了 ${doneMins} 分钟就早退了，只拿到 ${workEarned} 元。`, now);
+      if (state.shift?.jobId === cur.id) state.shift = null;
     } else {
       mood = {
         id: `m-int-${now.getTime().toString(36)}`,
@@ -2154,6 +2314,29 @@ export function applyAct(
     });
   }
 
+  if (act.id === 'cook' && state.freshVegUntil && Date.parse(state.freshVegUntil) > now.getTime()) {
+    state.freshVegUntil = '';
+    state.moodlets = state.moodlets.filter((m) => m.source !== 'fresh-veg');
+    state.moodlets.push({
+      id: `m-fv-${now.getTime().toString(36)}`,
+      source: 'fresh-veg',
+      text: '早市带回的新鲜青菜下了锅，灶前一股清甜香气',
+      kind: 'good',
+      expiresAt: new Date(now.getTime() + 4 * 3_600_000).toISOString(),
+    });
+  }
+
+  if (isLateNightQuiet(now) && ['cook', 'instant', 'eat', 'study', 'read', 'chat', 'paint'].includes(act.id)) {
+    state.moodlets = state.moodlets.filter((m) => m.source !== 'late-night');
+    state.moodlets.push({
+      id: `m-ln-${now.getTime().toString(36)}`,
+      source: 'late-night',
+      text: '深夜巷子静悄悄的，屋里留了一盏灯，心里反而踏实',
+      kind: 'good',
+      expiresAt: new Date(now.getTime() + 4 * 3_600_000).toISOString(),
+    });
+  }
+
   const echoed = new Set(state.echoedWants ?? []);
   const actKeywords: Record<string, string[]> = {
     cook: ['做饭', '煮面', '下厨', '炒菜', '做菜'],
@@ -2319,6 +2502,19 @@ export function applyWork(
 
   const m = Math.max(1, minutes);
   const untilIso = new Date(now.getTime() + m * 60_000).toISOString();
+  state.shift = def?.shift
+    ? {
+        jobId: def.id,
+        label: def.name,
+        vehicleId: def.equip ?? '',
+        rentPaid: 0,
+        startedAt: now.toISOString(),
+        minutes: m,
+        ordersDone: 0,
+        ordersMissed: 0,
+        earnedSoFar: 0,
+      }
+    : null;
   state.activity = {
     kind: 'work',
     id: state.job.id || 'custom-work',
@@ -2383,6 +2579,11 @@ export function jobGate(
     const c = certOf(def.cert);
     return `「${def.name}」要${def.cert}，你手上没有。`
       + (c ? `考一张 ${c.price} 元，用 \`life_cert\`。` : '');
+  }
+  if (def.equip && !state.gear.includes(def.equip)) {
+    const eq = findEquip(def.equip);
+    return `「${def.name}」需要自备${eq ? eq.name : def.equip}`
+      + (eq ? `（${eq.price} 元），用 \`life_learn\` 购置。` : '。');
   }
   if (def.days && state.job.days < def.days) {
     return `「${def.name}」要出过 ${def.days} 天工，你才 ${state.job.days} 天。先干几天不要证的活。`;
@@ -2512,6 +2713,90 @@ export function applyCert(state: LifeState, name: string, now: Date, roll?: numb
   remember(state, `${c.name}没考过，${c.price} 元的报名费也没了。`, now);
   state.updatedAt = now.toISOString();
   return { ok: true, passed: false, chance, cert: c.name, paid: c.price, cash: state.money.cash };
+}
+
+/** 报名培训课或购置生活/跑单装备、轻载具的结果。 */
+export interface LearnResult {
+  ok: boolean;
+  reason?: string;
+  kind?: 'course' | 'equip';
+  name?: string;
+  domain?: SkillDomain;
+  paid: number;
+  cash: number;
+  domainExp?: number;
+}
+
+/**
+ * 报培训班涨手艺经验，或购置家用设备/轻载具（§4.5 / §4.10 / §4.15）。
+ */
+export function applyLearn(state: LifeState, what: string, now: Date): LearnResult {
+  if (isBusy(state, now)) {
+    return { ok: false, reason: busyRefusal(state, now, '上课/添置家伙'), paid: 0, cash: state.money.cash };
+  }
+  const q = String(what || '').trim();
+  const eq = q ? findEquip(q) : null;
+  if (eq) {
+    if (state.gear.includes(eq.id)) {
+      return { ok: false, reason: `「${eq.name}」你已经有了，不用重复买。`, paid: 0, cash: state.money.cash };
+    }
+    if (state.money.cash < eq.price) {
+      return { ok: false, reason: `「${eq.name}」要 ${eq.price} 元，你手上只有 ${Math.round(state.money.cash)} 元。`, paid: 0, cash: state.money.cash };
+    }
+    state.money.cash -= eq.price;
+    state.money.spent += eq.price;
+    state.gear.push(eq.id);
+    remember(state, `添置了「${eq.name}」，花了 ${eq.price} 元。`, now);
+    state.updatedAt = now.toISOString();
+    return { ok: true, kind: 'equip', name: eq.name, paid: eq.price, cash: state.money.cash };
+  }
+
+  const course = q ? findCourse(q) : null;
+  if (course) {
+    if (state.vitals.energy < course.energyCost) {
+      return {
+        ok: false,
+        reason: `精力只剩 ${Math.round(state.vitals.energy)}，去上「${course.name}」撑不住，先歇会儿。`,
+        paid: 0,
+        cash: state.money.cash,
+      };
+    }
+    if (state.money.cash < course.price) {
+      return {
+        ok: false,
+        reason: `「${course.name}」学费 ${course.price} 元，你手上只有 ${Math.round(state.money.cash)} 元。`,
+        paid: 0,
+        cash: state.money.cash,
+      };
+    }
+    state.money.cash -= course.price;
+    state.money.spent += course.price;
+    state.vitals.energy = clamp100(state.vitals.energy - course.energyCost);
+    state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + course.knowGain);
+    const nextExp = clamp100((state.skills[course.domain] ?? 0) + course.expGain);
+    state.skills[course.domain] = nextExp;
+    state.trained[course.domain] = (state.trained[course.domain] ?? 0) + 1;
+    remember(state, `去上了「${course.name}」，花了 ${course.price} 元，${SKILL_DOMAIN_LABEL[course.domain]}熟练度到了 ${Math.round(nextExp)}。`, now);
+    state.updatedAt = now.toISOString();
+    return {
+      ok: true,
+      kind: 'course',
+      name: course.name,
+      domain: course.domain,
+      paid: course.price,
+      cash: state.money.cash,
+      domainExp: Math.round(nextExp),
+    };
+  }
+
+  const coursesText = TRAIN_COURSES.map((c) => `${c.name}（${SKILL_DOMAIN_LABEL[c.domain]}/${c.price}元）`).join('、');
+  const equipsText = EQUIP_CATALOG.filter((e) => !state.gear.includes(e.id)).map((e) => `${e.name}（${e.price}元）`).join('、');
+  return {
+    ok: false,
+    reason: `没找到「${q || '（未填）'}」。可报培训：${coursesText}。${equipsText ? `可买装备/轻载具：${equipsText}。` : '清单里的装备你都已经齐了。'}`,
+    paid: 0,
+    cash: state.money.cash,
+  };
 }
 
 /**
@@ -2836,15 +3121,30 @@ export interface Snapshot {
   knowledge: number;
   /** 体质（0–100）。运动、体力活与旅途步行/骑行提升，加快精力恢复速度并抗疲劳。 */
   fitness: number;
+  /** 八大领域熟练度（0–100）。 */
+  skills: Partial<Record<SkillDomain, number>>;
+  /** 各领域培训次数。 */
+  trained: Partial<Record<SkillDomain, number>>;
+  /** 已购置的装备/轻载具 id。 */
+  gear: string[];
+  /** G 类轻载具当前跑单状态。 */
+  shift: ShiftState | null;
+  /** 当前二十四节气。 */
+  solarTerm: SolarTermInfo;
+  /** 当前芦花塘街巷公共时段（早市街/灶前巷/望水坡周末）。 */
+  streetWindow: StreetWindow | null;
+  /** 是否有早市新鲜蔬果下厨加成。 */
+  freshVeg: boolean;
 }
 
 export interface WeatherInfo {
   sky: '晴' | '多云' | '小雨' | '起风';
   seasonNote: string;
+  solarTerm?: string;
 }
 
 /**
- * 确定性本地天气与芦花塘物候（§6.6 ③）：不靠随机数，同一天同一个时段大家看到一样。
+ * 确定性本地天气与芦花塘物候（§6.6 ③ & §4.19 二十四节气）：同一天同一个时段大家看到一样。
  */
 export function weatherOf(city: string, now: Date): WeatherInfo {
   const key = `${city || '芦花塘'}-${localDateKey(now)}-${Math.floor(now.getHours() / 8)}`;
@@ -2852,15 +3152,11 @@ export function weatherOf(city: string, now: Date): WeatherInfo {
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
   const skies: WeatherInfo['sky'][] = ['晴', '多云', '晴', '小雨', '起风', '多云'];
   const sky = skies[h % skies.length];
-  const m = now.getMonth() + 1;
-  const seasonNote = (m >= 9 && m <= 11)
-    ? (sky === '起风' ? '秋天起风了，芦花塘边的芦花白了一片' : '秋凉，早晚风里带着水汽')
-    : (m >= 6 && m <= 8)
-      ? '夏水涨得高，傍晚塘边风凉'
-      : (m >= 3 && m <= 5)
-        ? '春水微暖，巷口早市摊子摆得早'
-        : '冬塘水静，屋里热汤最顶用';
-  return { sky, seasonNote };
+  const term = solarTermOf(now);
+  const seasonNote = sky === '小雨'
+    ? `${term.name}小雨，${term.note}`
+    : `${term.name} · ${term.note}`;
+  return { sky, seasonNote, solarTerm: term.name };
 }
 
 /** 他伸手给她留一样东西（一天最多一件，不进金额、不刷好感数值）。 */
@@ -2935,17 +3231,14 @@ export function readLedger(dataDir: string, limit = 30): LedgerEntry[] {
   }
 }
 
-/** 本地早市当日确定性物价表（三期买菜用，服务端市集不可达时的兜底）。 */
-export function marketPrices(now: Date): { item: string; price: number; unit: string }[] {
-  const d = localDateKey(now);
-  let h = 0;
-  for (let i = 0; i < d.length; i++) h = (h * 33 + d.charCodeAt(i)) >>> 0;
-  const delta = (offset: number) => ((h + offset) % 5) - 2; // -2 ~ +2
-  return [
-    { item: '青菜豆腐', price: Math.max(4, 7 + delta(1)), unit: '一份' },
-    { item: '番茄鸡蛋面料', price: Math.max(6, 10 + delta(2)), unit: '一份' },
-    { item: '小鱼干配菜', price: Math.max(8, 12 + delta(3)), unit: '一份' },
-  ];
+/** 本地街巷当日确定性物价表前 3 项（含早晚市折扣，兼顾老测试 3 项约定）。 */
+export function marketPrices(now: Date): MarketItem[] {
+  return marketCatalogOf(now, localDateKey(now)).slice(0, 3);
+}
+
+/** 完整街巷市集目录（含二十四节气时令货、灶前巷尾货与望水坡周末集）。 */
+export function fullMarketPrices(now: Date): MarketItem[] {
+  return marketCatalogOf(now, localDateKey(now));
 }
 
 export const VITAL_LABEL: Record<VitalKey, string> = {
@@ -3023,5 +3316,12 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     activity: activitySnap,
     knowledge: Math.round(state.knowledge),
     fitness: Math.round(state.fitness),
+    skills: state.skills,
+    trained: state.trained,
+    gear: state.gear,
+    shift: state.shift,
+    solarTerm: solarTermOf(now),
+    streetWindow: streetWindowOf(now),
+    freshVeg: Boolean(state.freshVegUntil && Date.parse(state.freshVegUntil) > now.getTime()),
   };
 }

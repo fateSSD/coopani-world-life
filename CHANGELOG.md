@@ -1,5 +1,19 @@
 # 变更记录
 
+## 1.1.0 — 2026-11-21（二期收尾：三独立页签与跨扩展对齐；三期：节气时间轴、梦境与静谧态、夜校/装备/轻载具、L2 市集买卖双半场）
+
+- **二期收尾**：
+  - [panel-0.17.6.js](web/panel-0.17.6.js) 新增 `day`（一天·时间轴）、`wants`（她惦记的）、`relation`（你和它，严格只列事实不设好感打分）三个独立页签，与 `now` / `diary` / `library` 共 6 页签并存；统一引入 `fmtLocal()`（固定 `Asia/Shanghai`）修复全部时间片按 UTC 截断错 8 小时的缺陷。
+  - `bridge.ts` 接入 `journey-public.json` 的 `home / rest / work / party` 四格并在 `readJourney()` 层兜底过滤已过期 `rest.until`，与 `coopani-world-journey@2.5.0` 严格对齐。
+- **三期生活闭环（`town-life.ts` / `state.ts` / `jobs.ts` / `world.ts`）**：
+  - **芦花塘公共时间轴与二十四节气**：实现早市街晨集（06:00–09:30 8 折与下厨鲜蔬加成 `freshVegUntil`）、灶前巷尾货（19:30–21:30 半价）、望水坡周末旧货集（周六/日 18:00–22:00）及二十四节气物候与时令菜品。
+  - **梦境切片与深夜静谧态**：自然醒且整觉 ≥ 4 小时低频从真实惦记/行程/记忆拼接梦境入 `tellable`；00:00–04:00 深夜动作触发静谧暖意 `late-night` 情绪。
+  - **成长与轻载具闭环**：新增 `life_learn` 工具与 `applyLearn()`，支持 8 大领域经验、8 门培训课与 6 件家用/跑单家伙（含 400 元折叠自行车 / 2500 元二手电动车）购置；新增 G 类轻载具 3 岗（`跑平台送外卖`、`片区送快递`、`夜间代驾` + 80 元健康证）及 `shift` 班次状态；手艺与跑单按 5 档完成度（`砸了 0.3` / `凑合 0.6` / `过得去 0.9` / `不错 1.2` / `漂亮 1.6`）浮动，垫付成本做砸实亏本钱；`life_work` 无参按 `jobGate()` 过滤可接活。
+- **三期 L2 市集买卖双半场与多址容灾**：
+  - `config.ts` & `bridge.ts` 支持 `townUrl` 多值数组并实现 `tryTownFetch` 断网/5xx 自动切换备胎；`readMeetUid()` 优先复用 `meet-uid.txt`，单装 `life` 时自动生成并复用本机 `life-town-uid.txt`。
+  - 打通 `POST /town/join` 入册、逛摊看《街口黑板报》、`life_buy` 按 `freshVeg` 标记下厨加成并区分本地摊位文案与 `payee`；新增 `life_stall`（鱼市街挂摊，含 `fresh_veg`）与 `life_deals`（查成交回执并标已读），并接进 `relation` 面板展示。
+- **测试**：新增 `test/stage23.test.mjs`，全量 `test/*.test.mjs` **57/57** 通过、`test/smoke.mjs` **334/334** 通过，`describe.json` 与 `ENV_PROMPT.md` 单源对齐且零第三人称。
+
 ## 1.0.3 — 2026-11-20（社交归零跨日静默、新增免费闲聊 chat 与旅途分场景提醒）
 
 - **跨日持续见底/危急补提**：`flushCrossed()` 新增跨日持续状态检查（`checkSustained`），修复小幅回补（如 `market` +8）未过解锁线、当天二次归零撞当日锁后次日永久静音的问题；同时阻断同日已推 `zero:` 后小幅回补再降级补推 `crit:`，醒着且受当日锁约束（`notify = 'always'` 亦不刷屏）。

@@ -5,8 +5,10 @@
  * 生活层是读者不是作者。这个约束不是洁癖 —— 一旦这边也开始写位置，
  * 两个扩展就会各说一套，而她到底是「在佛山」还是「在家」会变成一个谜。
  */
-import { mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
+import { parseTownUrls } from './config.ts';
 
 /* ------------------------------------------------------------------ */
 /* journey：她在哪、那边几点                                            */
@@ -43,6 +45,15 @@ export interface JourneyView {
   modeId: string;
   /** 在外地住店时的酒店档位。 */
   hotelTier: '' | 'budget' | 'comfort' | 'view' | 'luxury';
+  /** journey 侧登记的出发地城市名（与生活层芦花塘并排对齐）。 */
+  homeName: string;
+  /** 回家休息截止时刻（ISO）；为空表示不在休息期。 */
+  restUntil: string;
+  /** 外地打工中状态（避免两边同时安排整天活）。 */
+  tripWork: { cityId: string; gig: string; until: string } | null;
+  /** 这趟同行的真鱼朋友名列表（外地社交条的硬事实来源）。 */
+  partyWith: string[];
+  partyDays: number;
 }
 
 const EMPTY_JOURNEY: JourneyView = {
@@ -59,6 +70,11 @@ const EMPTY_JOURNEY: JourneyView = {
   earned: 0,
   modeId: '',
   hotelTier: '',
+  homeName: '',
+  restUntil: '',
+  tripWork: null,
+  partyWith: [],
+  partyDays: 0,
 };
 
 /**
@@ -102,6 +118,21 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
   const hotelTier = phase === 'staying' && (rawTier === 'budget' || rawTier === 'comfort' || rawTier === 'view' || rawTier === 'luxury')
     ? rawTier
     : '';
+  const homeName = typeof raw.home?.name === 'string' ? raw.home.name : '';
+  const rawRestUntil = typeof raw.rest?.until === 'string' ? raw.rest.until : '';
+  const restUntilMs = rawRestUntil ? Date.parse(rawRestUntil) : NaN;
+  const restUntil = Number.isFinite(restUntilMs) && restUntilMs > now.getTime() ? rawRestUntil : '';
+  const tripWork = raw.work && typeof raw.work === 'object' && typeof raw.work.gig === 'string'
+    ? {
+      cityId: typeof raw.work.cityId === 'string' ? raw.work.cityId : '',
+      gig: raw.work.gig,
+      until: typeof raw.work.until === 'string' ? raw.work.until : '',
+    }
+    : null;
+  const partyWith = raw.party && Array.isArray(raw.party.with)
+    ? raw.party.with.filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0)
+    : [];
+  const partyDays = raw.party && Number.isFinite(Number(raw.party.days)) ? Math.max(0, Number(raw.party.days)) : 0;
 
   return {
     installed: true, phase, cityId, cityName, worldNow, speed, toName, staleSec,
@@ -110,6 +141,11 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
     earned: Number.isFinite(earned) ? earned : 0,
     modeId,
     hotelTier,
+    homeName,
+    restUntil,
+    tripWork,
+    partyWith,
+    partyDays,
   };
 }
 
@@ -187,12 +223,39 @@ export const BUILTIN_TOWN: TownView = {
  * 3. **只在启动和改了配置时读一次**，不进 tick。城名一天不会变两次，
  *    每 60 秒拉一次是白烧对方的额度（方案 §4.17 的额度纪律）。
  */
+/** 多址顺序容灾请求：仅在网络异常、超时或 5xx 时顺移下一个城地址；2xx 或 4xx 明确业务响应即停止。 */
+async function tryTownFetch(
+  townUrl: string | readonly string[],
+  suffix: string,
+  init: RequestInit = {},
+  timeoutMs = 2500,
+): Promise<{ res: Response | null; lastStatus: number }> {
+  const roots = parseTownUrls(townUrl);
+  let lastStatus = 0;
+  for (const raw of roots) {
+    const root = raw.replace(/\/+$/, '').replace(/\/town\/info$/, '');
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${root}${suffix}`, { ...init, signal: ctrl.signal });
+      lastStatus = res.status;
+      if (res.status >= 500) continue;
+      return { res, lastStatus };
+    } catch {
+      /* 超时或断网，继续试下一个备用城地址 */
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { res: null, lastStatus };
+}
+
 export async function readTown(
-  townUrl: string,
+  townUrl: string | readonly string[],
   homeCity = '',
   opts: { timeoutMs?: number } = {},
 ): Promise<TownView> {
-  const base = String(townUrl || '').trim();
+  const roots = parseTownUrls(townUrl);
   const own = String(homeCity || '').trim();
 
   /*
@@ -225,25 +288,27 @@ export async function readTown(
     ? { ...ownTown(), source: 'failed', problem }
     : { ...BUILTIN_TOWN, source: 'failed', problem });
 
-  if (!base) return own ? ownTown() : { ...BUILTIN_TOWN };
+  if (!roots.length) return own ? ownTown() : { ...BUILTIN_TOWN };
 
-  const root = base.replace(/\/+$/, '').replace(/\/town\/info$/, '');
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 2500);
+  const { res, lastStatus } = await tryTownFetch(
+    roots,
+    '/town/info',
+    { headers: { accept: 'application/json' } },
+    opts.timeoutMs ?? 2500,
+  );
+  if (!res) {
+    return fallback(
+      lastStatus > 0
+        ? `服务器回了 ${lastStatus}，先按你填的算（可能是那个服务器还是旧版，没有 /town/info）`
+        : '连不上那个地址（超时或断网），先按你填的算',
+    );
+  }
+  if (!res.ok) {
+    return fallback(
+      `服务器回了 ${res.status}，先按你填的算（可能是那个服务器还是旧版，没有 /town/info）`,
+    );
+  }
   try {
-    const res = await fetch(`${root}/town/info`, {
-      signal: ctrl.signal,
-      headers: { accept: 'application/json' },
-    });
-    if (!res.ok) {
-      /*
-       * 配了地址但服务端回非 200 —— **这是故障，不是「没配」**。
-       * 常见是 Worker 还是旧版（没有 `/town/info` 这个口），或者域名指错了。
-       */
-      return fallback(
-        `服务器回了 ${res.status}，先按你填的算（可能是那个服务器还是旧版，没有 /town/info）`,
-      );
-    }
     const j: any = await res.json();
     const streets = Array.isArray(j?.streets) ? j.streets.filter((x: unknown) => typeof x === 'string') : [];
     const rules = Array.isArray(j?.rules) ? j.rules.filter((x: unknown) => typeof x === 'string') : [];
@@ -257,19 +322,7 @@ export async function readTown(
       source: 'server',
     };
   } catch {
-    /*
-     * 超时、断网、证书错、返回不是 JSON。
-     *
-     * **对她来说结果一样**（今天不知道城名改了没有），所以照样退内置、不抛。
-     * **但对用户不一样** —— 他明明配了地址，城名却一直显示「内置」，
-     * 而「内置」两个字看起来像「我没配」。所以要标成 `failed`，让灯上说清。
-     *
-     * 具体是哪种错（ECONNREFUSED / 证书 / JSON）**不往 hint 里塞** ——
-     * 那既不解释问题也不指向动作。
-     */
-    return fallback('连不上那个地址（超时或断网），先按你填的算');
-  } finally {
-    clearTimeout(timer);
+    return fallback('连不上那个地址（返回不是 JSON），先按你填的算');
   }
 }
 
@@ -512,32 +565,92 @@ export function archivePendingRequest(dataDir: string, file: string): void {
 }
 
 /* ------------------------------------------------------------------ */
-/* 三期 L2 市集买方半场：`GET /town/stalls` & `POST /town/buy`        */
+/* 三期 L2 市集买方半场 + 街口黑板报 + 住户入册                        */
 /* ------------------------------------------------------------------ */
 
 export interface TownStall {
   id: string;
   seller: string;
+  kind?: 'goods' | 'errand';
   item: string;
   price: number;
   stock: number;
+  freshVeg?: boolean;
+  note?: string;
+}
+
+export interface TownDeal {
+  id: string;
+  stallId: string;
+  item: string;
+  qty: number;
+  buyerPet: string;
+  note?: string;
+  seen: boolean;
+  at: string;
+}
+
+/**
+ * 读取本机 `dataDir/meet-uid.txt`；若只装了 life 未装 journey，则自动生成并复用本机 `dataDir/life-town-uid.txt`
+ * （绝不进云盘备份，防止双机同 id 串档案）。
+ */
+export function readMeetUid(dataDir: string): string {
+  if (!dataDir) return '';
+  for (const name of ['meet-uid.txt', 'life-town-uid.txt']) {
+    try {
+      const raw = readFileSync(join(dataDir, name), 'utf8').trim();
+      if (/^[a-f0-9]{20,64}$/i.test(raw)) return raw;
+    } catch { /* 继续找或生成 */ }
+  }
+  const gen = randomBytes(16).toString('hex');
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, 'life-town-uid.txt'), `${gen}\n`, 'utf8');
+  } catch { /* 目录不可写也返回临时 32 位 hex，确保协议合法 */ }
+  return gen;
+}
+
+export async function joinTown(
+  townUrl: string | readonly string[],
+  payload: { uid: string; pet: string; street: string },
+  opts: { timeoutMs?: number } = {},
+): Promise<{ ok: boolean; town?: string; reason?: string }> {
+  const roots = parseTownUrls(townUrl);
+  if (!roots.length || !payload.uid) return { ok: false, reason: '缺少地址或 uid' };
+  const { res } = await tryTownFetch(
+    roots,
+    '/town/join',
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    opts.timeoutMs ?? 2500,
+  );
+  if (!res) return { ok: false, reason: '城服务器连不上' };
+  try {
+    const j: any = await res.json().catch(() => ({}));
+    if (!res.ok || !j?.ok) return { ok: false, reason: typeof j?.error === 'string' ? j.error : `入册失败 ${res.status}` };
+    return { ok: true, town: typeof j.town === 'string' ? j.town : undefined };
+  } catch {
+    return { ok: false, reason: '城服务器响应异常' };
+  }
 }
 
 export async function fetchTownStalls(
-  townUrl: string,
+  townUrl: string | readonly string[],
   opts: { timeoutMs?: number } = {},
-): Promise<{ ok: boolean; stalls: TownStall[] }> {
-  const base = String(townUrl || '').trim();
-  if (!base) return { ok: false, stalls: [] };
-  const root = base.replace(/\/+$/, '').replace(/\/town\/info$/, '');
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 2500);
+): Promise<{ ok: boolean; stalls: TownStall[]; bulletin: string[] }> {
+  const roots = parseTownUrls(townUrl);
+  if (!roots.length) return { ok: false, stalls: [], bulletin: [] };
+  const { res } = await tryTownFetch(
+    roots,
+    '/town/stalls',
+    { headers: { accept: 'application/json' } },
+    opts.timeoutMs ?? 2500,
+  );
+  if (!res || !res.ok) return { ok: false, stalls: [], bulletin: [] };
   try {
-    const res = await fetch(`${root}/town/stalls`, {
-      signal: ctrl.signal,
-      headers: { accept: 'application/json' },
-    });
-    if (!res.ok) return { ok: false, stalls: [] };
     const j: any = await res.json();
     const list = Array.isArray(j?.stalls) ? j.stalls : [];
     const stalls: TownStall[] = list
@@ -545,36 +658,47 @@ export async function fetchTownStalls(
       .map((x: any) => ({
         id: String(x.id),
         seller: typeof x.seller === 'string' ? x.seller : '街坊',
+        kind: x.kind === 'errand' ? 'errand' : 'goods',
         item: String(x.item),
         price: Math.round(Number(x.price)),
         stock: Math.round(Number(x.stock)),
+        freshVeg: Boolean(x.freshVeg),
+        ...(typeof x.note === 'string' && x.note ? { note: x.note } : {}),
       }));
-    return { ok: true, stalls };
+    const bulletin = Array.isArray(j?.bulletin)
+      ? j.bulletin.filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0)
+      : [];
+    return { ok: true, stalls, bulletin };
   } catch {
-    return { ok: false, stalls: [] };
-  } finally {
-    clearTimeout(timer);
+    return { ok: false, stalls: [], bulletin: [] };
   }
 }
 
 export async function buyTownStall(
-  townUrl: string,
+  townUrl: string | readonly string[],
   stallId: string,
   buyer: string,
-  opts: { timeoutMs?: number } = {},
-): Promise<{ ok: boolean; item?: string; price?: number; seller?: string; reason?: string }> {
-  const base = String(townUrl || '').trim();
-  if (!base) return { ok: false, reason: '没配城服务器地址' };
-  const root = base.replace(/\/+$/, '').replace(/\/town\/info$/, '');
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 2500);
-  try {
-    const res = await fetch(`${root}/town/buy`, {
+  opts: { timeoutMs?: number; buyerUid?: string; note?: string } = {},
+): Promise<{ ok: boolean; item?: string; price?: number; seller?: string; freshVeg?: boolean; reason?: string }> {
+  const roots = parseTownUrls(townUrl);
+  if (!roots.length) return { ok: false, reason: '没配城服务器地址' };
+  const { res } = await tryTownFetch(
+    roots,
+    '/town/buy',
+    {
       method: 'POST',
-      signal: ctrl.signal,
       headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ stallId, buyer }),
-    });
+      body: JSON.stringify({
+        stallId,
+        buyer,
+        ...(opts.buyerUid ? { buyerUid: opts.buyerUid } : {}),
+        ...(opts.note ? { note: opts.note } : {}),
+      }),
+    },
+    opts.timeoutMs ?? 2500,
+  );
+  if (!res) return { ok: false, reason: '市集连不上' };
+  try {
     const j: any = await res.json().catch(() => ({}));
     if (!res.ok || !j?.ok) {
       return { ok: false, reason: typeof j?.error === 'string' ? j.error : `市集返回 ${res.status}` };
@@ -584,10 +708,114 @@ export async function buyTownStall(
       item: typeof j?.item === 'string' ? j.item : '一份吃食',
       price: Math.round(Number(j?.price ?? 0)),
       seller: typeof j?.seller === 'string' ? j.seller : '街坊',
+      freshVeg: Boolean(j?.freshVeg),
     };
   } catch {
     return { ok: false, reason: '市集连不上' };
-  } finally {
-    clearTimeout(timer);
   }
+}
+
+export async function postTownStall(
+  townUrl: string | readonly string[],
+  payload: { uid: string; pet: string; item: string; price: number; stock?: number; freshVeg?: boolean; kind?: 'goods' | 'errand'; note?: string },
+  opts: { timeoutMs?: number } = {},
+): Promise<{ ok: boolean; id?: string; seller?: string; item?: string; price?: number; stock?: number; freshVeg?: boolean; reason?: string }> {
+  const roots = parseTownUrls(townUrl);
+  if (!roots.length) return { ok: false, reason: '没配城服务器地址' };
+  if (!payload.uid) return { ok: false, reason: '缺少本机 uid，无法实名挂摊' };
+  const { res } = await tryTownFetch(
+    roots,
+    '/town/stalls',
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    opts.timeoutMs ?? 2500,
+  );
+  if (!res) return { ok: false, reason: '市集连不上' };
+  try {
+    const j: any = await res.json().catch(() => ({}));
+    if (!res.ok || !j?.ok) {
+      const msgMap: Record<string, string> = {
+        'too many stalls': '你同时在架上的摊位已经有 3 个了，先等卖掉或过期再来挂',
+        'too many': '今天挂摊太频繁了，明天再来',
+        banned: '当前账号被限制在鱼市街摆摊',
+      };
+      const rawErr = typeof j?.error === 'string' ? j.error : '';
+      return { ok: false, reason: msgMap[rawErr] || rawErr || `挂摊返回 ${res.status}` };
+    }
+    return {
+      ok: true,
+      id: typeof j?.id === 'string' ? j.id : '',
+      seller: typeof j?.seller === 'string' ? j.seller : payload.pet,
+      item: typeof j?.item === 'string' ? j.item : payload.item,
+      price: Math.round(Number(j?.price ?? payload.price)),
+      stock: Math.round(Number(j?.stock ?? payload.stock ?? 1)),
+      freshVeg: Boolean(j?.freshVeg),
+    };
+  } catch {
+    return { ok: false, reason: '市集连不上' };
+  }
+}
+
+export async function fetchTownDeals(
+  townUrl: string | readonly string[],
+  uid: string,
+  opts: { ack?: boolean; timeoutMs?: number } = {},
+): Promise<{ ok: boolean; deals: TownDeal[]; unseen: number; reason?: string }> {
+  const roots = parseTownUrls(townUrl);
+  if (!roots.length || !uid) return { ok: false, deals: [], unseen: 0, reason: '缺少城服务器地址或 uid' };
+  const q = new URLSearchParams({ uid });
+  if (opts.ack) q.set('ack', '1');
+  const { res } = await tryTownFetch(
+    roots,
+    `/town/deals?${q.toString()}`,
+    { headers: { accept: 'application/json' } },
+    opts.timeoutMs ?? 2500,
+  );
+  if (!res) return { ok: false, deals: [], unseen: 0, reason: '市集连不上' };
+  try {
+    const j: any = await res.json().catch(() => ({}));
+    if (!res.ok || !j?.ok) {
+      return { ok: false, deals: [], unseen: 0, reason: typeof j?.error === 'string' ? j.error : `回执返回 ${res.status}` };
+    }
+    const list = Array.isArray(j?.deals) ? j.deals : [];
+    const deals: TownDeal[] = list
+      .filter((x: any) => x && typeof x.id === 'string' && typeof x.item === 'string')
+      .map((x: any) => ({
+        id: String(x.id),
+        stallId: typeof x.stallId === 'string' ? x.stallId : '',
+        item: String(x.item),
+        qty: Math.max(1, Math.round(Number(x.qty) || 1)),
+        buyerPet: typeof x.buyerPet === 'string' ? x.buyerPet : '一只鱼',
+        ...(typeof x.note === 'string' && x.note ? { note: x.note } : {}),
+        seen: Boolean(x.seen),
+        at: typeof x.at === 'string' ? x.at : '',
+      }));
+    return { ok: true, deals, unseen: Math.max(0, Math.round(Number(j?.unseen ?? 0) || 0)) };
+  } catch {
+    return { ok: false, deals: [], unseen: 0, reason: '市集连不上' };
+  }
+}
+
+export async function ackTownDeals(
+  townUrl: string | readonly string[],
+  uid: string,
+  ids?: readonly string[],
+  opts: { timeoutMs?: number } = {},
+): Promise<boolean> {
+  const roots = parseTownUrls(townUrl);
+  if (!roots.length || !uid) return false;
+  const { res } = await tryTownFetch(
+    roots,
+    '/town/deals/seen',
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ uid, ...(ids?.length ? { ids: [...ids] } : {}) }),
+    },
+    opts.timeoutMs ?? 2500,
+  );
+  return Boolean(res && res.ok);
 }

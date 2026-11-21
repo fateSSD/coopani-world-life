@@ -205,6 +205,30 @@ const el = (tag, cls, text) => {
   return n;
 };
 
+/** 统一把 ISO 时刻格式化成芦花塘本机时区（Asia/Shanghai），避免 UTC+8 晚上显示成早 8 小时。 */
+function fmtLocal(iso, mode = 'mdhm') {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return String(iso);
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (k) => parts.find((p) => p.type === k)?.value || '';
+  const mmdd = `${get('month')}-${get('day')}`;
+  const hh = get('hour') === '24' ? '00' : get('hour');
+  const hm = `${hh}:${get('minute')}`;
+  if (mode === 'hm') return hm;
+  if (mode === 'md') return mmdd;
+  if (mode === 'full') return `${get('year')}-${mmdd} ${hm}`;
+  return `${mmdd} ${hm}`;
+}
+
 /**
  * 样式只注入一次。
  *
@@ -521,6 +545,33 @@ export default {
           const ft = typeof d.fitness === 'number' ? d.fitness : 25;
           jobCard.append(el('p', 'lf-muted',
             `${t(lang, 'fitness')}：${ft}　·　${t(lang, 'fitnessHint')}`));
+
+          const skills = d.skills || {};
+          const labels = d.skillLabels || {};
+          const skKeys = Object.keys(skills).filter((k) => Number(skills[k]) > 0);
+          if (skKeys.length) {
+            const skRow = el('div', 'lf-chips');
+            skRow.style.marginTop = '6px';
+            for (const k of skKeys) {
+              skRow.append(el('span', 'lf-chip', `${labels[k] || k} ${Math.round(Number(skills[k]))}`));
+            }
+            jobCard.append(skRow);
+          }
+          const gear = d.gear || [];
+          const eqCat = d.equipCatalog || [];
+          if (gear.length) {
+            const gNames = gear.map((id) => {
+              const hit = eqCat.find((e) => e.id === id);
+              return hit ? hit.name : id;
+            });
+            jobCard.append(el('p', 'lf-muted', `已备家伙：${gNames.join('、')}`));
+          }
+          if (d.shift) {
+            jobCard.append(el('p', 'lf-muted', `正在跑单班：${d.shift.label}（${d.shift.minutes}分钟）`));
+          }
+          if (d.freshVeg) {
+            jobCard.append(el('p', 'lf-muted', '菜篮状态：刚从早市带回鲜蔬，下厨更香'));
+          }
         };
 
         const drawWho = (d) => {
@@ -737,7 +788,9 @@ export default {
             d.town.source === 'server' ? 'server' : d.town.source === 'own' ? 'townOwn' : 'builtin');
           const bits = [];
           bits.push(`${d.dayPart} ${d.clock}`);
+          if (d.solarTerm && d.solarTerm.name) bits.push(d.solarTerm.name);
           if (d.weather && d.weather.sky) bits.push(d.weather.sky);
+          if (d.streetWindow && d.streetWindow.label) bits.push(`${d.streetWindow.place}${d.streetWindow.label}`);
           if (d.street) bits.push(d.street);
           sub.textContent = bits.join('　·　');
 
@@ -748,6 +801,17 @@ export default {
           } else if (d.journey.phase === 'traveling') {
             note.hidden = false;
             note.textContent = t(lang, 'onRoad', { to: d.journey.to || '?', from: d.journey.city || '?' });
+          } else if (d.journey.tripWork && d.journey.tripWork.gig) {
+            note.hidden = false;
+            note.textContent = `在当地打工补贴路费：${d.journey.tripWork.gig}`;
+          } else if (d.journey.restUntil) {
+            note.hidden = false;
+            note.textContent = `在落脚点休整中（约至 ${fmtLocal(d.journey.restUntil, 'mdhm')}）`;
+          }
+          if (d.bulletin && d.bulletin.length) {
+            note.hidden = false;
+            note.textContent = (note.textContent ? note.textContent + '　·　' : '')
+              + `街口黑板：${d.bulletin[0]}`;
           }
 
           if (d.recovered === 'bak') {
@@ -981,6 +1045,293 @@ export default {
         loop();
       },
     },
+    day: {
+      async mount(ctx) {
+        ensureStyle(ctx.root);
+        const app = el('div', 'lf');
+        ctx.root.append(app);
+
+        const head = el('div', 'lf-head');
+        const title = el('h1', null, '一天 · 时间轴');
+        const ver = el('span', 'lf-ver', '');
+        head.append(title, ver);
+        const sub = el('p', 'lf-sub', '读取中…');
+        const nowCard = el('div', 'lf-card');
+        const tlCard = el('div', 'lf-card');
+        const ledgerCard = el('div', 'lf-card');
+        const foot = el('div', 'lf-foot');
+        const reload = el('button', 'lf-btn', '刷新');
+        reload.type = 'button';
+        foot.append(reload);
+        app.append(head, sub, nowCard, tlCard, ledgerCard, foot);
+
+        const render = (d) => {
+          if (!d) return;
+          ver.textContent = d.version ? `· v${d.version}` : '';
+          const win = d.streetWindow ? ` · ${d.streetWindow.place}${d.streetWindow.label}` : '';
+          const term = d.solarTerm ? ` · ${d.solarTerm.name}` : '';
+          sub.textContent = `${d.today || ''} ${d.dayPart || ''} ${d.clock || ''}${term}${win}`;
+
+          nowCard.innerHTML = '';
+          nowCard.append(el('h3', null, '此刻状态'));
+          if (d.asleep) {
+            nowCard.append(el('p', 'lf-muted', `正在睡，预计还有 ${d.asleep.hoursLeft} 小时`));
+          } else if (d.activity) {
+            nowCard.append(el('p', 'lf-muted',
+              `正在「${d.activity.label}」，已过 ${Math.round((d.activity.progress || 0) * 100)}%，还剩 ${d.activity.minutesLeft} 分钟`));
+          } else {
+            nowCard.append(el('p', 'lf-muted', '这会儿空闲着。'));
+          }
+          if (d.weather && d.weather.seasonNote) {
+            nowCard.append(el('p', 'lf-note-line', `物候：${d.weather.sky || ''} · ${d.weather.seasonNote}`));
+          }
+
+          tlCard.innerHTML = '';
+          const list = (d.todayTellable && d.todayTellable.length) ? d.todayTellable : (d.recentTellable || []);
+          const tlTitle = (d.todayTellable && d.todayTellable.length) ? '今天经历的事' : '最近经历（今日尚无新记）';
+          tlCard.append(el('h3', null, tlTitle));
+          if (!list.length) {
+            tlCard.append(el('p', 'lf-muted', '暂无记录。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const it of list) {
+              const li = el('li');
+              li.append(document.createTextNode(it.text || ''));
+              li.append(el('span', 'id', fmtLocal(it.at, 'mdhm')));
+              ul.append(li);
+            }
+            tlCard.append(ul);
+          }
+
+          ledgerCard.innerHTML = '';
+          const lList = (d.todayLedger && d.todayLedger.length) ? d.todayLedger : (d.ledger || []);
+          const lTitle = (d.todayLedger && d.todayLedger.length) ? '今日流水' : '最近流水';
+          ledgerCard.append(el('h3', null, lTitle));
+          if (!lList.length) {
+            ledgerCard.append(el('p', 'lf-muted', '暂无收支流水。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const e of lList) {
+              const li = el('li');
+              const sign = e.kind === 'income' ? '+' : '-';
+              li.append(document.createTextNode(`${sign}${e.amount}　${e.note || e.source}${e.payee ? `（${e.payee}）` : ''}`));
+              if (e.ts) li.append(el('span', 'id', fmtLocal(e.ts, 'mdhm')));
+              ul.append(li);
+            }
+            ledgerCard.append(ul);
+          }
+        };
+
+        const load = () => ctx.invoke('snapshot').then(render).catch(() => {});
+        reload.addEventListener('click', load);
+        await load();
+        const loop = () => ctx.timeout(() => load().finally(loop), 20_000);
+        loop();
+      },
+    },
+    wants: {
+      async mount(ctx) {
+        ensureStyle(ctx.root);
+        const app = el('div', 'lf');
+        ctx.root.append(app);
+
+        const head = el('div', 'lf-head');
+        head.append(el('h1', null, '她惦记的'));
+        const sub = el('p', 'lf-sub', '常态、留意、想买的东西与想去的地方、悬着的事与说好了的约定。');
+        const goalsCard = el('div', 'lf-card');
+        const cols = el('div', 'lf-cols');
+        const habitsCard = el('div', 'lf-card');
+        const watchesCard = el('div', 'lf-card');
+        const buyCard = el('div', 'lf-card');
+        const placeCard = el('div', 'lf-card');
+        const pendCard = el('div', 'lf-card');
+        const pledgeCard = el('div', 'lf-card');
+        cols.append(habitsCard, watchesCard, buyCard, placeCard, pendCard, pledgeCard);
+        app.append(head, sub, goalsCard, cols);
+
+        const drawSec = (card, title, items, fmt) => {
+          card.innerHTML = '';
+          card.append(el('h3', null, title));
+          if (!items || !items.length) {
+            card.append(el('p', 'lf-muted', '暂无。'));
+            return;
+          }
+          const ul = el('ul', 'lf-list');
+          for (const it of items) {
+            const li = el('li');
+            li.append(document.createTextNode(fmt(it)));
+            if (it.id) li.append(el('span', 'id', it.id));
+            ul.append(li);
+          }
+          card.append(ul);
+        };
+
+        const render = (d) => {
+          if (!d) return;
+          goalsCard.innerHTML = '';
+          goalsCard.append(el('h3', null, '个人目标'));
+          const gs = d.goals || [];
+          if (!gs.length) {
+            goalsCard.append(el('p', 'lf-muted', '暂未定下目标。'));
+          } else {
+            for (const g of gs) {
+              const row = el('div', 'lf-goal');
+              const top = el('div', 'top');
+              top.append(el('span', null, g.what || ''));
+              top.append(el('span', 'left', g.done ? '已达成' : (g.left > 0 ? `还差 ${g.left}` : '钱够了')));
+              const track = el('div', 'track');
+              const fill = el('div', 'fill');
+              fill.style.width = Math.max(1, Math.min(100, Math.round((g.ratio || 0) * 100))) + '%';
+              if (g.done || g.left <= 0) fill.style.background = '#2f855a';
+              track.append(fill);
+              row.append(top, track);
+              goalsCard.append(row);
+            }
+          }
+          const whenLabel = { morning: '早上', noon: '中午', afternoon: '下午', evening: '傍晚', night: '夜里' };
+          drawSec(habitsCard, '常态规律', d.habits, (h) => `${whenLabel[h.when] || ''}　${h.what}`);
+          drawSec(watchesCard, '在留意的事', d.watches, (w) => w.what);
+          const wantsAll = d.wants || [];
+          drawSec(buyCard, '想买 / 想办', wantsAll.filter((w) => w.kind !== 'place'),
+            (w) => `${w.what}${w.scale === 'big' ? '（得攒）' : ''}`);
+          drawSec(placeCard, '想去的地方', wantsAll.filter((w) => w.kind === 'place'), (w) => w.what);
+          drawSec(pendCard, '悬着未决', d.pending,
+            (p) => `${p.what}（卡在${p.blockedLabel || p.blocked}${p.cost ? ` ${p.cost}元` : ''}）`);
+          const pls = [...(d.overdue || []), ...(d.pledges || [])];
+          drawSec(pledgeCard, '说好了的事', pls,
+            (p) => `${p.overdue ? '[已到期] ' : ''}${p.what}${p.to ? ` · 对${p.to}` : ''}`);
+        };
+
+        const load = () => ctx.invoke('snapshot').then(render).catch(() => {});
+        await load();
+        const loop = () => ctx.timeout(() => load().finally(loop), 25_000);
+        loop();
+      },
+    },
+    relation: {
+      async mount(ctx) {
+        ensureStyle(ctx.root);
+        const app = el('div', 'lf');
+        ctx.root.append(app);
+
+        const head = el('div', 'lf-head');
+        head.append(el('h1', null, '你和它'));
+        const sub = el('p', 'lf-sub', '只记来过几次、留下过什么物件、两边的家与街口消息；不做任何好感打分。');
+        const cols = el('div', 'lf-cols');
+        const visitsCard = el('div', 'lf-card');
+        const giftsCard = el('div', 'lf-card');
+        const bridgeCard = el('div', 'lf-card');
+        const boardCard = el('div', 'lf-card');
+        const stallsCard = el('div', 'lf-card');
+        const dealsCard = el('div', 'lf-card');
+        cols.append(visitsCard, giftsCard, bridgeCard, boardCard, stallsCard, dealsCard);
+        app.append(head, sub, cols);
+
+        const render = (d) => {
+          if (!d) return;
+          visitsCard.innerHTML = '';
+          visitsCard.append(el('h3', null, '最近陪伴'));
+          visitsCard.append(el('p', 'lf-muted',
+            d.visitedDays > 0 ? `近 7 天你来过 ${d.visitedDays} 天` : '近 7 天暂无来访记录'));
+          const pr = d.presence || [];
+          if (pr.length) {
+            const box = el('div', 'lf-chips');
+            for (const day of pr.slice().reverse()) box.append(el('span', 'lf-chip', day));
+            visitsCard.append(box);
+          }
+
+          giftsCard.innerHTML = '';
+          giftsCard.append(el('h3', null, '留下的小物件'));
+          const gs = d.gifts || [];
+          if (!gs.length) {
+            giftsCard.append(el('p', 'lf-muted', '还没有收到物件。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const g of gs.slice().reverse()) {
+              const li = el('li');
+              li.append(document.createTextNode(`${g.what}（${g.from || '他'}）`));
+              if (g.at) li.append(el('span', 'id', fmtLocal(g.at, 'md')));
+              ul.append(li);
+            }
+            giftsCard.append(ul);
+          }
+
+          bridgeCard.innerHTML = '';
+          bridgeCard.append(el('h3', null, '生活 × 旅行对齐'));
+          const j = d.journey || {};
+          if (!j.installed) {
+            bridgeCard.append(el('p', 'lf-muted', '未安装旅行扩展。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            const rows = [
+              `常住母港：${j.homeName || d.town?.name || '芦花塘'}`,
+              `旅行状态：${j.phase || 'home'}${j.city ? `（${j.city}）` : ''}`,
+              j.tripWork ? `旅途打工：${j.tripWork.gig}` : '',
+              j.restUntil ? `旅途休整至：${fmtLocal(j.restUntil, 'mdhm')}` : '',
+              (j.partyWith && j.partyWith.length) ? `当前结伴同行（已 ${j.partyDays || 0} 天）：${j.partyWith.join('、')}` : '',
+            ].filter(Boolean);
+            for (const text of rows) {
+              const li = el('li');
+              li.textContent = text;
+              ul.append(li);
+            }
+            bridgeCard.append(ul);
+          }
+
+          boardCard.innerHTML = '';
+          boardCard.append(el('h3', null, '《街口黑板报》'));
+          const bd = d.bulletin || [];
+          if (!bd.length) {
+            boardCard.append(el('p', 'lf-muted', '黑板报这会儿还是空的（连同城服务器后会同步）。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const line of bd) {
+              const li = el('li');
+              li.textContent = line;
+              ul.append(li);
+            }
+            boardCard.append(ul);
+          }
+
+          stallsCard.innerHTML = '';
+          stallsCard.append(el('h3', null, '我在鱼市街的摊位'));
+          const ms = d.myStalls || [];
+          if (!ms.length) {
+            stallsCard.append(el('p', 'lf-muted', '这会儿鱼市街还没有你挂着的摊子。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const st of ms) {
+              const li = el('li');
+              li.textContent = `${st.item} · ${st.price}元（剩 ${st.stock} 份${st.freshVeg ? ' · 鲜蔬' : ''}）`;
+              ul.append(li);
+            }
+            stallsCard.append(ul);
+          }
+
+          dealsCard.innerHTML = '';
+          const un = Number(d.unseenDeals || 0);
+          dealsCard.append(el('h3', null, un > 0 ? `鱼市街成交回执（未读 ${un}）` : '鱼市街成交回执'));
+          const ds = d.deals || [];
+          if (!ds.length) {
+            dealsCard.append(el('p', 'lf-muted', '最近没有成交回执。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const dl of ds) {
+              const li = el('li');
+              li.append(document.createTextNode(`${dl.seen ? '' : '[新] '}${dl.buyerPet} 买走 ${dl.qty} 份「${dl.item}」`));
+              if (dl.at) li.append(el('span', 'id', fmtLocal(dl.at, 'mdhm')));
+              ul.append(li);
+            }
+            dealsCard.append(ul);
+          }
+        };
+
+        const load = () => ctx.invoke('snapshot').then(render).catch(() => {});
+        await load();
+        const loop = () => ctx.timeout(() => load().finally(loop), 30_000);
+        loop();
+      },
+    },
     diary: {
       async mount(ctx) {
         ensureStyle(ctx.root);
@@ -1069,7 +1420,7 @@ export default {
             for (const e of ledger) {
               const li = el('li');
               const sign = e.kind === 'income' ? '+' : '-';
-              const day = e.ts ? String(e.ts).slice(5, 10) : '';
+              const day = e.ts ? fmtLocal(e.ts, 'md') : '';
               li.append(document.createTextNode(`${sign}${e.amount}　${e.note || e.source}${e.payee ? `（${e.payee}）` : ''}`));
               if (day) li.append(el('span', 'id', day));
               ul.append(li);
@@ -1086,7 +1437,7 @@ export default {
             const ul = el('ul', 'lf-list');
             for (const it of tells) {
               const li = el('li');
-              const day = it.at ? String(it.at).slice(5, 10) : '';
+              const day = it.at ? fmtLocal(it.at, 'md') : '';
               li.append(document.createTextNode(it.text || ''));
               if (day) li.append(el('span', 'id', day));
               ul.append(li);
