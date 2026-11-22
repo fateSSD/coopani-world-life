@@ -170,7 +170,7 @@ test('持续危急（< 15 且 > 0）跨日后同样补发一次 crit 提醒', as
   }
 });
 
-test('在外旅途（staying）触发社交提醒时推荐 chat/meet，不提芦花塘早市/望水坡', async () => {
+test('在外旅途（staying）触发社交提醒时推荐 chat/meet，不提家里早市/滨河', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'life-soc-rec-5-'));
   const nowDate = new Date(2026, 10, 20, 10, 0, 0);
   writeFileSync(join(dir, 'journey-public.json'), JSON.stringify({
@@ -194,7 +194,7 @@ test('在外旅途（staying）触发社交提醒时推荐 chat/meet，不提芦
     assert.match(lows[0].text, /chat/);
     assert.match(lows[0].text, /meet/);
     assert.match(lows[0].text, /在嘉峪关/);
-    assert.doesNotMatch(lows[0].text, /早市|望水坡/);
+    assert.doesNotMatch(lows[0].text, /早市|滨河|望水坡/);
   } finally {
     await world.stop();
     cleanupDir(dir);

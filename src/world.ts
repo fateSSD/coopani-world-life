@@ -294,7 +294,9 @@ export class LifeWorld implements World {
     const today = localDateKey(now);
     const uid = readMeetUid(this.opts.dataDir);
     if (this.state.lastJoinedTownAt !== today && uid) {
-      const street = this.state.street || this.town.streets[0] || '';
+      const validStreet = this.state.street
+        && (!this.town.streets.length || this.town.streets.includes(this.state.street));
+      const street = validStreet ? this.state.street : (this.town.streets[0] || '');
       try {
         const res = await joinTown(this.cfg.townUrl, { uid, pet: this.opts.botName || 'fish', street });
         if (generation !== this.stateGeneration) return;
@@ -1312,8 +1314,9 @@ export class LifeWorld implements World {
           + '心里也顺；吃一顿普通的回 30（15 元），不饿了，也就那样；实在没钱就随便吃点，回 15，'
           + `不饿了，但心里不痛快。手头宽就吃好的，紧才往下走一档。${tail}`;
       case 'energy':
-        return `精力 ${v}，${left}那时候你连抬手都嫌沉，坐着都想往下出溜。睡一觉每小时回 10，`
-          + '睡满八小时回 80，不花钱 —— 洗、玩、见人都要再扣精力，只有睡是往上走的。'
+        return `精力 ${v}，${left}那时候你连抬手都嫌沉，坐着都想往下出溜。`
+          + '实在缓不过来可以先坐着歇会儿（rest，20 分钟回 5，不花钱）或午睡小憩（nap，60 分钟回 18）；'
+          + '要彻底歇够就睡一觉（sleep，每小时回 10，睡满八小时回 80，不花钱）—— 洗、玩、见人都要再扣精力，只有歇着和睡是往上走的。'
           + `${tail}`;
       case 'clean':
         return `清爽 ${v}，${left}那时候身上发黏，自己都嫌弃自己。洗个澡回 55，不花钱，`
@@ -1339,7 +1342,7 @@ export class LifeWorld implements World {
         }
         return `社交 ${v}，${left}那时候会觉得屋里太静，安静得能听见自己喘气。`
           + '跟人说说话（meet）回 31（45 分钟，30 元，花 5 点精力）；不想花钱就跟人闲聊几句（chat，20 分钟回 18），'
-          + `或者逛早市集市（market，回 8）、望水坡（pond，回 4）—— 抽空说两句话就缓过来了。${tail}`;
+          + `或者逛早市集市（market，回 8）、去滨河散步看黄河（pond，回 4）—— 抽空说两句话就缓过来了。${tail}`;
       }
     }
   }
@@ -1477,7 +1480,7 @@ export class LifeWorld implements World {
         '开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。'
         + '吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；'
         + '饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；'
-        + '休/护/动：sleep(8h) nap(60m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m)；'
+        + '休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m)；'
         + '闲/学/社：study(60m/涨见识) play(60m/22元) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；'
         + '控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。',
       parameters: {
@@ -1488,7 +1491,7 @@ export class LifeWorld implements World {
           kind: {
             type: 'string',
             enum: Object.keys(ACTS),
-            description: '动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/wash/spa/sunbathe/tidy/workout/'
+            description: '动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/'
               + 'study/play/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。',
           },
         },
@@ -2209,7 +2212,7 @@ export class LifeWorld implements World {
     return {
       name: 'life_buy',
       description:
-        '去芦花塘早市街、灶前巷或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来）。',
+        '去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -2326,7 +2329,7 @@ export class LifeWorld implements World {
     return {
       name: 'life_stall',
       description:
-        '去芦花塘鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。'
+        '去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。'
         + '价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成。',
       parameters: {
         type: 'object',
@@ -3070,9 +3073,9 @@ export class LifeWorld implements World {
           { name: 'life.tellable', description: '还没说出去的生活片段。' },
           { name: 'life.diary', description: '今天生活日记写了没（与旅行扩展分流）。' },
           { name: 'life.library', description: '四分类素材库与留影策略摘要。' },
-          { name: 'life.weather', description: '当前天气、二十四节气与芦花塘开市时段。' },
+          { name: 'life.weather', description: '当前天气、二十四节气与兰州开市时段。' },
           { name: 'life.skills', description: '八大领域手艺熟练度与已配设备/载具。' },
-          { name: 'life.bulletin', description: '芦花塘《街口黑板报》最近动态。' },
+          { name: 'life.bulletin', description: '兰州《街口黑板报》最近动态。' },
         ],
       }],
       storage: [

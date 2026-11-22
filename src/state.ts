@@ -840,6 +840,9 @@ export const ACTS: Record<string, ActKind> = {
     mood: { text: '眯了一小会儿，脑子轻快了些', kind: 'good', hours: 2 },
     scene: '家里沙发或床边', outfitHint: '居家服', props: '薄毯',
   }),
+  rest: mkAct('rest', '坐着歇会儿', 20, 0, { energy: 5, food: -1.2, clean: -0.9, fun: -0.9, social: -0.6 }, {
+    scene: '椅边或路边长椅', outfitHint: '当前穿着',
+  }),
   wash: mkAct('wash', '洗澡', 30, 0, { clean: 55, energy: -4 }, {
     mood: { text: '身上清爽了', kind: 'good', hours: 3 },
     scene: '家里浴室', outfitHint: '浴袍或宽松睡衣',
@@ -848,9 +851,9 @@ export const ACTS: Record<string, ActKind> = {
     mood: { text: '泡完浑身松透了，贵是贵但真值', kind: 'good', hours: 4 },
     scene: '养生汤屋', outfitHint: '宽松浴服', props: '热毛巾与香薰',
   }),
-  sunbathe: mkAct('sunbathe', '塘边晒太阳', 40, 0, { energy: 6, fun: 14, food: -2 }, {
+  sunbathe: mkAct('sunbathe', '河边晒太阳', 40, 0, { energy: 6, fun: 14, food: -2 }, {
     mood: { text: '晒得暖洋洋的，什么都不想管', kind: 'good', hours: 3 },
-    scene: '芦花塘木栈道', outfitHint: '休闲外套',
+    scene: '滨河木栈道', outfitHint: '休闲外套',
   }),
   tidy: mkAct('tidy', '收拾屋子', 45, 0, { clean: 27, energy: -7, fun: -2 }, {
     mood: { text: '屋里整整齐齐，看着顺眼', kind: 'good', hours: 3 },
@@ -878,13 +881,13 @@ export const ACTS: Record<string, ActKind> = {
     mood: { text: '唱爽了，嗓子有点哑但心情极好', kind: 'good', hours: 4 },
     scene: 'KTV 包厢', outfitHint: '轻松外出装', props: '麦克风与果盘',
   }),
-  picnic: mkAct('picnic', '塘边野餐', 90, 36, { food: 36, fun: 27, social: 20, clean: -5 }, {
+  picnic: mkAct('picnic', '河边野餐', 90, 36, { food: 36, fun: 27, social: 20, clean: -5 }, {
     mood: { text: '吹着风在草地上吃东西，特别自在', kind: 'good', hours: 4 },
-    scene: '塘边草坪', outfitHint: '轻便春装', props: '野餐垫与点心盒',
+    scene: '河边草坪', outfitHint: '轻便春装', props: '野餐垫与点心盒',
   }),
   market: mkAct('market', '逛早市集市', 45, 0, { fun: 14, social: 8, clean: -4, energy: -4 }, {
     mood: { text: '集市上烟火气很足，逛着挺有意思', kind: 'good', hours: 3 },
-    scene: '早市街集市', outfitHint: '日常便装', props: '帆布袋',
+    scene: '南滨河路早市', outfitHint: '日常便装', props: '帆布袋',
   }),
   drink: mkAct('drink', '喝两口小酒', 60, 28, { fun: 27, social: 9, energy: -9 }, {
     mood: { text: '微醺，脑子轻了一点', kind: 'good', hours: 2 },
@@ -913,15 +916,15 @@ export const ACTS: Record<string, ActKind> = {
   paint: mkAct('paint', '写生画画', 90, 0, { fun: 34, energy: -5, clean: -4 }, {
     know: 2,
     mood: { text: '画完一张，心里静了下来', kind: 'good', hours: 3 },
-    scene: '望水坡长椅', outfitHint: '耐脏帆布围裙与便装', props: '画板与水彩笔',
+    scene: '白塔山长椅', outfitHint: '耐脏帆布围裙与便装', props: '画板与水彩笔',
   }),
   workout: mkAct('workout', '跑步锻炼', 45, 0, { fun: 16, energy: -10, clean: -11, food: -5 }, {
     mood: { text: '出了一身汗，整个人通透了', kind: 'good', hours: 3 },
-    scene: '塘边跑道', outfitHint: '运动速干装与跑鞋', props: '毛巾与水壶',
+    scene: '滨河跑道', outfitHint: '运动速干装与跑鞋', props: '毛巾与水壶',
   }),
-  pond: mkAct('pond', '望水坡喂鸭看芦花', 40, 0, { fun: 14, social: 4, energy: -2 }, {
-    mood: { text: '风吹过芦花，看着鸭子游水挺解压', kind: 'good', hours: 3 },
-    scene: '望水坡水边', outfitHint: '休闲外套', props: '一点面包碎',
+  pond: mkAct('pond', '滨河散步看黄河', 40, 0, { fun: 14, social: 4, energy: -2 }, {
+    mood: { text: '风吹过河面，看着水车和水波挺解压', kind: 'good', hours: 3 },
+    scene: '南滨河路水边', outfitHint: '休闲外套', props: '一点面包碎',
   }),
 
   // ---- 控制指令（0 分钟） ----
@@ -2303,7 +2306,7 @@ export function applyAct(
     remember(state, quirk, now);
   }
 
-  if (act.id === 'cook' && weatherOf(state.street || '芦花塘', now).sky === '小雨') {
+  if (act.id === 'cook' && weatherOf(state.street || '兰州', now).sky === '小雨') {
     state.moodlets = state.moodlets.filter((m) => m.source !== 'weather-cook');
     state.moodlets.push({
       id: `m-wc-${now.getTime().toString(36)}`,
@@ -2346,6 +2349,7 @@ export function applyAct(
     wash: ['洗', '澡'],
     meet: ['见', '朋友', '聊天', '说话'],
     chat: ['聊天', '说话', '搭话', '朋友', '联系'],
+    rest: ['歇', '休息', '歇会儿', '喘口气'],
     drink: ['酒', '喝'],
     mall: ['逛街', '商场', '买衣服'],
     movie: ['电影', '看片'],
@@ -2570,7 +2574,7 @@ export function jobGate(
   if (!jobAllowedAt(def, phase)) {
     return phase === 'traveling'
       ? `还在路上呢，「${def.name}」没法在车上干。只有随身能接的活才行。`
-      : `你现在不在芦花塘家里，「${def.name}」只能在家那头接。`;
+      : `你现在不在兰州家里，「${def.name}」只能在家那头接。`;
   }
   if (state.conditions.some((c) => c.id === 'injury') && (def.tier === 'odd' || def.tier === 'skilled')) {
     return `身上还挂着扭伤，像「${def.name}」这种体力活暂时接不了，先歇一两天或干点轻省的。`;
@@ -3131,7 +3135,7 @@ export interface Snapshot {
   shift: ShiftState | null;
   /** 当前二十四节气。 */
   solarTerm: SolarTermInfo;
-  /** 当前芦花塘街巷公共时段（早市街/灶前巷/望水坡周末）。 */
+  /** 当前兰州街巷公共时段（南滨河路/张掖路/雁滩路周末）。 */
   streetWindow: StreetWindow | null;
   /** 是否有早市新鲜蔬果下厨加成。 */
   freshVeg: boolean;
@@ -3144,10 +3148,10 @@ export interface WeatherInfo {
 }
 
 /**
- * 确定性本地天气与芦花塘物候（§6.6 ③ & §4.19 二十四节气）：同一天同一个时段大家看到一样。
+ * 确定性本地天气与兰州物候（§6.6 ③ & §4.19 二十四节气）：同一天同一个时段大家看到一样。
  */
 export function weatherOf(city: string, now: Date): WeatherInfo {
-  const key = `${city || '芦花塘'}-${localDateKey(now)}-${Math.floor(now.getHours() / 8)}`;
+  const key = `${city || '兰州'}-${localDateKey(now)}-${Math.floor(now.getHours() / 8)}`;
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
   const skies: WeatherInfo['sky'][] = ['晴', '多云', '晴', '小雨', '起风', '多云'];
@@ -3236,7 +3240,7 @@ export function marketPrices(now: Date): MarketItem[] {
   return marketCatalogOf(now, localDateKey(now)).slice(0, 3);
 }
 
-/** 完整街巷市集目录（含二十四节气时令货、灶前巷尾货与望水坡周末集）。 */
+/** 完整街巷市集目录（含二十四节气时令货、张掖路尾货与雁滩路周末集）。 */
 export function fullMarketPrices(now: Date): MarketItem[] {
   return marketCatalogOf(now, localDateKey(now));
 }
@@ -3311,7 +3315,7 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     overdue: state.pledges.filter((p) => Date.parse(p.dueAt) <= now.getTime()),
     visitedDays: recentVisits(state, now, 7),
     gifts: state.gifts,
-    weather: weatherOf(state.street || '芦花塘', now),
+    weather: weatherOf(state.street || '兰州', now),
     asleep,
     activity: activitySnap,
     knowledge: Math.round(state.knowledge),

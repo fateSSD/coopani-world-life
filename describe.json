@@ -19,7 +19,7 @@
     },
     {
       "name": "life_act",
-      "description": "开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；休/护/动：sleep(8h) nap(60m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m)；闲/学/社：study(60m/涨见识) play(60m/22元) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。",
+      "description": "开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m)；闲/学/社：study(60m/涨见识) play(60m/22元) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -38,6 +38,7 @@
               "supper",
               "sleep",
               "nap",
+              "rest",
               "wash",
               "spa",
               "sunbathe",
@@ -60,7 +61,7 @@
               "wake",
               "cancel"
             ],
-            "description": "动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/wash/spa/sunbathe/tidy/workout/study/play/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。"
+            "description": "动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/study/play/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。"
           }
         }
       },
@@ -405,7 +406,7 @@
     },
     {
       "name": "life_buy",
-      "description": "去芦花塘早市街、灶前巷或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来）。",
+      "description": "去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来）。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -426,7 +427,7 @@
     },
     {
       "name": "life_stall",
-      "description": "去芦花塘鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成。",
+      "description": "去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -457,7 +458,7 @@
         "write"
       ],
       "summary": {
-        "zh": "在芦花塘鱼市街摆摊或查看自己在架摊位。",
+        "zh": "在兰州鱼市街摆摊或查看自己在架摊位。",
         "en": "Post or inspect your stall at town market."
       }
     },

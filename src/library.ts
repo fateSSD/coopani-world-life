@@ -229,10 +229,10 @@ export class ImageLibrary {
       {
         category: 'scenes',
         id: 'reed-pond',
-        name: '芦花塘木栈道',
-        aliases: ['望水坡水边', '望水坡长椅', '塘边草坪', '塘边跑道'],
-        tags: ['户外', '芦花塘'],
-        appearance: '水边木栈道与成片芦苇荡，水面泛着微光，远处有水鸟与游鸭',
+        name: '滨河木栈道',
+        aliases: ['南滨河路水边', '白塔山长椅', '河边草坪', '滨河跑道'],
+        tags: ['户外', '兰州'],
+        appearance: '黄河边木栈道与沿河绿道，水面泛着微光，远处可见铁桥与对岸山梁',
       },
       {
         category: 'scenes',

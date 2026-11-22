@@ -60,7 +60,7 @@ test('娱乐的提示必须给一条不花钱的路', () => {
 test('社交的提示必须给两条免费路', () => {
   const c = caseOf('social');
   assert.match(c, /早市|market/, '社交提示里没提逛早市');
-  assert.match(c, /望水坡|pond/, '社交提示里没提望水坡');
+  assert.match(c, /滨河|pond/, '社交提示里没提滨河散步');
   assert.match(c, /不花钱|不想花钱|不要钱/);
 });
 
@@ -84,4 +84,11 @@ test('提示里的数字和 ACTS 对得上（文案不许跑得比实现快）',
 
   assert.equal(actValue('wash', 'clean'), 55);
   assert.match(caseOf('clean'), /回 55/);
+
+  assert.equal(actValue('rest', 'energy'), 5);
+  assert.match(caseOf('energy'), /rest|坐着歇/);
+  assert.match(caseOf('energy'), /回 5/);
+  assert.equal(actValue('nap', 'energy'), 18);
+  assert.match(caseOf('energy'), /回 18/);
+  assert.match(caseOf('energy'), /回 80/);
 });

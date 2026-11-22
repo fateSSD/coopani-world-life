@@ -203,7 +203,7 @@ const el = (tag, cls, text) => {
   return n;
 };
 
-/** 统一把 ISO 时刻格式化成芦花塘本机时区（Asia/Shanghai），避免 UTC+8 晚上显示成早 8 小时。 */
+/** 统一把 ISO 时刻格式化成兰州本机时区（Asia/Shanghai），避免 UTC+8 晚上显示成早 8 小时。 */
 function fmtLocal(iso, mode = 'mdhm') {
   if (!iso) return '';
   const d = new Date(iso);
@@ -781,7 +781,7 @@ export default {
         const render = (d) => {
           if (!d) return;
           town.textContent = d.town.name || '—';
-          /* 三档：服务器的城 / 你自己填的城 / 内置的芦花塘。 */
+          /* 三档：服务器的城 / 你自己填的城 / 内置的兰州。 */
           tag.textContent = t(lang,
             d.town.source === 'server' ? 'server' : d.town.source === 'own' ? 'townOwn' : 'builtin');
           const bits = [];
@@ -793,6 +793,7 @@ export default {
           sub.textContent = bits.join('　·　');
 
           note.hidden = true;
+          note.textContent = '';
           if (!d.journey.installed) {
             note.hidden = false;
             note.textContent = t(lang, 'noJourney');
@@ -1262,7 +1263,7 @@ export default {
           } else {
             const ul = el('ul', 'lf-list');
             const rows = [
-              `常住母港：${j.homeName || d.town?.name || '芦花塘'}`,
+              `常住母港：${j.homeName || d.town?.name || '兰州'}`,
               `旅行状态：${j.phase || 'home'}${j.city ? `（${j.city}）` : ''}`,
               j.tripWork ? `旅途打工：${j.tripWork.gig}` : '',
               j.restUntil ? `旅途休整至：${fmtLocal(j.restUntil, 'mdhm')}` : '',
@@ -1365,7 +1366,7 @@ export default {
             return;
           }
           selectedDate = d.dateKey;
-          viewBox.append(el('h2', null, `${d.dateKey} · ${d.town || '芦花塘'}`));
+          viewBox.append(el('h2', null, `${d.dateKey} · ${d.town || '兰州'}`));
           const meta = [d.street, d.weather, d.summary].filter(Boolean).join('　·　');
           if (meta) viewBox.append(el('p', 'lf-dmeta', meta));
           for (const para of String(d.body || '').split(/\n{2,}/)) {
@@ -1397,7 +1398,7 @@ export default {
               btn.type = 'button';
               if (d.dateKey === active.dateKey) btn.dataset.on = '1';
               btn.append(el('span', 'd', d.dateKey));
-              btn.append(el('span', 'c', d.town || '芦花塘'));
+              btn.append(el('span', 'c', d.town || '兰州'));
               btn.addEventListener('click', () => {
                 for (const ch of listBox.children) if (ch.dataset) delete ch.dataset.on;
                 btn.dataset.on = '1';

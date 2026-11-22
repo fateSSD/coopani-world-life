@@ -59,7 +59,7 @@ export interface JobDef {
   equip?: string;
   /** 要出过多少天工才有资格。0 = 不要求。 */
   days?: number;
-  /** 在哪儿能干：只在芦花塘家这边、随身带着走、还是外地也能接的短活。 */
+  /** 在哪儿能干：只在兰州家这边、随身带着走、还是外地也能接的短活。 */
   place: JobPlace;
   /** 材料/出车前垫付成本（元）。干完再结，不够垫付接不了。 */
   materialCost?: number;

@@ -35,24 +35,12 @@ const storeFile = join(here, '.preview-town.json');
 
 /** 和服务端 `TOWN_DEFAULTS` / 客户端 `BUILTIN_TOWN` 同一份。 */
 const DEFAULTS = {
-  id: 'luhuatang',
-  name: '芦花塘',
-  origin: '这一片是活水，不深，长着芦苇。每年秋天芦花一开，整片塘白得像落了雪。'
-    + '塘边最早只有两户人家，一户在浅滩上种藕，一户磨豆腐。后来人多了，就有了街。'
-    + '住在这儿的人出门回来，望见那片白，就知道到家了。',
-  streets: ['早市街', '灶前巷', '望水坡'],
-  /*
-   * 四条城规。前三条各自对一条机制（§4.17）；**第一条不对应任何机制 ——
-   * 它对应这个世界的底线：住在这儿的都是鱼，鱼不吃鱼。**
-   *
-   * 2026-11-15 补：Mr.Q 一句「这是肥鱼们住的地方，你在这杀鱼卖鱼，这合理嘛」，
-   * 点破了整个方案里最难看的一处 —— 我原来的来历写着「一户卖鱼、一户腌鱼」，
-   * 街上还有一条「鱼市街」。**那是同类相食，而我从头到尾没觉得不对。**
-   *
-   * 这一条写进数据里不是摆设：以后加菜谱、加职业、加上游的时候，
-   * 它是一条能直接拿来判的规则。
-   */
-  rules: ['塘里的不吃塘里的', '货不过夜', '价自己定，别人说贵你就听着', '赊账记在心里，不记在账上'],
+  id: 'lanzhou',
+  name: '兰州',
+  origin: '黄河自西向东穿城，两岸黄土山梁夹着长长一溜灯火，铁桥横在河面上。'
+    + '早上出门沿着河边走两步就能吃碗热面，晚上不管走多远，望见河谷里的灯就知道到家了。',
+  streets: ['南滨河路', '张掖路', '皋兰路', '雁滩路'],
+  rules: ['河里的不吃河里的', '货不过夜', '价自己定，别人说贵你就听着', '赊账记在心里，不记在账上'],
 };
 
 function loadTown() {
@@ -87,7 +75,7 @@ const FAKE_LIVE = {
   at: new Date().toISOString(),
   pets: [
     { uid: 'a'.repeat(24), pet: '小银鱼', city: 'xian', doing: '在城墙上走', at: new Date().toISOString(), profile: { text: '', at: '', expired: false } },
-    { uid: 'b'.repeat(24), pet: '阿沅', city: 'luhuatang', doing: '灶前巷腌萝卜', at: new Date().toISOString(), profile: { text: '住灶前巷，做酱的', at: new Date().toISOString(), expired: false } },
+    { uid: 'b'.repeat(24), pet: '阿沅', city: 'lanzhou', doing: '南滨河路喝热茶', at: new Date().toISOString(), profile: { text: '住南滨河路，爱逛早市', at: new Date().toISOString(), expired: false } },
   ],
 };
 

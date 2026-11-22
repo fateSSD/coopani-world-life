@@ -69,7 +69,7 @@ function renderEntry(e: LifeDiaryEntry): string {
 function entryOf(meta: Record<string, string>, body: string, dateKey: string): LifeDiaryEntry {
   return {
     dateKey,
-    townName: meta.town || '芦花塘',
+    townName: meta.town || '兰州',
     street: meta.street || undefined,
     weather: meta.weather || undefined,
     summary: meta.summary || undefined,

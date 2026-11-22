@@ -14,7 +14,7 @@ export const LIFE_ID = 'life';
 
 export interface LifeConfigSection extends WorldSection {
   /**
-   * 她住在哪座城。留空 = 内置的芦花塘（早市街 / 灶前巷 / 望水坡）。
+   * 她住在哪座城。留空 = 内置的兰州（南滨河路 / 张掖路 / 皋兰路 / 雁滩路）。
    *
    * 2026-11-15 加：原来只有「服务器」和「内置」两条路，用户填不了自己想让她住的城。
    * 现在按 journey 那套来 —— **本机填的优先，服务器是覆盖**。
@@ -75,7 +75,7 @@ export function lifeConfigGroups(): ConfigGroup[] {
         'worlds.life.homeCity': {
           type: 'string',
           title: '她住的那座城',
-          description: '填一座真实城市（如北京、成都），日常出门与打工就落在这儿；留空则用内置的「芦花塘」。'
+          description: '填一座真实城市（如北京、成都），日常出门与打工就落在这儿；留空则用内置的「兰州」。'
             + '\n若下面填了服务器地址，这一栏会被服务器统一城名覆盖。',
           'x-hot': true,
         },

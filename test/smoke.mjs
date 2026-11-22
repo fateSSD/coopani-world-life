@@ -257,10 +257,10 @@ console.log('\n[12] 快照');
   ok(snap.low[0].key === 'food', '缺得最狠的排前面', snap.low[0].key);
   ok(snap.unsaid.length === 1, '还没说出去的那条在');
   /*
-   * 二十九件事：含三档吃、睡、洗、玩、见人、闲聊、做饭、小酌、新复合动作 + wake / cancel。
+   * 三十件事：含三档吃、睡、午睡、坐着歇会儿、洗、玩、见人、闲聊、做饭、小酌、新复合动作 + wake / cancel。
    * `wake` 不是可有可无的补充 —— 睡着时所有动作都被拦，没有它她就永远醒不过来。
    */
-  ok(Object.keys(ACTS).length === 29, '二十九件事（含 chat、复合动作、wake 与 cancel）', String(Object.keys(ACTS).length));
+  ok(Object.keys(ACTS).length === 30, '三十件事（含 rest、chat、复合动作、wake 与 cancel）', String(Object.keys(ACTS).length));
   ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
   ok(Boolean(ACTS.cancel) && ACTS.cancel.cost === 0, '「停下来」不花钱');
   ok(ACTS.feast.cost > ACTS.eat.cost && ACTS.eat.cost > ACTS.instant.cost, '三档饭价依次递减');
@@ -616,21 +616,21 @@ console.log('\n[31] 旅行花销从她账上扣（life-spend 条子）');
 console.log('\n[32] 本城：留空用内置，填了就用他填的');
 {
   const builtin = await readTown('');
-  ok(builtin.source === 'builtin' && builtin.name === '芦花塘', '什么都不填 → 芦花塘', builtin.name);
+  ok(builtin.source === 'builtin' && builtin.name === '兰州', '什么都不填 → 兰州', builtin.name);
 
   /* 2026-11-15 Mr.Q：「服务器空着就是在用户填的城市」—— 这条路以前根本不存在。 */
   const mine = await readTown('', '北京');
   ok(mine.name === '北京' && mine.source === 'own', '填了北京 → 就是北京', `${mine.name}/${mine.source}`);
   ok(mine.streets.length === 0, '街名不替他编', String(mine.streets.length));
 
-  /* 服务器不通时，退的是他填的那座城，不是芦花塘。 */
+  /* 服务器不通时，退的是他填的那座城，不是兰州。 */
   const dead = await readTown('https://example.invalid', '北京');
   ok(dead.source === 'failed', '服务器不通标成 failed', dead.source);
   ok(dead.name === '北京', '服务器挂了也还住在自己填的城里', dead.name);
 
-  /* 两个都空才落到芦花塘 —— 那是兜底，不是默认。 */
+  /* 两个都空才落到兰州 —— 那是兜底，不是默认。 */
   const none = await readTown('', '');
-  ok(none.name === '芦花塘', '什么都不填才是芦花塘');
+  ok(none.name === '兰州', '什么都不填才是兰州');
 }
 
 console.log('\n[33] 睡觉即时广播 / homeCity 热改 / 凌晨 nagged 本地日期');
@@ -1450,6 +1450,23 @@ console.log('\n[51] 社交动作减负（meet 45m / chat 20m免费）与社交�
   ok(sSpend.moodlets.some((m) => m.source === 'lonely'), '反哺前存在 lonely 情绪');
   applySpend(sSpend, [{ id: 'sp-soc-1', amount: 0, note: '和旅伴碰头', vitalsDelta: { social: 32 } }], new Date(t0.getTime() + 11 * 60_000));
   ok(sSpend.vitals.social >= 30 && !sSpend.moodlets.some((m) => m.source === 'lonely'), 'applySpend 补回社交 >=30 后清除 lonely 情绪');
+}
+
+console.log('\n[52] 短时坐着歇会儿（rest 20m / 0元 / +5 精力，照常扣其余四维、不白嫖好心情）');
+{
+  const t0 = new Date('2026-11-22T10:00:00Z');
+  ok(ACTS.rest.minutes === 20 && ACTS.rest.cost === 0 && ACTS.rest.gain.energy === 5, 'rest 为 20 分钟 0 元 +5 精力');
+  ok(ACTS.rest.gain.energy * 3 < ACTS.nap.gain.energy, '三次坐着歇会儿(60m/+15) 严格低于午睡小憩(60m/+18)');
+
+  const s = freshState(t0);
+  s.home.monthly = 0;
+  s.vitals = { food: 80, energy: 25, clean: 80, fun: 80, social: 80 };
+  const rRest = applyAct(s, 'rest', t0);
+  ok(rRest.ok && rRest.started && rRest.minutes === 20, '能开始坐着歇会儿');
+  advance(s, new Date(t0.getTime() + ACTS.rest.minutes * 60_000));
+  ok(near(s.vitals.energy, 30, 0.2) && s.money.cash === 3000, 'rest 20m 精力 25 → 30 且不花钱', `${s.vitals.energy}/${s.money.cash}`);
+  ok(s.vitals.food < 80 && s.vitals.clean < 80 && s.vitals.fun < 80 && s.vitals.social < 80, 'rest 期间其余四维照常消耗', JSON.stringify(s.vitals));
+  ok(!s.moodlets.some((m) => m.source === 'rest' && m.kind === 'good'), 'rest 不挂正向情绪（防 0 成本刷好心情）');
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

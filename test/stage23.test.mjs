@@ -168,7 +168,7 @@ test('三期成长与 G 类轻载具闭环：life_learn 培训/购车、装备�
 });
 
 test('三期节气时间轴 + 梦境切片 + 深夜静谧态', () => {
-  // 早市街晨集 07:30（8 折） vs 灶前巷 20:00（尾货半价） vs 周六望水坡 19:00（周末集）
+  // 南滨河路晨集 07:30（8 折） vs 张掖路 20:00（尾货半价） vs 周六雁滩路 19:00（周末集）
   const morning = new Date('2026-11-16T07:30:00.000+08:00');
   const nightClear = new Date('2026-11-16T20:00:00.000+08:00');
   const weekend = new Date('2026-11-21T19:00:00.000+08:00'); // 周六
@@ -177,7 +177,7 @@ test('三期节气时间轴 + 梦境切片 + 深夜静谧态', () => {
   const snapM = snapshot(s, morning);
   assert.equal(snapM.solarTerm.name, '立冬');
   assert.equal(snapM.streetWindow?.id, 'morning-market');
-  assert.match(weatherOf('芦花塘', morning).seasonNote, /立冬/);
+  assert.match(weatherOf('兰州', morning).seasonNote, /立冬/);
 
   const catM = fullMarketPrices(morning);
   const catN = fullMarketPrices(nightClear);
@@ -219,20 +219,20 @@ test('三期服务端多值容灾与 L2 报到/黑板报/带 uid 下单全链路
       const p = body ? JSON.parse(body) : {};
       if (req.url === '/town/info') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ town: 'luhuatang', name: '芦花塘', origin: '南水', streets: ['早市街', '灶前巷', '望水坡'], rules: [] }));
+        res.end(JSON.stringify({ town: 'lanzhou', name: '兰州', origin: '黄河穿城', streets: ['南滨河路', '张掖路', '皋兰路', '雁滩路'], rules: [] }));
         return;
       }
       if (req.url === '/town/join' && req.method === 'POST') {
         joinCalls.push(p);
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, town: '芦花塘', memberCount: 3 }));
+        res.end(JSON.stringify({ ok: true, town: '兰州', memberCount: 3 }));
         return;
       }
       if (req.url === '/town/stalls' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
           stalls: [{ id: 'st-9', seller: '阿青', item: '现烤桂花糕', price: 11, stock: 3, freshVeg: true }],
-          bulletin: ['大肥鱼昨天在灶前巷买了桂花糕', '望水坡今晚有人拎着吉他唱歌'],
+          bulletin: ['大肥鱼昨天在张掖路买了桂花糕', '雁滩路今晚有人拎着吉他唱歌'],
         }));
         return;
       }
@@ -362,8 +362,10 @@ test('1.3 & 1.4 & 时区：晨集番茄鸡蛋面触发鲜蔬/夜晚豆干不触�
     rmSync(nightDir, { recursive: true, force: true });
   }
 
-  // 面板时区检查：确认 panel-0.17.6.js 定义了 Asia/Shanghai 格式化器且不再对 ISO 时间直接 slice(11,16) / slice(0,16)
-  const panelCode = readFileSync(new URL('../web/panel-0.17.6.js', import.meta.url), 'utf8');
+  // 面板时区检查与黑板横幅防增殖检查：动态从 package.json 读取 webUiClient
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const panelCode = readFileSync(new URL(`../${pkg.cortico.webUiClient}`, import.meta.url), 'utf8');
   assert.match(panelCode, /timeZone:\s*'Asia\/Shanghai'/);
   assert.equal(/\.slice\(11,\s*16\)|\.slice\(0,\s*16\)/.test(panelCode), false, '面板不得对 UTC ISO 字符串直接 slice 截断');
+  assert.match(panelCode, /note\.hidden\s*=\s*true;\s*note\.textContent\s*=\s*''/, 'render(d) 开始时必须清空 note.textContent，防止街口黑板反复拼接增殖');
 });

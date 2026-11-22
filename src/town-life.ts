@@ -151,7 +151,7 @@ export function rollWorkGrade(opts: {
 }
 
 /* ------------------------------------------------------------------ */
-/* 二十四节气与芦花塘公共时间轴（§4.19）                                */
+/* 二十四节气与兰州公共时间轴（§4.19）                                  */
 /* ------------------------------------------------------------------ */
 
 export interface SolarTermInfo {
@@ -164,27 +164,27 @@ const SOLAR_TERMS: readonly { mmdd: number; name: string; season: SolarTermInfo[
   { mmdd: 105, name: '小寒', season: 'winter', note: '天冷风硬，屋里炖锅热汤最舒坦' },
   { mmdd: 120, name: '大寒', season: 'winter', note: '一年里最冷的几天，早市热豆浆摊前排着队' },
   { mmdd: 204, name: '立春', season: 'spring', note: '河冰微融，早市上开始冒出头茬春菜' },
-  { mmdd: 219, name: '雨水', season: 'spring', note: '湿润润的风，塘边柳条透了绿意' },
+  { mmdd: 219, name: '雨水', season: 'spring', note: '河风带着水汽，岸边柳条透了绿意' },
   { mmdd: 306, name: '惊蛰', season: 'spring', note: '春雷响过，菜摊上摆出嫩绿的香椿芽' },
   { mmdd: 321, name: '春分', season: 'spring', note: '昼夜平分，青团铺子门前飘着艾草香' },
-  { mmdd: 405, name: '清明', season: 'spring', note: '雨丝细密，早市街卖着新采的明前茶' },
+  { mmdd: 405, name: '清明', season: 'spring', note: '雨丝细密，南滨河路早市卖着新采的春茶' },
   { mmdd: 420, name: '谷雨', season: 'spring', note: '春末雨足，嫩蚕豆和竹笋最鲜' },
-  { mmdd: 506, name: '立夏', season: 'summer', note: '天渐暖和，灶前巷支起凉粉小摊' },
-  { mmdd: 521, name: '小满', season: 'summer', note: '夏水渐丰，新摘的杨梅与蚕豆上了市' },
+  { mmdd: 506, name: '立夏', season: 'summer', note: '天渐暖和，张掖路支起酿皮和甜醅子小摊' },
+  { mmdd: 521, name: '小满', season: 'summer', note: '河水渐丰，新摘的果子和蚕豆上了市' },
   { mmdd: 606, name: '芒种', season: 'summer', note: '梅子黄了，正适合熬一罐酸甜青梅酱' },
-  { mmdd: 621, name: '夏至', season: 'summer', note: '白昼最长，傍晚望水坡乘凉的人到九点还不散' },
-  { mmdd: 707, name: '小暑', season: 'summer', note: '热浪起来了，冰镇绿豆汤最抢手' },
+  { mmdd: 621, name: '夏至', season: 'summer', note: '白昼最长，傍晚河边乘凉的人到九点还不散' },
+  { mmdd: 707, name: '小暑', season: 'summer', note: '热浪起来了，冰镇绿豆汤和甜醅子最抢手' },
   { mmdd: 723, name: '大暑', season: 'summer', note: '三伏盛夏，午后街上静悄悄的' },
-  { mmdd: 808, name: '立秋', season: 'autumn', note: '早晚有了凉意，秋茄和新莲藕脆生生的' },
+  { mmdd: 808, name: '立秋', season: 'autumn', note: '早晚有了凉意，秋茄和新瓜果脆生生的' },
   { mmdd: 823, name: '处暑', season: 'autumn', note: '暑气渐收，傍晚云彩常染成橘子色' },
   { mmdd: 908, name: '白露', season: 'autumn', note: '清晨草尖挂着露水，早市板栗刚炒好' },
-  { mmdd: 923, name: '秋分', season: 'autumn', note: '塘边芦花开始抽出白穗，桂花也开了' },
-  { mmdd: 1008, name: '寒露', season: 'autumn', note: '夜露渐重，糖炒栗子和桂花糖藕摆上摊头' },
+  { mmdd: 923, name: '秋分', season: 'autumn', note: '河岸柳色转黄，糖炒栗子和桂花也开了' },
+  { mmdd: 1008, name: '寒露', season: 'autumn', note: '夜露渐重，糖炒栗子和热牛奶摆上摊头' },
   { mmdd: 1023, name: '霜降', season: 'autumn', note: '秋意深了，早晚添件薄外套正好' },
-  { mmdd: 1107, name: '立冬', season: 'winter', note: '塘风转凉，灶前巷晚市熬上了萝卜羊汤' },
+  { mmdd: 1107, name: '立冬', season: 'winter', note: '河风转凉，张掖路晚市熬上了萝卜羊汤' },
   { mmdd: 1122, name: '小雪', season: 'winter', note: '初冬微寒，烤红薯炉子在街角冒白烟' },
   { mmdd: 1207, name: '大雪', season: 'winter', note: '夜长昼短，早睡最养神' },
-  { mmdd: 1222, name: '冬至', season: 'winter', note: '家家都在剁饺子馅，热气能暖透整条灶前巷' },
+  { mmdd: 1222, name: '冬至', season: 'winter', note: '家家都在剁饺子馅，热气能暖透整条张掖路' },
 ];
 
 export function solarTermOf(now: Date): SolarTermInfo {
@@ -209,13 +209,13 @@ export function streetWindowOf(now: Date): StreetWindow | null {
   const h = now.getHours() + now.getMinutes() / 60;
   const day = now.getDay();
   if (h >= 6 && h < 9.5) {
-    return { id: 'morning-market', street: '早市街', place: '早市街', label: '晨集', hint: '鲜菜早点 8 折', discount: 0.8 };
+    return { id: 'morning-market', street: '南滨河路', place: '南滨河路', label: '晨集', hint: '鲜菜早点 8 折', discount: 0.8 };
   }
   if (h >= 19.5 && h < 21.5) {
-    return { id: 'night-clearance', street: '灶前巷', place: '灶前巷', label: '尾货市', hint: '熟食点心半价', discount: 0.5 };
+    return { id: 'night-clearance', street: '张掖路', place: '张掖路', label: '尾货市', hint: '熟食点心半价', discount: 0.5 };
   }
   if ((day === 0 || day === 6) && h >= 18 && h < 22) {
-    return { id: 'weekend-flea', street: '望水坡', place: '望水坡', label: '周末旧货集与夜唱', hint: '有旧货和小物件摆出来', discount: 1 };
+    return { id: 'weekend-flea', street: '雁滩路', place: '雁滩路', label: '周末旧货集与夜唱', hint: '有旧货和小物件摆出来', discount: 1 };
   }
   return null;
 }
@@ -232,7 +232,7 @@ export interface MarketItem {
 }
 
 /**
- * 芦花塘本地确定性物价表（融合 §4.19 日内街巷折扣 + 二十四节气时令货 + 周末旧货集）。
+ * 兰州本地确定性物价表（融合 §4.19 日内街巷折扣 + 二十四节气时令货 + 周末旧货集）。
  */
 export function marketCatalogOf(now: Date, localDate: string): MarketItem[] {
   let h = 0;
@@ -298,7 +298,7 @@ export function marketCatalogOf(now: Date, localDate: string): MarketItem[] {
       item: '酱卤豆干拼盘',
       price: 6,
       unit: '半价袋',
-      tag: '灶前巷尾货',
+      tag: '张掖路尾货',
       foodGain: 34,
       funGain: 10,
       discounted: true,
@@ -336,7 +336,7 @@ export function buildDreamSlice(opts: {
   if (r >= chance) return null;
 
   const anchor = opts.pledges[0] || opts.wants[0] || opts.recentTexts[0] || '';
-  const place = opts.journeyCity ? `一路走到了${opts.journeyCity}` : '绕过望水坡看见了整片白芦花';
+  const place = opts.journeyCity ? `一路走到了${opts.journeyCity}` : '沿着滨河路走到铁桥边看黄河水光';
   if (!anchor && !opts.journeyCity) return null;
 
   if (opts.pledges[0]) {
