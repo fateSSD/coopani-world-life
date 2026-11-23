@@ -10,11 +10,11 @@ import type {
 } from 'cortico/core/types.ts';
 import { LIFE_ID, lifeConfigGroups, parseTownUrls, type LifeConfigSection } from './config.ts';
 import {
-  ACTS, CRITICAL, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, LOW, MAX_PENDING, MAX_PLEDGES, NON_OCCUPYING_ACTS,
+  ACTS, CRITICAL, DECAY_PER_HOUR, FITNESS_MAX, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, KNOWLEDGE_MAX, LOW, MAX_PENDING, MAX_PLEDGES, NON_OCCUPYING_ACTS,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL, SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG,
-  advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyLearn, applyGift, asleepRefusal, busyRefusal, freshState, isAsleep, isBusy,
+  advance, applyAct, applyMove, applyStreetMove, applySpend, applyWork, applyCert, applyLearn, applyGift, asleepRefusal, busyRefusal, freshState, isAsleep, isBusy, isCruiseJourney, isThemeCruiseJourney,
   jobGate, localDateKey, noteVisit, quoteMove, readyGoals,
-  recentVisits, remember, snapshot, SLEEP_ENERGY_PER_HOUR,
+  recentVisits, remember, snapshot, streetDecayFactor, SLEEP_ENERGY_PER_HOUR,
   appendLedger, readLedger, fullMarketPrices, weatherOf,
   type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type PendingNotice, type Snapshot, type VitalKey, type SkillDomain,
 } from './state.ts';
@@ -22,8 +22,8 @@ import { JOBS, certOf, jobAllowedAt } from './jobs.ts';
 import {
   BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown,
   readPendingRequests, archivePendingRequest, fetchTownStalls, buyTownStall, joinTown, readMeetUid,
-  pickTownStreet, postTownStall, fetchTownDeals, ackTownDeals,
-  type JourneyView, type TownView, type TownStall, type TownDeal,
+  pickTownStreet, postTownStall, fetchTownDeals, ackTownDeals, findStreetProfile, formatStreetMods, normStallEffects, formatStallEffects,
+  type JourneyView, type TownView, type TownStall, type TownDeal, type StreetMods, type StallEffects,
 } from './bridge.ts';
 
 /**
@@ -281,8 +281,18 @@ export class LifeWorld implements World {
   private townBulletin: string[] = [];
   private lastBulletinFetchMs = 0;
   private myStallsCache: TownStall[] = [];
+  private otherStallsCache: TownStall[] = [];
   private myDealsCache: TownDeal[] = [];
   private unseenDealsCount = 0;
+
+  private marketShowcaseLine(limit = 3): string {
+    if (!this.otherStallsCache.length) return '';
+    return this.otherStallsCache.slice(0, limit).map((st) => {
+      const fx = formatStallEffects(st.effects);
+      const tag = fx ? `${fx}（含邻里互动）` : '饱腹+36/娱乐+12/社交+18';
+      return `${st.seller}的「${st.item}」${st.price}元（${tag}）`;
+    }).join('；');
+  }
 
   private townUrlKey(raw: unknown = this.cfg.townUrl): string {
     return parseTownUrls(raw).join('|');
@@ -315,6 +325,10 @@ export class LifeWorld implements World {
       this.stateSaveDirty = true;
     }
     return this.state.street;
+  }
+
+  private currentStreetMods(): StreetMods | undefined {
+    return findStreetProfile(this.town, this.state.street)?.mods;
   }
 
   private async syncTownPresenceAndBulletin(now: Date, generation: number): Promise<void> {
@@ -350,6 +364,7 @@ export class LifeWorld implements World {
           this.townBulletin = remote.bulletin;
           const myName = this.opts.botName || 'fish';
           this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
+          this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 8);
         }
       } catch { /* 静默保留上次黑板 */ }
       if (uid) {
@@ -447,7 +462,10 @@ export class LifeWorld implements World {
           phase: j.phase,
           hotelTier: j.hotelTier,
           modeId: j.modeId,
+          seatId: j.seatId,
+          seat: j.seat,
           journeyCity: j.installed ? j.cityName : '',
+          streetMods: this.currentStreetMods(),
         });
       }
       const s = snapshot(previewState, now);
@@ -640,7 +658,10 @@ export class LifeWorld implements World {
       phase: this.journey.phase,
       hotelTier: this.journey.hotelTier,
       modeId: this.journey.modeId,
+      seatId: this.journey.seatId,
+      seat: this.journey.seat,
       journeyCity: this.journey.installed ? this.journey.cityName : '',
+      streetMods: this.currentStreetMods(),
     });
     if (r.hours <= 0) {
       const hasRetriable = !this.stateCleared && (
@@ -733,10 +754,13 @@ export class LifeWorld implements World {
         const tightHint = cash < dailyBase * 5
           ? '，手头有点紧，出工能先把这几天的饭钱房租稳住。'
           : `；出门能动用的旅费约 ${Math.round(cash * 0.7)} 元，想吃点好的、住得更舒心或攒钱去想去的地方，今天可以出工挣一笔，也可以读书考证提升自己。`;
+        const marketHint = !this.inJourneyTrip(this.journey) && this.otherStallsCache.length
+          ? ` 鱼市街这会儿还有街坊摆着摊：${this.marketShowcaseLine(2)}，去逛逛买一份既顶用又攒好心情；手头有巧思也能上鱼市街摆一摊。`
+          : '';
         return `现在是白天（${DAYPART_LABEL[dayPart(curAt)]}），精力 ${Math.round(this.state.vitals.energy)}，今天还没出过工。`
           + `${jobHint}；手上 ${cash} 元`
           + (goalGap ? `（${goalGap}）` : '')
-          + `${tightHint}怎么安排你自己定。`;
+          + `${tightHint}${marketHint}怎么安排你自己定。`;
       };
       this.dayWorkPending = { id: dayAttempt.id, date: today, generation };
       const sent = await this.push(
@@ -1022,7 +1046,10 @@ export class LifeWorld implements World {
       phase: this.journey.phase,
       hotelTier: this.journey.hotelTier,
       modeId: this.journey.modeId,
+      seatId: this.journey.seatId,
+      seat: this.journey.seat,
       journeyCity: this.journey.installed ? this.journey.cityName : '',
+      streetMods: this.currentStreetMods(),
     });
     if (r.hours <= 0) {
       const hasRetriable = !this.stateCleared && (
@@ -1336,7 +1363,9 @@ export class LifeWorld implements World {
      * 那就是对她说了假话（2026-11-17 加减免时一并改的）。
      * 精力不减，见 `HOME_TIER_RELIEF`。
      */
-    const relief = key === 'energy' ? 1 : (HOME_TIER_RELIEF[this.state.home.tier] ?? 1);
+    const inTripHere = this.journey.installed && (this.journey.phase === 'staying' || this.journey.phase === 'traveling');
+    const sDecay = inTripHere ? 1 : streetDecayFactor(this.currentStreetMods(), key);
+    const relief = (key === 'energy' ? 1 : (HOME_TIER_RELIEF[this.state.home.tier] ?? 1)) * sDecay;
     const hours = v / (DECAY_PER_HOUR[key] * relief);
     const left = hours < 1
       ? '按现在的掉法，撑不到一小时。'
@@ -1354,10 +1383,15 @@ export class LifeWorld implements World {
      * **文案不许跑得比实现快** —— 这里写什么价，`ACTS` 就得真是那个价。
      */
     switch (key) {
-      case 'food':
+      case 'food': {
+        const stalls = !inTripHere ? this.marketShowcaseLine(2) : '';
+        const marketLine = stalls
+          ? `鱼市街此刻有街坊摆摊：${stalls}（life_buy 买下既能回不少状态还带好心情）。`
+          : '';
         return `饱腹 ${v}，${left}那时候你就饿得心里发慌了 —— 吃一顿好的回 50（40 元），吃得舒服，`
           + '心里也顺；吃一顿普通的回 30（15 元），不饿了，也就那样；实在没钱就随便吃点，回 15，'
-          + `不饿了，但心里不痛快。手头宽就吃好的，紧才往下走一档。${tail}`;
+          + `不饿了，但心里不痛快。${marketLine}手头宽就吃好的，紧才往下走一档。${tail}`;
+      }
       case 'energy':
         return `精力 ${v}，${left}那时候你连抬手都嫌沉，坐着都想往下出溜。`
           + '实在缓不过来可以先坐着歇会儿（rest，20 分钟回 5，不花钱）或午睡小憩（nap，60 分钟回 18）；'
@@ -1366,14 +1400,19 @@ export class LifeWorld implements World {
       case 'clean':
         return `清爽 ${v}，${left}那时候身上发黏，自己都嫌弃自己。洗个澡回 55，不花钱，`
           + `半小时的事。${tail}`;
-      case 'fun':
+      case 'fun': {
         /*
          * **补一条不花钱的退路**（2026-11-17）。原来只说「找点乐子 22 元」，
          * 手头紧的时候这条提示等于告诉她「你现在补不起」。
          * 同时把 38 改成 39 —— `ACTS.play` 实际是 `fun: 39`，文案写少了一个。
          */
+        const stalls = !inTripHere ? this.marketShowcaseLine(2) : '';
+        const marketLine = stalls
+          ? `鱼市街街坊也在摆摊：${stalls}（life_buy 买份逛一圈既解闷又攒好心情）；`
+          : '';
         return `娱乐 ${v}，${left}那时候人会发闷，看什么都提不起劲，坐也不是站也不是。`
-          + `找点乐子回 39（22 元，要花 6 点精力）；不想花钱就看会儿书，回 20，顺带还涨见识。${tail}`;
+          + `找点乐子回 39（22 元，要花 6 点精力）；${marketLine}不想花钱就看会儿书，回 20，顺带还涨见识。${tail}`;
+      }
       case 'social': {
         /*
          * 区分在旅途中与在家：出门在外不催「回芦花塘逛早市/望水坡」，优先推不花钱、
@@ -1525,8 +1564,8 @@ export class LifeWorld implements World {
         '开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。'
         + '吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；'
         + '饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；'
-        + '休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m)；'
-        + '闲/学/社：study(60m/涨见识) play(60m/22元) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；'
+        + '休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m) swim(60m/35元/涨体质/泳池免费)；'
+        + '闲/学/社：study(60m/涨见识) play(60m/22元) live_show(120m/88元) craft_shop(90m/55元/涨手作) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；'
         + '控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。',
       parameters: {
         type: 'object',
@@ -1536,8 +1575,8 @@ export class LifeWorld implements World {
           kind: {
             type: 'string',
             enum: Object.keys(ACTS),
-            description: '动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/'
-              + 'study/play/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。',
+            description: '动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/swim/'
+              + 'study/play/live_show/craft_shop/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。',
           },
         },
       },
@@ -1552,7 +1591,11 @@ export class LifeWorld implements World {
         const r = applyAct(this.state, kindId, now, {
           phase: j.phase,
           toName: j.toName,
+          cityName: j.cityName,
           modeId: j.modeId,
+          seatId: j.seatId,
+          seat: j.seat,
+          hotelTier: j.hotelTier,
           onWay: j.onWay,
           atSpot: j.atSpot,
         });
@@ -1788,19 +1831,20 @@ export class LifeWorld implements World {
     return {
       name: 'life_move',
       description:
-        '搬去本城的另一档住处：城中村 / 老小区 / 新小区 / 别墅区。'
-        + '搬进去要一次押两个月的钱，老房子的押金退不回来（结清水电、赔墙上的钉子）。'
-        + '钱紧的时候**也可以往低处搬** —— 搬回城中村是能自救的那一步。'
-        + '搬不搬、什么时候搬，你自己看账。',
+        '搬去本城的另一档住处（城中村 / 老小区 / 新小区 / 别墅区，押两个月房租，老押金不退，钱紧时也可往低处搬自救），'
+        + '或搬到同一座城市的其他街道（换街不收押金，不同街道有各自的街景介绍与属性增益/减益）。tier 和 street 可单传其一，也可同时传。',
       parameters: {
         type: 'object',
         additionalProperties: false,
-        required: ['tier'],
         properties: {
           tier: {
             type: 'string',
             enum: ['urban-village', 'old', 'new', 'villa'],
-            description: '城中村 urban-village / 老小区 old / 新小区 new / 别墅区 villa。',
+            description: '换住处档位：城中村 urban-village / 老小区 old / 新小区 new / 别墅区 villa（可选）。',
+          },
+          street: {
+            type: 'string',
+            description: '搬去本城的哪条街道，填本城街道名（可选，换街不收押金，享受该街道的属性增益/减益）。',
           },
         },
       },
@@ -1808,28 +1852,70 @@ export class LifeWorld implements World {
       handler: async (args: any) => {
         const now = this.now();
         await this.settleBeforeTool(now);
-        const tier = String(args?.tier ?? '');
-        if (!(tier in HOME_TIER_COST)) {
-          return { text: `没有「${tier}」这一档。能搬的：城中村 / 老小区 / 新小区 / 别墅区。` };
+        const generation = this.stateGeneration;
+        const tier = String(args?.tier ?? '').trim();
+        const street = String(args?.street ?? '').trim();
+        if (!tier && !street) {
+          const curTier = HOME_TIER_LABEL[this.state.home.tier];
+          const streetDesc = this.town.streetProfiles.map((p) => {
+            const m = formatStreetMods(p.mods);
+            return `${p.name}${p.name === this.state.street ? '[当前]' : ''}：${p.desc || '暂无介绍'}${m ? `（${m}）` : ''}`;
+          }).join('；');
+          return {
+            text: `当前住处档位：${curTier}，当前所在街道：${this.state.street || '未定'}。${streetDesc ? `\n本城街道：\n${streetDesc}` : ''}`,
+          };
         }
-        const r = applyMove(this.state, tier as HomeTier, now);
-        if (!r.ok) return { text: r.reason ?? '搬不了。' };
-        if (r.deposit > 0) {
-          appendLedger(this.opts.dataDir, {
-            id: `move-${now.getTime().toString(36)}`,
-            ts: now.toISOString(),
-            kind: 'expense',
-            amount: r.deposit,
-            source: 'life_move',
-            payee: HOME_TIER_LABEL[r.to],
-            note: `搬家押金（${HOME_TIER_LABEL[r.from]} → ${HOME_TIER_LABEL[r.to]}）`,
-          });
+        if (street) {
+          if (!this.town.streets.length) {
+            return { text: '当前城市还没有划分具体街道，暂时没法换街。' };
+          }
+          if (!this.town.streets.includes(street)) {
+            return { text: `本城没有「${street}」这条街。能搬去的街道：${this.town.streets.join(' / ')}。` };
+          }
+        }
+        const notes: string[] = [];
+        if (tier) {
+          if (!(tier in HOME_TIER_COST)) {
+            return { text: `没有「${tier}」这一档。能搬的：城中村 / 老小区 / 新小区 / 别墅区。` };
+          }
+          const r = applyMove(this.state, tier as HomeTier, now);
+          if (!r.ok) return { text: r.reason ?? '搬不了。' };
+          if (r.deposit > 0) {
+            appendLedger(this.opts.dataDir, {
+              id: `move-${now.getTime().toString(36)}`,
+              ts: now.toISOString(),
+              kind: 'expense',
+              amount: r.deposit,
+              source: 'life_move',
+              payee: HOME_TIER_LABEL[r.to],
+              note: `搬家押金（${HOME_TIER_LABEL[r.from]} → ${HOME_TIER_LABEL[r.to]}）`,
+            });
+          }
+          notes.push(
+            `住处换到了：${HOME_TIER_LABEL[r.from]} → ${HOME_TIER_LABEL[r.to]}（押了 ${r.deposit} 元，每月 ${this.state.home.monthly} 元，手上剩 ${r.cash} 元）。`,
+          );
+        }
+        if (street) {
+          const sp = findStreetProfile(this.town, street);
+          const sr = applyStreetMove(this.state, street, this.town.streets, now, sp);
+          if (!sr.ok) {
+            if (!notes.length) return { text: sr.reason ?? '没能搬去这条街。' };
+            notes.push(sr.reason ?? '没能搬去这条街。');
+          } else {
+            const modTxt = formatStreetMods(sp?.mods);
+            notes.push(
+              `换到本城的${sr.to}了${sr.from ? `（原来在${sr.from}）` : ''}，不收押金。`
+              + `${sp?.desc ? `${sp.desc}` : ''}`
+              + `${modTxt ? `（街道效果：${modTxt}）` : ''}`,
+            );
+            if (parseTownUrls(this.cfg.townUrl).length) {
+              void this.syncTownPresenceAndBulletin(now, generation);
+            }
+          }
         }
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
-        return {
-          text: `搬完了：${HOME_TIER_LABEL[r.from]} → ${HOME_TIER_LABEL[r.to]}。`
-            + `押了 ${r.deposit} 元，手上还剩 ${r.cash} 元。每月住房开销现在是 ${this.state.home.monthly} 元。`,
-        };
+        this.broadcastLife(now);
+        return { text: notes.join(' ') };
       },
     };
   }
@@ -2265,7 +2351,7 @@ export class LifeWorld implements World {
     return {
       name: 'life_buy',
       description:
-        '去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来）。',
+        '去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来；买鱼市街街坊摊位除商品本身补给外还会额外叠邻里社交与好心情）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -2282,17 +2368,26 @@ export class LifeWorld implements World {
         if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去买菜') };
         const pick = String(args?.stall_id ?? '').trim();
         const hasTownUrl = parseTownUrls(this.cfg.townUrl).length > 0;
+        const myName = this.opts.botName || 'fish';
         if (!pick) {
           const remote = hasTownUrl ? await fetchTownStalls(this.cfg.townUrl) : { ok: false, stalls: [], bulletin: [] as string[] };
           if (generation !== this.stateGeneration) return cleared();
-          if (remote.ok) this.townBulletin = remote.bulletin;
+          if (remote.ok) {
+            this.townBulletin = remote.bulletin;
+            this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
+            this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 8);
+          }
           const local = fullMarketPrices(now);
           const s = snapshot(this.state, now);
           const winTxt = s.streetWindow ? `此刻「${s.streetWindow.place}${s.streetWindow.label}」开着（${s.streetWindow.hint}）。` : '';
           const boardTxt = this.townBulletin.length ? `\n街口黑板报：${this.townBulletin.slice(0, 3).join('；')}` : '';
           if (remote.ok && remote.stalls.length) {
             return {
-              text: `${winTxt}鱼市街今天摆出来的摊位：${remote.stalls.map((st) => `${st.item} ${st.price}元（${st.seller}，id:${st.id}）`).join('；')}。${boardTxt}`,
+              text: `${winTxt}鱼市街今天摆出来的摊位（买街坊摊货会额外附赠邻里社交与好心情）：${remote.stalls.map((st) => {
+                const fx = formatStallEffects(st.effects) || '饱腹+36/娱乐+12/社交+18';
+                const noteTxt = st.note ? ` · 「${st.note}」` : '';
+                return `${st.item} ${st.price}元（${st.seller}，id:${st.id}，${fx}${noteTxt}）`;
+              }).join('；')}。${boardTxt}`,
             };
           }
           return {
@@ -2306,12 +2401,17 @@ export class LifeWorld implements World {
         let localTag = '';
         let isRemote = false;
         let isFreshVeg = false;
-        let foodGain = 28;
-        let funGain = 6;
+        let vitalDeltas: Partial<Record<VitalKey, number>> = { food: 28, fun: 6 };
+        let knowGain = 0;
+        let fitGain = 0;
         if (hasTownUrl) {
           const remote = await fetchTownStalls(this.cfg.townUrl);
           if (generation !== this.stateGeneration) return cleared();
-          if (remote.ok) this.townBulletin = remote.bulletin;
+          if (remote.ok) {
+            this.townBulletin = remote.bulletin;
+            this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
+            this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 8);
+          }
           const match = remote.ok ? remote.stalls.find((st) => st.id === pick || st.item === pick) : null;
           if (match) {
             if (this.state.money.cash < match.price) {
@@ -2321,7 +2421,7 @@ export class LifeWorld implements World {
             if (!buyerUid) {
               return { text: '缺少本机 uid（先跟城里连一次碰面生成 uid 后再在鱼市街摊位买东西）。' };
             }
-            const bought = await buyTownStall(this.cfg.townUrl, match.id, this.opts.botName || 'fish', { buyerUid });
+            const bought = await buyTownStall(this.cfg.townUrl, match.id, myName, { buyerUid });
             if (generation !== this.stateGeneration) return cleared();
             if (!bought.ok) return { text: bought.reason ?? '没买成。' };
             isRemote = true;
@@ -2329,6 +2429,23 @@ export class LifeWorld implements World {
             price = bought.price || match.price;
             seller = bought.seller || match.seller;
             isFreshVeg = Boolean(bought.freshVeg ?? match.freshVeg);
+            const stallEffects = normStallEffects(bought.effects ?? match.effects, price || match.price);
+            if (stallEffects) {
+              vitalDeltas = {
+                food: stallEffects.food ?? 0,
+                energy: stallEffects.energy ?? 0,
+                clean: stallEffects.clean ?? 0,
+                fun: stallEffects.fun ?? 0,
+                social: Math.min(25, (stallEffects.social ?? 0) + 8),
+              };
+              knowGain = stallEffects.knowledge ?? 0;
+              fitGain = stallEffects.fitness ?? 0;
+            } else {
+              vitalDeltas = { food: 36, fun: 12, social: 18 };
+            }
+            this.otherStallsCache = this.otherStallsCache
+              .map((st) => (st.id === match.id ? { ...st, stock: st.stock - 1 } : st))
+              .filter((st) => st.stock > 0);
           }
         }
         if (!item) {
@@ -2344,15 +2461,49 @@ export class LifeWorld implements World {
           price = hit.price;
           localTag = hit.tag ?? '';
           isFreshVeg = Boolean(hit.freshVeg);
-          if (typeof hit.foodGain === 'number') foodGain = hit.foodGain;
-          if (typeof hit.funGain === 'number') funGain = hit.funGain;
+          vitalDeltas = {
+            food: typeof hit.foodGain === 'number' ? hit.foodGain : 28,
+            fun: typeof hit.funGain === 'number' ? hit.funGain : 6,
+          };
         }
 
         if (generation !== this.stateGeneration) return cleared();
         this.state.money.cash -= price;
         this.state.money.spent += price;
-        if (foodGain > 0) this.state.vitals.food = Math.min(100, this.state.vitals.food + foodGain);
-        if (funGain > 0) this.state.vitals.fun = Math.min(100, this.state.vitals.fun + funGain);
+        const gainParts: string[] = [];
+        for (const k of ['food', 'energy', 'clean', 'fun', 'social'] as VitalKey[]) {
+          const d = Math.round(Number(vitalDeltas[k] ?? 0));
+          if (d > 0) {
+            this.state.vitals[k] = Math.min(100, this.state.vitals[k] + d);
+            gainParts.push(`${VITAL_LABEL[k]}+${d}`);
+            if (this.state.vitals[k] >= LOW + 15 && this.state.nagged) {
+              delete this.state.nagged[k];
+              delete this.state.nagged[`crit:${k}`];
+              delete this.state.nagged[`zero:${k}`];
+            }
+          }
+        }
+        if (this.state.vitals.social >= LOW) {
+          this.state.moodlets = this.state.moodlets.filter((m) => m.source !== 'lonely');
+        }
+        if (knowGain > 0) {
+          this.state.knowledge = Math.min(KNOWLEDGE_MAX, this.state.knowledge + knowGain);
+          gainParts.push(`见识+${knowGain}`);
+        }
+        if (fitGain > 0) {
+          this.state.fitness = Math.min(FITNESS_MAX, this.state.fitness + fitGain);
+          gainParts.push(`体质+${fitGain}`);
+        }
+        if (isRemote) {
+          this.state.moodlets = this.state.moodlets.filter((m) => m.source !== 'town-buy');
+          this.state.moodlets.push({
+            id: `m-townbuy-${now.getTime().toString(36)}`,
+            source: 'town-buy',
+            text: `在鱼市街跟${seller}买了「${item}」，边逛边聊心情很舒畅`,
+            kind: 'good',
+            expiresAt: new Date(now.getTime() + 3 * 3_600_000).toISOString(),
+          });
+        }
         if (isFreshVeg) {
           this.state.freshVegUntil = new Date(now.getTime() + 24 * 3_600_000).toISOString();
         }
@@ -2370,8 +2521,9 @@ export class LifeWorld implements World {
           note: `买菜：${item}`,
         });
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
+        const gainSummary = gainParts.length ? `（${gainParts.join('、')}${isRemote ? '，带 3 小时好心情' : ''}）` : '';
         return {
-          text: `买了${item}，花了 ${price} 元（${isRemote ? seller : (localTag || '早市摊主')}）。`
+          text: `买了${item}，花了 ${price} 元（${isRemote ? seller : (localTag || '早市摊主')}）${gainSummary}。`
             + `${isFreshVeg ? '新鲜水灵，今天下厨特别香。' : ''}手上还剩 ${this.state.money.cash} 元。`,
         };
       },
@@ -2383,7 +2535,8 @@ export class LifeWorld implements World {
       name: 'life_stall',
       description:
         '去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。'
-        + '价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成。',
+        + '价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成；'
+        + '还可传 effects 自己分配商品给买家带来的属性回复（总点数随定价给 40–90 预算，五维每项 1:1 最多 55，见识每 1 点占 6 预算最多 6，体质每 1 点占 8 预算最多 4，超出预算按比例折算）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -2393,6 +2546,20 @@ export class LifeWorld implements World {
           stock: { type: 'number', description: '准备卖几份（1–99，默认 3）。' },
           fresh_veg: { type: 'boolean', description: '是否新鲜蔬菜果品（默认 false）。' },
           note: { type: 'string', description: '摊头吆喝的一句话（可选）。' },
+          effects: {
+            type: 'object',
+            description: '可选：自定义商品给买家回复的属性点数（总预算随定价 40–90；五维每项 1:1 上限 55，knowledge 见识 1:6 上限 6，fitness 体质 1:8 上限 4）。',
+            additionalProperties: false,
+            properties: {
+              food: { type: 'number', description: '饱腹回复点数（0–55）' },
+              energy: { type: 'number', description: '精力回复点数（0–55）' },
+              clean: { type: 'number', description: '清洁回复点数（0–55）' },
+              fun: { type: 'number', description: '娱乐回复点数（0–55）' },
+              social: { type: 'number', description: '社交回复点数（0–55）' },
+              knowledge: { type: 'number', description: '见识回复点数（0–6，每点占 6 预算）' },
+              fitness: { type: 'number', description: '体质回复点数（0–4，每点占 8 预算）' },
+            },
+          },
         },
       },
       tags: ['write'],
@@ -2413,9 +2580,13 @@ export class LifeWorld implements World {
           this.townBulletin = remote.bulletin;
           const mine = remote.stalls.filter((s) => s.seller === myName);
           this.myStallsCache = mine;
-          if (!mine.length) return { text: '鱼市街上目前还没有你挂着的摊子。想摆摊就传 item 和 price。' };
+          this.otherStallsCache = remote.stalls.filter((s) => s.seller !== myName).slice(0, 8);
+          if (!mine.length) return { text: '鱼市街上目前还没有你挂着的摊子。想摆摊就传 item 和 price（还可传 effects 自定义买家回复点数）。' };
           return {
-            text: `鱼市街你现在挂着的摊子：${mine.map((s) => `${s.item}（${s.price}元，剩${s.stock}份${s.freshVeg ? '·鲜蔬' : ''}，id:${s.id}）`).join('；')}。`,
+            text: `鱼市街你现在挂着的摊子：${mine.map((s) => {
+              const fx = formatStallEffects(s.effects);
+              return `${s.item}（${s.price}元，剩${s.stock}份${s.freshVeg ? '·鲜蔬' : ''}${fx ? `，${fx}` : ''}，id:${s.id}）`;
+            }).join('；')}。`,
           };
         }
 
@@ -2432,9 +2603,11 @@ export class LifeWorld implements World {
         }
         const freshVeg = Boolean(args?.fresh_veg);
         const note = String(args?.note ?? '').trim();
+        const effects = normStallEffects(args?.effects, price);
 
         const res = await postTownStall(this.cfg.townUrl, {
           uid, pet: myName, item, price, stock, freshVeg, kind: 'goods', note,
+          ...(effects ? { effects } : {}),
         });
         if (generation !== this.stateGeneration) return cleared();
         if (!res.ok) return { text: res.reason ?? '挂摊没成功。' };
@@ -2444,11 +2617,15 @@ export class LifeWorld implements World {
         if (remote.ok) {
           this.townBulletin = remote.bulletin;
           this.myStallsCache = remote.stalls.filter((s) => s.seller === myName);
+          this.otherStallsCache = remote.stalls.filter((s) => s.seller !== myName).slice(0, 8);
         }
-        remember(this.state, `在鱼市街挂出摊子：${res.item}（${res.price} 元，${res.stock} 份）。`, now);
+        const finalEffects = res.effects ?? effects;
+        const fxTxt = formatStallEffects(finalEffects);
+        remember(this.state, `在鱼市街挂出摊子：${res.item}（${res.price} 元，${res.stock} 份${fxTxt ? `，${fxTxt}` : ''}）。`, now);
         try { this.store.save(this.state); } catch { /* ignore */ }
         return {
-          text: `摊子挂上鱼市街了：${res.item}，定价 ${res.price} 元、共 ${res.stock} 份（id:${res.id}）。被人买走后可以在 life_deals 看到是谁买走了。`,
+          text: `摊子挂上鱼市街了：${res.item}，定价 ${res.price} 元、共 ${res.stock} 份（id:${res.id}`
+            + `${fxTxt ? `；买家收益：${fxTxt}` : ''}）。被人买走后可以在 life_deals 看到是谁买走了。`,
         };
       },
     };
@@ -2518,8 +2695,13 @@ export class LifeWorld implements World {
     parts.push(`时间：${when}`);
 
     if (j.installed) {
+      const cruiseNote = isThemeCruiseJourney(j)
+        ? `，乘坐「${j.seat || '主题远洋游轮'}」（一价全包，可调 life_act 去顶层泳池 swim、海上剧院 live_show、主题餐厅 feast、下午茶 tea、电玩街区 play）`
+        : isCruiseJourney(j)
+          ? `，乘坐「${j.seat || '远洋客轮'}」（船上可调 life_act 吃饭、游泳、看演出、洗澡或休息）`
+          : '';
       const phase = j.phase === 'traveling'
-        ? `在路上，往${j.toName || '下一站'}去（出发地 ${j.cityName || '不明'}）`
+        ? `在路上，往${j.toName || '下一站'}去（出发地 ${j.cityName || '不明'}${cruiseNote}）`
         : j.phase === 'staying'
           ? `在${j.cityName || '外地'}`
           : j.phase === 'home'
@@ -2654,7 +2836,19 @@ export class LifeWorld implements World {
     }
 
     /* 街名可能一条都没有（用户只填了城名）—— 那时候不说「城里有：」。 */
-    if (this.town.streets.length) parts.push(`城里有：${this.town.streets.join(' / ')}`);
+    const curStreetInfo = findStreetProfile(this.town, this.state.street);
+    if (curStreetInfo && (curStreetInfo.desc || formatStreetMods(curStreetInfo.mods))) {
+      const m = formatStreetMods(curStreetInfo.mods);
+      parts.push(`所在街道（${curStreetInfo.name}）：${curStreetInfo.desc || '暂无介绍'}${m ? `（效果：${m}）` : ''}`);
+    }
+    if (this.town.streetProfiles.length) {
+      parts.push(`城里有：${this.town.streetProfiles.map((p) => {
+        const m = formatStreetMods(p.mods);
+        return m ? `${p.name}（${m}）` : p.name;
+      }).join(' / ')}`);
+    } else if (this.town.streets.length) {
+      parts.push(`城里有：${this.town.streets.join(' / ')}`);
+    }
 
     const skillPairs = (Object.keys(SKILL_DOMAIN_LABEL) as SkillDomain[])
       .filter((k) => (s.skills[k] ?? 0) > 0)
@@ -2667,6 +2861,8 @@ export class LifeWorld implements World {
     const winTxt = s.streetWindow ? ` · 此刻${s.streetWindow.place}${s.streetWindow.label}开着` : '';
     parts.push(`时令天气：${s.weather.sky} · ${s.weather.seasonNote}${winTxt}`);
     if (this.townBulletin.length) parts.push(`街口黑板报：${this.townBulletin.slice(0, 2).join('；')}`);
+    const showcase = this.marketShowcaseLine(3);
+    if (showcase) parts.push(`鱼市街在售摊位：${showcase}（用 life_buy 购买）`);
     if (this.unseenDealsCount > 0) parts.push(`鱼市街摊位有 ${this.unseenDealsCount} 笔新成交待看（用 life_deals）`);
 
     parts.push(this.diaryLine(j, now));
@@ -2885,7 +3081,10 @@ export class LifeWorld implements World {
   private lodgingText(j: JourneyView): string {
     const walk = this.state.street ? ` · ${this.state.street}` : '';
     if (!j.installed) return `${this.town.name}${walk}（不知道是不是在家 —— 没装旅行扩展）`;
-    if (j.phase === 'traveling') return `在路上，往${j.toName || '下一站'}去（出发地 ${j.cityName || '不明'}）`;
+    if (j.phase === 'traveling') {
+      const shipTag = isCruiseJourney(j) ? ` · ${j.seat || '游轮客舱'}` : '';
+      return `在路上，往${j.toName || '下一站'}去（出发地 ${j.cityName || '不明'}${shipTag}）`;
+    }
     if (j.phase === 'staying') return `${j.cityName || '外地'} · 住店`;
     return `${this.town.name}${walk}`;
   }
@@ -2906,9 +3105,14 @@ export class LifeWorld implements World {
       .map((k) => `${VITAL_LABEL[k]} ${Math.round(s.vitals[k])}`)
       .join('　');
 
+    const cruiseTip = j.phase === 'traveling' && isThemeCruiseJourney(j)
+      ? ` · 乘坐「${j.seat || '主题远洋游轮'}」，船上泳池 swim / 海上剧院 live_show / 主题餐厅 feast / 下午茶 tea / 电玩 play 一价全包`
+      : j.phase === 'traveling' && isCruiseJourney(j)
+        ? ` · 乘坐「${j.seat || '远洋客轮'}」，船上可游泳、吃饭、看演出与洗澡`
+        : '';
     const whereText = j.installed
       ? (j.phase === 'traveling'
-        ? `在去${j.toName || '下一站'}的路上（出发地 ${j.cityName || '不明'}）`
+        ? `在去${j.toName || '下一站'}的路上（出发地 ${j.cityName || '不明'}${cruiseTip}）`
         : j.phase === 'staying'
           ? (j.onWay
             ? `在${j.cityName || '外地'}（${j.onWay.what}，预计 ${j.onWay.arriveAt || '很快'} 到）`
@@ -2925,7 +3129,12 @@ export class LifeWorld implements World {
       'life.town': this.town.streets.length
         ? `${this.town.name}　·　${this.town.streets.join(' / ')}`
         : `${this.town.name}（街名还没定，你自己走着看）`,
-      'life.street': this.state.street ? `你住在${this.state.street}。` : '你还没选定住在哪条街。',
+      'life.street': (() => {
+        if (!this.state.street) return '你还没选定住在哪条街。';
+        const sp = findStreetProfile(this.town, this.state.street);
+        const mod = formatStreetMods(sp?.mods);
+        return `你住在${this.state.street}。${sp?.desc ? `${sp.desc}` : ''}${mod ? `（街道效果：${mod}）` : ''}`;
+      })(),
       'life.who': [
         `做事：${s.job.what || '现在没在做事'}（${s.job.lastAt === localDateKey(now) ? '今天已出过工' : '今天还没出工'}）`,
         `住：${this.lodgingText(j)}　${HOME_TIER_LABEL[s.home.tier]}（${s.home.tenure === 'own' ? '买下的' : '租的'}）`,
@@ -2983,7 +3192,10 @@ export class LifeWorld implements World {
           .map((k) => `${SKILL_DOMAIN_LABEL[k]} ${Math.round(s.skills[k] ?? 0)}`).join(' / ') || '手艺起步中',
         s.gear.length ? `家伙：${s.gear.map((id) => EQUIP_CATALOG.find((e) => e.id === id)?.name ?? id).join('、')}` : '暂无自备家伙',
       ].join('　·　'),
-      'life.bulletin': this.townBulletin.length ? this.townBulletin.slice(0, 3).join('；') : '（今天街口黑板还没有新消息）',
+      'life.bulletin': [
+        this.otherStallsCache.length ? `鱼市街在售：${this.marketShowcaseLine(3)}` : '',
+        this.townBulletin.length ? this.townBulletin.slice(0, 3).join('；') : '',
+      ].filter(Boolean).join(' ｜ ') || '（今天街口黑板还没有新消息）',
     };
   }
 
@@ -3395,6 +3607,7 @@ export class LifeWorld implements World {
           ...this.panelSnapshot(now),
           bulletin: [...this.townBulletin],
           myStalls: [...this.myStallsCache],
+          otherStalls: [...this.otherStallsCache],
           deals: [...this.myDealsCache],
           unseenDeals: this.unseenDealsCount,
         };
@@ -3405,7 +3618,29 @@ export class LifeWorld implements World {
     if (method === 'move') {
       await this.settleBeforeTool(now);
       const raw = Array.isArray(args) ? args[0] : args;
-      const tier = typeof raw === 'string' ? raw : String((raw as any)?.tier ?? '');
+      const reqStreet = raw && typeof raw === 'object' && 'street' in raw ? String((raw as any).street ?? '').trim() : '';
+      const reqTier = raw && typeof raw === 'object' && 'tier' in raw
+        ? String((raw as any).tier ?? '').trim()
+        : (typeof raw === 'string' && !reqStreet ? raw.trim() : '');
+      if (reqStreet && !reqTier) {
+        const sp = findStreetProfile(this.town, reqStreet);
+        const sr = applyStreetMove(this.state, reqStreet, this.town.streets, now, sp);
+        if (sr.ok) {
+          try { this.store.save(this.state); } catch { /* 下一帧再存 */ }
+          this.broadcastLife(now);
+          if (parseTownUrls(this.cfg.townUrl).length) {
+            void this.syncTownPresenceAndBulletin(now, this.stateGeneration);
+          }
+          const modTxt = formatStreetMods(sp?.mods);
+          await this.push(
+            'life.moved',
+            `他刚刚在面板上替你搬到了本城的${sr.to}（${sr.from ? `从${sr.from}搬来` : '定居于此'}${modTxt ? `；街道效果：${modTxt}` : ''}）。`,
+            'flush',
+          );
+        }
+        return { ok: sr.ok, reason: sr.reason || '', ...this.panelSnapshot(now) };
+      }
+      const tier = reqTier;
       if (!(tier in HOME_TIER_COST)) {
         return { ok: false, reason: `没有「${tier}」这一档。`, ...this.panelSnapshot(now) };
       }
@@ -3476,6 +3711,10 @@ export class LifeWorld implements World {
           phase: j.phase,
           city: j.cityName,
           to: j.toName,
+          modeId: j.modeId,
+          seatId: j.seatId,
+          seat: j.seat,
+          seatMult: j.seatMult,
           staleSec: j.staleSec,
           homeName: j.homeName,
           restUntil: j.restUntil,
@@ -3488,11 +3727,20 @@ export class LifeWorld implements World {
           name: this.town.name,
           origin: this.town.origin,
           streets: this.town.streets,
+          streetProfiles: this.town.streetProfiles,
           rules: this.town.rules,
           source: this.town.source,
           custom: this.town.custom,
         },
         street: this.state.street,
+        streetProfile: findStreetProfile(this.town, this.state.street),
+        streetQuotes: this.town.streetProfiles.map((p) => ({
+          name: p.name,
+          desc: p.desc,
+          mods: p.mods,
+          modsText: formatStreetMods(p.mods),
+          current: p.name === this.state.street,
+        })),
         /* 她在睡的话：还有多久、醒来大约多少精力。醒着是 null。 */
         asleep: s.asleep,
         /* 正在进行的非睡眠动作/上班，空闲或睡眠中是 null。 */
@@ -3584,6 +3832,7 @@ export class LifeWorld implements World {
         freshVeg: s.freshVeg,
         bulletin: [...this.townBulletin],
         myStalls: [...this.myStallsCache],
+        otherStalls: [...this.otherStallsCache],
         deals: [...this.myDealsCache],
         unseenDeals: this.unseenDealsCount,
         recovered: this.recovered,

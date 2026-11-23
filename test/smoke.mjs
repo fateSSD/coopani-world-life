@@ -264,10 +264,10 @@ console.log('\n[12] 快照');
   ok(snap.low[0].key === 'food', '缺得最狠的排前面', snap.low[0].key);
   ok(snap.unsaid.length === 1, '还没说出去的那条在');
   /*
-   * 三十件事：含三档吃、睡、午睡、坐着歇会儿、洗、玩、见人、闲聊、做饭、小酌、新复合动作 + wake / cancel。
+   * 三十三件事：含三档吃、睡、午睡、坐着歇会儿、洗、玩、见人、闲聊、做饭、小酌、复合动作、双栖新动作 + wake / cancel。
    * `wake` 不是可有可无的补充 —— 睡着时所有动作都被拦，没有它她就永远醒不过来。
    */
-  ok(Object.keys(ACTS).length === 30, '三十件事（含 rest、chat、复合动作、wake 与 cancel）', String(Object.keys(ACTS).length));
+  ok(Object.keys(ACTS).length === 33, '三十三件事（含 rest、chat、复合动作、双栖新动作、wake 与 cancel）', String(Object.keys(ACTS).length));
   ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
   ok(Boolean(ACTS.cancel) && ACTS.cancel.cost === 0, '「停下来」不花钱');
   ok(ACTS.feast.cost > ACTS.eat.cost && ACTS.eat.cost > ACTS.instant.cost, '三档饭价依次递减');
@@ -1474,6 +1474,54 @@ console.log('\n[52] 短时坐着歇会儿（rest 20m / 0元 / +5 精力，照常
   ok(near(s.vitals.energy, 30, 0.2) && s.money.cash === 3000, 'rest 20m 精力 25 → 30 且不花钱', `${s.vitals.energy}/${s.money.cash}`);
   ok(s.vitals.food < 80 && s.vitals.clean < 80 && s.vitals.fun < 80 && s.vitals.social < 80, 'rest 期间其余四维照常消耗', JSON.stringify(s.vitals));
   ok(!s.moodlets.some((m) => m.source === 'rest' && m.kind === 'good'), 'rest 不挂正向情绪（防 0 成本刷好心情）');
+}
+
+console.log('\n[53] 远洋游轮在途特权与双栖新活动（swim / live_show / craft_shop）');
+{
+  const t0 = new Date('2026-11-23T10:00:00Z');
+  // 1) 在家泳池 swim：扣 35 元，涨 fun/clean 且涨 fitness +2.5
+  const sHome = freshState(t0);
+  sHome.home.monthly = 0;
+  sHome.vitals = { food: 80, energy: 80, clean: 50, fun: 40, social: 60 };
+  const fit0 = sHome.fitness;
+  const rSwim = applyAct(sHome, 'swim', t0);
+  ok(rSwim.ok && rSwim.started, '在家可开始游泳');
+  advance(sHome, new Date(t0.getTime() + ACTS.swim.minutes * 60_000));
+  ok(near(sHome.fitness, fit0 + 2.5, 0.05) && sHome.money.cash === 2965, '游泳完成涨体质 +2.5 且扣费 35 元', `${sHome.fitness}/${sHome.money.cash}`);
+  ok(sHome.vitals.clean > 65 && sHome.vitals.fun > 65, '游泳同步回清爽与娱乐', JSON.stringify(sHome.vitals));
+
+  // 2) 做手作 craft_shop：涨 fun +38、know +2 且涨 skills.craft +1.5
+  const sCraft = freshState(t0);
+  sCraft.home.monthly = 0;
+  const rCraft = applyAct(sCraft, 'craft_shop', t0);
+  ok(rCraft.ok && rCraft.started, '可开始做手作工坊');
+  advance(sCraft, new Date(t0.getTime() + ACTS.craft_shop.minutes * 60_000));
+  ok(near(sCraft.skills.craft ?? 0, 1.5, 0.05) && sCraft.money.cash === 2945, '手作工坊完成涨 skills.craft +1.5 且扣 55 元', `${sCraft.skills.craft}/${sCraft.money.cash}`);
+  ok(sCraft.knowledge > 1.8, '手作工坊完成涨见识', String(sCraft.knowledge));
+
+  // 3) 主题远洋游轮在途：放行 swim / live_show / feast / play，一价全包 0 元，场景自动映射游轮
+  const cruiseCtx = { phase: 'traveling', toName: '横滨', modeId: 'ship', seatId: 'theme-cruise', seat: '主题远洋游轮' };
+  const sCruise = freshState(t0);
+  sCruise.home.monthly = 0;
+  sCruise.money.cash = 10; // 现金仅 10 元，验证一价全包免单不拦且不扣钱
+  const rCruiseSwim = applyAct(sCruise, 'swim', t0, cruiseCtx);
+  ok(rCruiseSwim.ok && sCruise.activity?.scene?.includes('游轮顶层无边泳池'), '主题游轮放行 swim 并映射游轮泳池场景', sCruise.activity?.scene);
+  ok(sCruise.activity?.costPerMin === 0, '主题游轮上 swim 一价全包 0 元', String(sCruise.activity?.costPerMin));
+  advance(sCruise, new Date(t0.getTime() + ACTS.swim.minutes * 60_000), cruiseCtx);
+  ok(sCruise.money.cash === 10, '主题游轮游泳完现金一分不扣', String(sCruise.money.cash));
+
+  const tShow = new Date(t0.getTime() + 70 * 60_000);
+  const rCruiseShow = applyAct(sCruise, 'live_show', tShow, cruiseCtx);
+  ok(rCruiseShow.ok && sCruise.activity?.scene === '游轮海上大剧院', '主题游轮放行 live_show 并映射海上大剧院', sCruise.activity?.scene);
+  advance(sCruise, new Date(tShow.getTime() + ACTS.live_show.minutes * 60_000), cruiseCtx);
+  ok(sCruise.money.cash === 10, '主题游轮看演出完现金一分不扣', String(sCruise.money.cash));
+
+  // 4) 反例：普通自驾车在途依然拦截 swim/feast，且坐普通渡轮/飞机报错不喊「车上」
+  const sCar = freshState(t0);
+  const carBlock = applyAct(sCar, 'swim', t0, { phase: 'traveling', toName: '西安', modeId: 'car' });
+  ok(!carBlock.ok && carBlock.reason?.includes('车上没法'), '自驾在途照常拦截 swim 且提示车上', carBlock.reason);
+  const ferryBlock = applyAct(sCar, 'feast', t0, { phase: 'traveling', toName: '舟山', modeId: 'ship', seatId: 'ferry', seat: '普通渡轮' });
+  ok(!ferryBlock.ok && ferryBlock.reason?.includes('船上没法'), '短途渡轮被拦截时提示「船上没法」而非「车上」', ferryBlock.reason);
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

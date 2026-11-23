@@ -1345,6 +1345,19 @@ test('第六轮投递：life.day 隐藏无 render 按排队租约恢复，null/�
   }
 });
 
+test('面板缓存三同步：package.json 版本号、cortico.webUiClient 与 web/panel-<version>.js 文件一一对应且真实存在', () => {
+  const pkgUrl = new URL('../package.json', import.meta.url);
+  const pkg = JSON.parse(readFileSync(pkgUrl, 'utf8'));
+  const expected = `web/panel-${pkg.version}.js`;
+  assert.equal(
+    pkg?.cortico?.webUiClient,
+    expected,
+    `cortico.webUiClient (${pkg?.cortico?.webUiClient}) 必须与 package.json version (${pkg.version}) 严格对齐`,
+  );
+  const panelPath = new URL(`../${expected}`, import.meta.url);
+  assert.equal(existsSync(panelPath), true, `面板文件缺失：${expected}`);
+});
+
 test('测试网络硬哨兵：除 npm 版本探测外没有任何未打桩 URL', () => {
   const unknown = networkCalls.filter((url) => !url.startsWith('https://registry.npmjs.org/'));
   assert.deepEqual(unknown, []);

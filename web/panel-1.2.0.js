@@ -65,6 +65,9 @@ const TEXT = {
     money: '手上有',
     goals: '目标',
     moves: '住处 · 搬过去',
+    streetsTitle: '本城街道 · 换条街住',
+    moveStreetTo: '搬去这条街',
+    streetMoveNote: '换街不收押金，不同街道有各自的街景介绍与属性增益/减益（仅在本城生效）；与 `life_move` 共用同一本账。',
     livingHere: '现在住这儿',
     moveTo: '搬过去',
     cantMove: '钱不够',
@@ -151,6 +154,9 @@ const TEXT = {
     money: 'Cash',
     goals: 'Goals',
     moves: 'Housing · move',
+    streetsTitle: 'Streets · move street',
+    moveStreetTo: 'Move street',
+    streetMoveNote: 'Changing streets costs no deposit; each street has its own intro and stat modifiers while in town (same as life_move).',
     livingHere: 'living here',
     moveTo: 'Move in',
     cantMove: 'not enough',
@@ -322,6 +328,15 @@ function ensureStyle(root) {
 .lf-move .nowtag { font-size: 12px; color: #2f6fed; }
 .lf-move .dep { font-size: 12px; color: #6b7280; }
 .lf-note-line { margin: 10px 0 0; font-size: 11.5px; color: #9ca3af; line-height: 1.7; }
+.lf-st-box { margin-top: 14px; padding-top: 12px; border-top: 1px solid #eef0f3; }
+.lf-st-box h4 { font-size: 12.5px; font-weight: 600; color: #6b7280; margin: 0 0 8px; }
+.lf-st-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px dashed #f0f1f3; }
+.lf-st-row:last-child { border-bottom: 0; }
+.lf-st-row.now .st-nm { color: #2f6fed; }
+.lf-st-info { flex: 1 1 auto; min-width: 0; }
+.lf-st-info .st-nm { font-size: 13px; font-weight: 600; color: #374151; }
+.lf-st-info .st-desc { font-size: 12px; color: #6b7280; margin-top: 2px; line-height: 1.5; }
+.lf-st-info .lf-chips { margin-top: 5px; }
 
 /*
  * 「灯怎么看」那一块。
@@ -704,6 +719,44 @@ export default {
             moveCard.append(p);
           }
           moveCard.append(el('p', 'lf-note-line', t(lang, 'moveNote')));
+
+          const sqs = d.streetQuotes || [];
+          if (sqs.length) {
+            const stBox = el('div', 'lf-st-box');
+            stBox.append(el('h4', null, t(lang, 'streetsTitle')));
+            const MOD_LAB = { food: '饱腹', energy: '精力', clean: '清爽', fun: '娱乐', social: '社交', know: '见识', work: '工钱' };
+            for (const sq of sqs) {
+              const row = el('div', 'lf-st-row' + (sq.current ? ' now' : ''));
+              const info = el('div', 'lf-st-info');
+              info.append(el('div', 'st-nm', sq.name || ''));
+              if (sq.desc) info.append(el('div', 'st-desc', sq.desc));
+              const mods = sq.mods || {};
+              const modKeys = Object.keys(MOD_LAB).filter((k) => Number(mods[k]) !== 0 && Number.isFinite(Number(mods[k])));
+              if (modKeys.length) {
+                const chips = el('div', 'lf-chips');
+                for (const k of modKeys) {
+                  const val = Math.round(Number(mods[k]));
+                  chips.append(el('span', 'lf-chip ' + (val > 0 ? 'good' : 'bad'), `${MOD_LAB[k]} ${val > 0 ? '+' + val : val}%`));
+                }
+                info.append(chips);
+              }
+              const btnBox = el('div', 'btnbox');
+              if (sq.current) {
+                btnBox.append(el('span', 'nowtag', t(lang, 'livingHere')));
+              } else {
+                const sb = el('button', 'lf-btn', t(lang, 'moveStreetTo'));
+                sb.type = 'button';
+                sb.disabled = Boolean(busyHint);
+                if (busyHint) sb.title = busyHint;
+                sb.setAttribute('data-move-street', sq.name || '');
+                btnBox.append(sb);
+              }
+              row.append(info, btnBox);
+              stBox.append(row);
+            }
+            stBox.append(el('p', 'lf-note-line', t(lang, 'streetMoveNote')));
+            moveCard.append(stBox);
+          }
         };
 
         /**
@@ -799,7 +852,8 @@ export default {
             note.textContent = t(lang, 'noJourney');
           } else if (d.journey.phase === 'traveling') {
             note.hidden = false;
-            note.textContent = t(lang, 'onRoad', { to: d.journey.to || '?', from: d.journey.city || '?' });
+            const seatBit = d.journey.seat ? `（${d.journey.seat}）` : '';
+            note.textContent = t(lang, 'onRoad', { to: d.journey.to || '?', from: d.journey.city || '?' }) + seatBit;
           } else if (d.journey.tripWork && d.journey.tripWork.gig) {
             note.hidden = false;
             note.textContent = `在当地打工补贴路费：${d.journey.tripWork.gig}`;
@@ -993,13 +1047,15 @@ export default {
          * 表现是「点一下搬三次」。
          */
         moveCard.addEventListener('click', (ev) => {
-          const b = ev.target && ev.target.closest ? ev.target.closest('button[data-move]') : null;
+          const b = ev.target && ev.target.closest ? ev.target.closest('button[data-move], button[data-move-street]') : null;
           if (!b || b.disabled) return;
           const tier = b.getAttribute('data-move');
+          const street = b.getAttribute('data-move-street');
           b.disabled = true;
           b.textContent = t(lang, 'moving');
           msg.textContent = '';
-          ctx.invoke('move', [{ tier }])
+          const payload = street ? { street } : { tier };
+          ctx.invoke('move', [payload])
             .then((r) => {
               if (r && r.ok === false && r.reason) {
                 moveTip = { text: r.reason, err: true, until: Date.now() + 5000 };
@@ -1235,7 +1291,17 @@ export default {
           const pr = d.presence || [];
           if (pr.length) {
             const box = el('div', 'lf-chips');
-            for (const day of pr.slice().reverse()) box.append(el('span', 'lf-chip', day));
+            for (const day of pr.slice().reverse()) {
+              const label = typeof day === 'string' ? day : (day && day.date ? String(day.date) : '');
+              if (!label) continue;
+              const chip = el('span', 'lf-chip', label);
+              if (day && typeof day === 'object' && (day.firstAt || day.lastAt)) {
+                const f = day.firstAt ? fmtLocal(day.firstAt, 'hm') : '';
+                const l = day.lastAt ? fmtLocal(day.lastAt, 'hm') : '';
+                chip.title = f && l && f !== l ? `首次 ${f} · 最近 ${l}` : (l || f);
+              }
+              box.append(chip);
+            }
             visitsCard.append(box);
           }
 
@@ -1265,6 +1331,7 @@ export default {
             const rows = [
               `常住母港：${j.homeName || d.town?.name || '兰州'}`,
               `旅行状态：${j.phase || 'home'}${j.city ? `（${j.city}）` : ''}`,
+              j.seat ? `当前舱位：${j.seat}${j.seatMult && j.seatMult !== 1 ? `（票价 ×${j.seatMult}）` : ''}` : '',
               j.tripWork ? `旅途打工：${j.tripWork.gig}` : '',
               j.restUntil ? `旅途休整至：${fmtLocal(j.restUntil, 'mdhm')}` : '',
               (j.partyWith && j.partyWith.length) ? `当前结伴同行（已 ${j.partyDays || 0} 天）：${j.partyWith.join('、')}` : '',
@@ -1277,19 +1344,44 @@ export default {
             bridgeCard.append(ul);
           }
 
+          const fmtEffects = (fx) => {
+            if (!fx || typeof fx !== 'object') return '';
+            const map = { food: '饱腹', energy: '精力', clean: '清洁', fun: '娱乐', social: '社交', knowledge: '见识', fitness: '体质' };
+            const parts = [];
+            for (const [k, label] of Object.entries(map)) {
+              const v = Math.round(Number(fx[k] || 0));
+              if (v > 0) parts.push(`${label}+${v}`);
+            }
+            return parts.join('/');
+          };
+
           boardCard.innerHTML = '';
           boardCard.append(el('h3', null, '《街口黑板报》'));
           const bd = d.bulletin || [];
-          if (!bd.length) {
+          const os = d.otherStalls || [];
+          if (!bd.length && !os.length) {
             boardCard.append(el('p', 'lf-muted', '黑板报这会儿还是空的（连同城服务器后会同步）。'));
           } else {
-            const ul = el('ul', 'lf-list');
-            for (const line of bd) {
-              const li = el('li');
-              li.textContent = line;
-              ul.append(li);
+            if (bd.length) {
+              const ul = el('ul', 'lf-list');
+              for (const line of bd) {
+                const li = el('li');
+                li.textContent = line;
+                ul.append(li);
+              }
+              boardCard.append(ul);
             }
-            boardCard.append(ul);
+            if (os.length) {
+              boardCard.append(el('p', 'lf-muted', '鱼市街街坊在售摊位：'));
+              const ul = el('ul', 'lf-list');
+              for (const st of os) {
+                const li = el('li');
+                const fx = fmtEffects(st.effects) || '饱腹+36/娱乐+12/社交+18';
+                li.textContent = `${st.seller} · ${st.item} · ${st.price}元（剩 ${st.stock} 份 · ${fx}${st.freshVeg ? ' · 鲜蔬' : ''}）`;
+                ul.append(li);
+              }
+              boardCard.append(ul);
+            }
           }
 
           stallsCard.innerHTML = '';
@@ -1301,7 +1393,8 @@ export default {
             const ul = el('ul', 'lf-list');
             for (const st of ms) {
               const li = el('li');
-              li.textContent = `${st.item} · ${st.price}元（剩 ${st.stock} 份${st.freshVeg ? ' · 鲜蔬' : ''}）`;
+              const fx = fmtEffects(st.effects);
+              li.textContent = `${st.item} · ${st.price}元（剩 ${st.stock} 份${st.freshVeg ? ' · 鲜蔬' : ''}${fx ? ` · ${fx}` : ''}）`;
               ul.append(li);
             }
             stallsCard.append(ul);

@@ -19,7 +19,7 @@
     },
     {
       "name": "life_act",
-      "description": "开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m)；闲/学/社：study(60m/涨见识) play(60m/22元) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。",
+      "description": "开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m) swim(60m/35元/涨体质/泳池免费)；闲/学/社：study(60m/涨见识) play(60m/22元) live_show(120m/88元) craft_shop(90m/55元/涨手作) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -58,10 +58,13 @@
               "paint",
               "workout",
               "pond",
+              "swim",
+              "live_show",
+              "craft_shop",
               "wake",
               "cancel"
             ],
-            "description": "动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/study/play/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。"
+            "description": "动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/swim/study/play/live_show/craft_shop/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。"
           }
         }
       },
@@ -141,13 +144,10 @@
     },
     {
       "name": "life_move",
-      "description": "搬去本城的另一档住处：城中村 / 老小区 / 新小区 / 别墅区。搬进去要一次押两个月的钱，老房子的押金退不回来（结清水电、赔墙上的钉子）。钱紧的时候**也可以往低处搬** —— 搬回城中村是能自救的那一步。搬不搬、什么时候搬，你自己看账。",
+      "description": "搬去本城的另一档住处（城中村 / 老小区 / 新小区 / 别墅区，押两个月房租，老押金不退，钱紧时也可往低处搬自救），或搬到同一座城市的其他街道（换街不收押金，不同街道有各自的街景介绍与属性增益/减益）。tier 和 street 可单传其一，也可同时传。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "tier"
-        ],
         "properties": {
           "tier": {
             "type": "string",
@@ -157,7 +157,11 @@
               "new",
               "villa"
             ],
-            "description": "城中村 urban-village / 老小区 old / 新小区 new / 别墅区 villa。"
+            "description": "换住处档位：城中村 urban-village / 老小区 old / 新小区 new / 别墅区 villa（可选）。"
+          },
+          "street": {
+            "type": "string",
+            "description": "搬去本城的哪条街道，填本城街道名（可选，换街不收押金，享受该街道的属性增益/减益）。"
           }
         }
       },
@@ -165,8 +169,8 @@
         "write"
       ],
       "summary": {
-        "zh": "搬家（城中村 / 老小区 / 新小区 / 别墅区）。",
-        "en": "Move to another housing tier."
+        "zh": "搬家换住处档位或换到同城其他街道。",
+        "en": "Move to another housing tier or another street in town."
       }
     },
     {
@@ -406,7 +410,7 @@
     },
     {
       "name": "life_buy",
-      "description": "去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来）。",
+      "description": "去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来；买鱼市街街坊摊位除商品本身补给外还会额外叠邻里社交与好心情）。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -427,7 +431,7 @@
     },
     {
       "name": "life_stall",
-      "description": "去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成。",
+      "description": "去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成；还可传 effects 自己分配商品给买家带来的属性回复（总点数随定价给 40–90 预算，五维每项 1:1 最多 55，见识每 1 点占 6 预算最多 6，体质每 1 点占 8 预算最多 4，超出预算按比例折算）。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -451,6 +455,41 @@
           "note": {
             "type": "string",
             "description": "摊头吆喝的一句话（可选）。"
+          },
+          "effects": {
+            "type": "object",
+            "description": "可选：自定义商品给买家回复的属性点数（总预算随定价 40–90；五维每项 1:1 上限 55，knowledge 见识 1:6 上限 6，fitness 体质 1:8 上限 4）。",
+            "additionalProperties": false,
+            "properties": {
+              "food": {
+                "type": "number",
+                "description": "饱腹回复点数（0–55）"
+              },
+              "energy": {
+                "type": "number",
+                "description": "精力回复点数（0–55）"
+              },
+              "clean": {
+                "type": "number",
+                "description": "清洁回复点数（0–55）"
+              },
+              "fun": {
+                "type": "number",
+                "description": "娱乐回复点数（0–55）"
+              },
+              "social": {
+                "type": "number",
+                "description": "社交回复点数（0–55）"
+              },
+              "knowledge": {
+                "type": "number",
+                "description": "见识回复点数（0–6，每点占 6 预算）"
+              },
+              "fitness": {
+                "type": "number",
+                "description": "体质回复点数（0–4，每点占 8 预算）"
+              }
+            }
           }
         }
       },

@@ -43,6 +43,10 @@ export interface JourneyView {
   earned: number;
   /** 在路上时的交通方式 id（walk / bike / car / bus / train / ship / plane 等）。 */
   modeId: string;
+  /** 在路上时的座位/舱位档 id 与名称（如 theme-cruise / 主题远洋游轮）。 */
+  seatId: string;
+  seat: string;
+  seatMult: number;
   /** 在外地住店时的酒店档位。 */
   hotelTier: '' | 'budget' | 'comfort' | 'view' | 'luxury';
   /** journey 侧登记的出发地城市名（与生活层芦花塘并排对齐）。 */
@@ -73,6 +77,9 @@ const EMPTY_JOURNEY: JourneyView = {
   spent: 0,
   earned: 0,
   modeId: '',
+  seatId: '',
+  seat: '',
+  seatMult: 1,
   hotelTier: '',
   homeName: '',
   restUntil: '',
@@ -120,6 +127,9 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
   const spent = Number(raw.money?.spent);
   const earned = Number(raw.money?.earned);
   const modeId = phase === 'traveling' && typeof raw.leg?.modeId === 'string' ? raw.leg.modeId : '';
+  const seatId = phase === 'traveling' && typeof raw.leg?.seatId === 'string' ? raw.leg.seatId : '';
+  const seat = phase === 'traveling' && typeof raw.leg?.seat === 'string' ? raw.leg.seat : '';
+  const seatMult = phase === 'traveling' && Number.isFinite(Number(raw.leg?.seatMult)) ? Number(raw.leg.seatMult) : 1;
   const rawTier = raw.hotelTier;
   const hotelTier = phase === 'staying' && (rawTier === 'budget' || rawTier === 'comfort' || rawTier === 'view' || rawTier === 'luxury')
     ? rawTier
@@ -161,6 +171,9 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
     spent: Number.isFinite(spent) ? spent : 0,
     earned: Number.isFinite(earned) ? earned : 0,
     modeId,
+    seatId,
+    seat,
+    seatMult,
     hotelTier,
     homeName,
     restUntil,
@@ -176,11 +189,56 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
 /* 本城：她住在哪儿                                                     */
 /* ------------------------------------------------------------------ */
 
+export type StreetModKey = 'food' | 'energy' | 'clean' | 'fun' | 'social' | 'know' | 'work';
+export type StreetMods = Partial<Record<StreetModKey, number>>;
+
+export interface StreetProfile {
+  name: string;
+  desc: string;
+  mods: StreetMods;
+}
+
+export const STREET_MOD_LABEL: Record<StreetModKey, string> = {
+  food: '饱腹',
+  energy: '精力',
+  clean: '清爽',
+  fun: '娱乐',
+  social: '社交',
+  know: '见识',
+  work: '工钱',
+};
+
+const STREET_MOD_KEYS: readonly StreetModKey[] = ['food', 'energy', 'clean', 'fun', 'social', 'know', 'work'];
+
+const DEFAULT_STREET_PROFILES: readonly StreetProfile[] = [
+  {
+    name: '南滨河路',
+    desc: '傍着黄河长廊与水车园，清晨有带露水的早市，傍晚河风吹散暑气，散步慢跑最养人，就是河滩风大容易沾灰。',
+    mods: { energy: 10, fun: 10, clean: -10 },
+  },
+  {
+    name: '张掖路',
+    desc: '老城最热闹的商业步行街，茶摊、馆子与傍晚半价尾货扎堆，街坊熟人多、零活也多，就是夜里灯火喧嚣不够清静。',
+    mods: { social: 15, work: 10, energy: -10 },
+  },
+  {
+    name: '皋兰路',
+    desc: '老院落与林荫道交错的安静街区，街角有旧书摊与小茶馆，屋里整洁、静下心看书学手艺最快，只是夜里略显冷清。',
+    mods: { clean: 10, know: 15, social: -10 },
+  },
+  {
+    name: '雁滩路',
+    desc: '河滩果园改出来的生活片区，菜摊果铺便宜实在，周末还有旧货集与夜唱摊子，吃喝消遣划算，就是离老城中心稍远。',
+    mods: { food: 15, fun: 10, work: -5 },
+  },
+];
+
 export interface TownView {
   id: string;
   name: string;
   origin: string;
   streets: string[];
+  streetProfiles: StreetProfile[];
   rules: string[];
   /** 服务器设过没有。false = 现在用的是内置默认。 */
   custom: boolean;
@@ -221,12 +279,80 @@ export function pickTownStreet(streets: readonly string[], seed: string): string
  * 有意写了两份：服务器没连上时她总得有个地方住，不能因为一个请求超时就说
  * 「你没有家」。两边都改才不漂 —— 只改一边，会出现「面板说兰州、别的鱼说另一个名字」。
  */
+export function normStreetMods(raw: unknown): StreetMods {
+  const out: StreetMods = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const k of STREET_MOD_KEYS) {
+    const n = Math.round(Number((raw as Record<string, unknown>)[k]));
+    if (Number.isFinite(n) && n !== 0) {
+      out[k] = Math.max(-30, Math.min(30, n));
+    }
+  }
+  return out;
+}
+
+export function normStreetProfiles(streets: readonly string[], rawProfiles?: unknown): StreetProfile[] {
+  const list = Array.isArray(rawProfiles) && rawProfiles.length ? rawProfiles : streets;
+  const out: StreetProfile[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    if (typeof item === 'string') {
+      const name = item.trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      const def = DEFAULT_STREET_PROFILES.find((p) => p.name === name);
+      out.push(def
+        ? { name: def.name, desc: def.desc, mods: { ...def.mods } }
+        : { name, desc: '', mods: {} });
+    } else if (item && typeof item === 'object') {
+      const o = item as Record<string, unknown>;
+      const name = typeof o.name === 'string' ? o.name.trim() : '';
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      const hasDesc = Object.prototype.hasOwnProperty.call(o, 'desc');
+      const hasMods = o.mods && typeof o.mods === 'object' && !Array.isArray(o.mods);
+      const def = DEFAULT_STREET_PROFILES.find((p) => p.name === name);
+      const desc = hasDesc ? String(o.desc ?? '').trim() : (def ? def.desc : '');
+      const mods = hasMods ? normStreetMods(o.mods) : (def ? { ...def.mods } : {});
+      out.push({ name, desc, mods });
+    }
+  }
+  return out;
+}
+
+export function findStreetProfile(
+  town: Pick<TownView, 'streets' | 'streetProfiles'>,
+  street: string,
+): StreetProfile | null {
+  const name = String(street || '').trim();
+  if (!name) return null;
+  const hit = town.streetProfiles?.find((p) => p.name === name);
+  if (hit) return hit;
+  if (town.streets?.includes(name)) {
+    const def = DEFAULT_STREET_PROFILES.find((p) => p.name === name);
+    return def ? { name: def.name, desc: def.desc, mods: { ...def.mods } } : { name, desc: '', mods: {} };
+  }
+  return null;
+}
+
+export function formatStreetMods(mods?: StreetMods): string {
+  if (!mods) return '';
+  const parts: string[] = [];
+  for (const k of STREET_MOD_KEYS) {
+    const v = Number(mods[k] ?? 0);
+    if (!Number.isFinite(v) || v === 0) continue;
+    parts.push(`${STREET_MOD_LABEL[k]} ${v > 0 ? `+${v}` : v}%`);
+  }
+  return parts.join(' · ');
+}
+
 export const BUILTIN_TOWN: TownView = {
   id: 'lanzhou',
   name: '兰州',
   origin: '黄河自西向东穿城，两岸黄土山梁夹着长长一溜灯火，铁桥横在河面上。'
     + '早上出门沿着河边走两步就能吃碗热面，晚上不管走多远，望见河谷里的灯就知道到家了。',
   streets: ['南滨河路', '张掖路', '皋兰路', '雁滩路'],
+  streetProfiles: DEFAULT_STREET_PROFILES.map((p) => ({ name: p.name, desc: p.desc, mods: { ...p.mods } })),
   rules: ['河里的不吃河里的', '货不过夜', '价自己定，别人说贵你就听着', '赊账记在心里，不记在账上'],
   custom: false,
   source: 'builtin',
@@ -293,6 +419,7 @@ export async function readTown(
     /* 来历、街名、城规都留空：他没填的东西我不替他编。 */
     origin: '',
     streets: [],
+    streetProfiles: [],
     rules: [],
     custom: true,
     source: 'own',
@@ -328,13 +455,16 @@ export async function readTown(
   }
   try {
     const j: any = await res.json();
-    const streets = Array.isArray(j?.streets) ? j.streets.filter((x: unknown) => typeof x === 'string') : [];
+    const rawStreets = Array.isArray(j?.streets) ? j.streets.filter((x: unknown) => typeof x === 'string') as string[] : [];
+    const profiles = normStreetProfiles(rawStreets.length ? rawStreets : BUILTIN_TOWN.streets, j?.streetProfiles);
+    const streets = profiles.map((p) => p.name);
     const rules = Array.isArray(j?.rules) ? j.rules.filter((x: unknown) => typeof x === 'string') : [];
     return {
       id: typeof j?.town === 'string' && j.town ? j.town : BUILTIN_TOWN.id,
       name: typeof j?.name === 'string' && j.name ? j.name : BUILTIN_TOWN.name,
       origin: typeof j?.origin === 'string' && j.origin ? j.origin : BUILTIN_TOWN.origin,
       streets: streets.length ? streets : BUILTIN_TOWN.streets.slice(),
+      streetProfiles: profiles,
       rules: rules.length ? rules : BUILTIN_TOWN.rules.slice(),
       custom: !!j?.custom,
       source: 'server',
@@ -586,6 +716,78 @@ export function archivePendingRequest(dataDir: string, file: string): void {
 /* 三期 L2 市集买方半场 + 街口黑板报 + 住户入册                        */
 /* ------------------------------------------------------------------ */
 
+export type StallEffectKey = 'food' | 'energy' | 'clean' | 'fun' | 'social' | 'knowledge' | 'fitness';
+export type StallEffects = Partial<Record<StallEffectKey, number>>;
+
+export const STALL_EFFECT_LABEL: Record<StallEffectKey, string> = {
+  food: '饱腹',
+  energy: '精力',
+  clean: '清洁',
+  fun: '娱乐',
+  social: '社交',
+  knowledge: '见识',
+  fitness: '体质',
+};
+
+export const STALL_EFFECT_LIMITS: Record<StallEffectKey, { max: number; weight: number }> = {
+  food: { max: 55, weight: 1 },
+  energy: { max: 55, weight: 1 },
+  clean: { max: 55, weight: 1 },
+  fun: { max: 55, weight: 1 },
+  social: { max: 55, weight: 1 },
+  knowledge: { max: 6, weight: 6 },
+  fitness: { max: 4, weight: 8 },
+};
+
+export function stallEffectBudget(price: number): number {
+  const p = Math.max(1, Math.min(999, Math.round(Number(price) || 1)));
+  return Math.max(40, Math.min(90, Math.round(35 + Math.sqrt(p) * 6)));
+}
+
+export function normStallEffects(raw: unknown, price = 15): StallEffects | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const src = raw as Record<string, unknown>;
+  const picked: StallEffects = {};
+  let totalCost = 0;
+  for (const [k, rule] of Object.entries(STALL_EFFECT_LIMITS) as [StallEffectKey, { max: number; weight: number }][]) {
+    const v = Math.round(Number(src[k] ?? 0));
+    if (!Number.isFinite(v) || v <= 0) continue;
+    const clamped = Math.min(rule.max, v);
+    picked[k] = clamped;
+    totalCost += clamped * rule.weight;
+  }
+  const keys = Object.keys(picked) as StallEffectKey[];
+  if (!keys.length) return undefined;
+  const budget = stallEffectBudget(price);
+  if (totalCost > budget) {
+    const ratio = budget / totalCost;
+    let remain = budget;
+    for (const k of keys) {
+      const rule = STALL_EFFECT_LIMITS[k];
+      const scaled = Math.min(rule.max, Math.floor((picked[k] ?? 0) * ratio));
+      const maxAfford = Math.floor(remain / rule.weight);
+      const finalVal = Math.max(0, Math.min(scaled, maxAfford));
+      if (finalVal > 0) {
+        picked[k] = finalVal;
+        remain -= finalVal * rule.weight;
+      } else {
+        delete picked[k];
+      }
+    }
+  }
+  return Object.keys(picked).length ? picked : undefined;
+}
+
+export function formatStallEffects(effects?: StallEffects | null): string {
+  if (!effects) return '';
+  const parts: string[] = [];
+  for (const k of Object.keys(STALL_EFFECT_LIMITS) as StallEffectKey[]) {
+    const v = Math.round(Number(effects[k] ?? 0));
+    if (v > 0) parts.push(`${STALL_EFFECT_LABEL[k]}+${v}`);
+  }
+  return parts.join('/');
+}
+
 export interface TownStall {
   id: string;
   seller: string;
@@ -595,6 +797,7 @@ export interface TownStall {
   stock: number;
   freshVeg?: boolean;
   note?: string;
+  effects?: StallEffects;
 }
 
 export interface TownDeal {
@@ -677,16 +880,21 @@ export async function fetchTownStalls(
     const list = Array.isArray(j?.stalls) ? j.stalls : [];
     const stalls: TownStall[] = list
       .filter((x: any) => x && typeof x.id === 'string' && typeof x.item === 'string' && Number(x.price) > 0 && Number(x.stock) > 0)
-      .map((x: any) => ({
-        id: String(x.id),
-        seller: typeof x.seller === 'string' ? x.seller : '街坊',
-        kind: x.kind === 'errand' ? 'errand' : 'goods',
-        item: String(x.item),
-        price: Math.round(Number(x.price)),
-        stock: Math.round(Number(x.stock)),
-        freshVeg: Boolean(x.freshVeg),
-        ...(typeof x.note === 'string' && x.note ? { note: x.note } : {}),
-      }));
+      .map((x: any) => {
+        const price = Math.round(Number(x.price));
+        const effects = normStallEffects(x.effects, price);
+        return {
+          id: String(x.id),
+          seller: typeof x.seller === 'string' ? x.seller : '街坊',
+          kind: x.kind === 'errand' ? 'errand' : 'goods',
+          item: String(x.item),
+          price,
+          stock: Math.round(Number(x.stock)),
+          freshVeg: Boolean(x.freshVeg),
+          ...(typeof x.note === 'string' && x.note ? { note: x.note } : {}),
+          ...(effects ? { effects } : {}),
+        };
+      });
     const bulletin = Array.isArray(j?.bulletin)
       ? j.bulletin.filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0)
       : [];
@@ -701,7 +909,7 @@ export async function buyTownStall(
   stallId: string,
   buyer: string,
   opts: { timeoutMs?: number; buyerUid?: string; note?: string } = {},
-): Promise<{ ok: boolean; item?: string; price?: number; seller?: string; freshVeg?: boolean; reason?: string }> {
+): Promise<{ ok: boolean; item?: string; price?: number; seller?: string; freshVeg?: boolean; effects?: StallEffects; reason?: string }> {
   const roots = parseTownUrls(townUrl);
   if (!roots.length) return { ok: false, reason: '没配城服务器地址' };
   const { res } = await tryTownFetch(
@@ -725,12 +933,15 @@ export async function buyTownStall(
     if (!res.ok || !j?.ok) {
       return { ok: false, reason: typeof j?.error === 'string' ? j.error : `市集返回 ${res.status}` };
     }
+    const price = Math.round(Number(j?.price ?? 0));
+    const effects = normStallEffects(j?.effects, price || 15);
     return {
       ok: true,
       item: typeof j?.item === 'string' ? j.item : '一份吃食',
-      price: Math.round(Number(j?.price ?? 0)),
+      price,
       seller: typeof j?.seller === 'string' ? j.seller : '街坊',
       freshVeg: Boolean(j?.freshVeg),
+      ...(effects ? { effects } : {}),
     };
   } catch {
     return { ok: false, reason: '市集连不上' };
@@ -739,19 +950,25 @@ export async function buyTownStall(
 
 export async function postTownStall(
   townUrl: string | readonly string[],
-  payload: { uid: string; pet: string; item: string; price: number; stock?: number; freshVeg?: boolean; kind?: 'goods' | 'errand'; note?: string },
+  payload: { uid: string; pet: string; item: string; price: number; stock?: number; freshVeg?: boolean; kind?: 'goods' | 'errand'; note?: string; effects?: StallEffects },
   opts: { timeoutMs?: number } = {},
-): Promise<{ ok: boolean; id?: string; seller?: string; item?: string; price?: number; stock?: number; freshVeg?: boolean; reason?: string }> {
+): Promise<{ ok: boolean; id?: string; seller?: string; item?: string; price?: number; stock?: number; freshVeg?: boolean; effects?: StallEffects; reason?: string }> {
   const roots = parseTownUrls(townUrl);
   if (!roots.length) return { ok: false, reason: '没配城服务器地址' };
   if (!payload.uid) return { ok: false, reason: '缺少本机 uid，无法实名挂摊' };
+  const normalizedEffects = normStallEffects(payload.effects, payload.price);
+  const bodyPayload = {
+    ...payload,
+    ...(normalizedEffects ? { effects: normalizedEffects } : {}),
+  };
+  if (!normalizedEffects) delete bodyPayload.effects;
   const { res } = await tryTownFetch(
     roots,
     '/town/stalls',
     {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(bodyPayload),
     },
     opts.timeoutMs ?? 2500,
   );
@@ -767,14 +984,17 @@ export async function postTownStall(
       const rawErr = typeof j?.error === 'string' ? j.error : '';
       return { ok: false, reason: msgMap[rawErr] || rawErr || `挂摊返回 ${res.status}` };
     }
+    const price = Math.round(Number(j?.price ?? payload.price));
+    const resEffects = normStallEffects(j?.effects, price) ?? normalizedEffects;
     return {
       ok: true,
       id: typeof j?.id === 'string' ? j.id : '',
       seller: typeof j?.seller === 'string' ? j.seller : payload.pet,
       item: typeof j?.item === 'string' ? j.item : payload.item,
-      price: Math.round(Number(j?.price ?? payload.price)),
+      price,
       stock: Math.round(Number(j?.stock ?? payload.stock ?? 1)),
       freshVeg: Boolean(j?.freshVeg),
+      ...(resEffects ? { effects: resEffects } : {}),
     };
   } catch {
     return { ok: false, reason: '市集连不上' };

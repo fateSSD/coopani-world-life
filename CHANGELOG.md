@@ -1,5 +1,21 @@
 # 变更记录
 
+## 1.2.0 — 2026-11-23（游轮双栖与街道风貌 + 最近陪伴双修 + 鱼市街自主配点与曝光）
+
+- **游轮双栖活动与三项新活动**：
+  - `src/state.ts`、`src/world.ts`、`describe.json`、`ENV_PROMPT.md` 新增 `swim`（游泳池/游轮泳池，+2.5 体质）、`live_show`（海上大剧院/剧院看演出）、`craft_shop`（做手作，+1.5 手艺经验与见识），`ACTS` 扩至 33 项；主题远洋游轮在途放行水上及室内游乐饮食动作且一价全包 0 元；普通车辆/渡轮/飞机拦截报错按交通工具分流，不再把渡轮喊成「车上」；修复 `advance()` 睡眠回精再乘 `streetDecay` 抵消的缺陷。
+- **旅途动作场景持久化防误判「在家里」**：
+  - `src/state.ts` 保留跨存读档 `activity.scene`，外地住店与在途活动完成结算写回生活记忆与日记素材时不再退化成「在家里」。
+- **街道档案介绍、属性增益/减益与同城免费换街**：
+  - `src/bridge.ts`、`src/state.ts`、`src/world.ts` 同步服务端 `streetProfiles`（含街道介绍与五维衰减/恢复倍率、见识倍率），支持 `life_move` 与面板「搬过去」卡片传 `street` 免费同城换街（不收押金，推 `life.moved` 并重报 `/town/join`）。
+- **修复「最近陪伴」近 7 天统计越界与 `[object Object]` 胶囊**：
+  - `src/state.ts` 修正 `recentVisits()` 按自然日窗口 `(span - 1)` 天并卡 `<= today`，不再把连续 7 天算成 8 天；
+  - [panel-1.2.0.js](web/panel-1.2.0.js) 修复 `relation` 页签渲染 `d.presence` 时提取 `day.date`（并在 `title` 悬停显示首末来访时分），同步升级版本号至 `1.2.0` 与 `cortico.webUiClient` 并补充缓存三同步测试守卫。
+- **鱼市街自主配点摆摊与购买加成曝光**：
+  - `src/bridge.ts` 导出与 `sight-cf` 同源的 `STALL_EFFECT_LIMITS`、`stallEffectBudget()`、`normStallEffects()` 与 `formatStallEffects()`（按定价给予 40–90 预算，五维 1:1 单项上限 55、`knowledge` 1:6 上限 6、`fitness` 1:8 上限 4，超预算等比折算）。
+  - `src/world.ts`、`describe.json`、`ENV_PROMPT.md`、`web/panel-1.2.0.js` 升级 `life_stall` 支持传 `effects` 自定义买家回复，升级 `life_buy` 买别家摊位时按 `effects`（或默认 `饱腹+36 / 娱乐+12 / 社交+10`）结算五维/见识/体质，固定叠加邻里社交 `+8`（单次社交封顶 `+25`）与 3 小时正向 `town-buy` 心情（回 `>= 30` 清 `lonely`，回 `>= LOW + 15` 清对应 `nagged`）；并在 `life.bulletin`、`life_status`、`lowText('food'/'fun')`、`life.day` 白天提醒与 `relation` 面板直曝在售摊位。
+- **测试**：`node --check web/panel-1.2.0.js` 通过、`test/smoke.mjs` **355/355** 通过、`test/*.test.mjs` **66/66** 通过。
+
 ## 1.1.4 — 2026-11-23（本城街道按 `uid` 均匀分配 + 旧城街道自愈重报）
 
 - **修复所有用户被分配到同一条街（`南滨河路`）且本地未写街名**：

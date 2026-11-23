@@ -34,6 +34,7 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { type JobDef, findJob, certOf, CERTS, jobAllowedAt } from './jobs.ts';
+import { type StreetMods, type StreetProfile, formatStreetMods } from './bridge.ts';
 import {
   SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, findCourse, findEquip,
   rollWorkGrade, solarTermOf, streetWindowOf, marketCatalogOf, isLateNightQuiet, buildDreamSlice,
@@ -757,9 +758,26 @@ export interface AdvanceExt {
   phase?: '' | 'home' | 'staying' | 'traveling';
   hotelTier?: '' | 'budget' | 'comfort' | 'view' | 'luxury';
   modeId?: string;
+  seatId?: string;
+  seat?: string;
   journeyCity?: string;
   gradeRoll?: number;
   dreamRoll?: number;
+  streetMods?: StreetMods;
+}
+
+/** 街道对本城日常五维衰减的乘数：+10% 增益 -> 衰减率 ×0.90；-10% 减益 -> 衰减率 ×1.10。 */
+export function streetDecayFactor(mods: StreetMods | undefined, key: VitalKey): number {
+  const pct = Number(mods?.[key] ?? 0);
+  if (!Number.isFinite(pct) || pct === 0) return 1;
+  return Math.max(0.5, Math.min(1.5, 1 - pct / 100));
+}
+
+/** 街道对本城正向收益（五维恢复 / 睡眠回精 / 读书见识 / 出工收入）的乘数：+10% -> ×1.10；-10% -> ×0.90。 */
+export function streetGainFactor(mods: StreetMods | undefined, key: keyof StreetMods): number {
+  const pct = Number(mods?.[key] ?? 0);
+  if (!Number.isFinite(pct) || pct === 0) return 1;
+  return Math.max(0.5, Math.min(1.5, 1 + pct / 100));
 }
 
 /** 她的行为表。除了 wake / cancel，每件事都要花一段真实时间，按分钟慢慢生效。 */
@@ -777,6 +795,8 @@ export interface ActKind {
   perMin: Partial<Record<VitalKey, number>>;
   /** 做完一整个动作共涨多少见识（按分钟分摊）。 */
   know?: number;
+  /** 做完一整个动作涨多少体质。 */
+  fit?: number;
   /** 做完可能产生的情绪。 */
   mood?: { text: string; kind: 'good' | 'bad'; hours: number };
   /** 轻量场景、穿搭与手边物品提示（供日记素材与跨扩展生图联动）。 */
@@ -795,6 +815,7 @@ const mkAct = (
   opts: {
     perMin?: Partial<Record<VitalKey, number>>;
     know?: number;
+    fit?: number;
     mood?: { text: string; kind: 'good' | 'bad'; hours: number };
     scene?: string;
     outfitHint?: string;
@@ -807,7 +828,7 @@ const mkAct = (
       perMin[k as VitalKey] = r2(Number(v) / minutes);
     }
   }
-  return { id, label, minutes, cost, gain, perMin, know: opts.know, mood: opts.mood, scene: opts.scene, outfitHint: opts.outfitHint, props: opts.props };
+  return { id, label, minutes, cost, gain, perMin, know: opts.know, fit: opts.fit, mood: opts.mood, scene: opts.scene, outfitHint: opts.outfitHint, props: opts.props };
 };
 
 export const ACTS: Record<string, ActKind> = {
@@ -816,10 +837,11 @@ export const ACTS: Record<string, ActKind> = {
     mood: { text: '吃得舒服，心里也顺', kind: 'good', hours: 3 },
     scene: '街巷小馆子', outfitHint: '日常便装', props: '热菜和米饭',
   }),
-  eat: mkAct('eat', '吃一顿', 40, 15, { food: 30 }),
+  eat: mkAct('eat', '吃一顿', 40, 15, { food: 30 }, {
+    scene: '家里或巷口饭店', outfitHint: '日常便装', props: '家常菜',
+  }),
   instant: mkAct('instant', '随便吃点', 15, 0, { food: 15 }, {
     mood: { text: '凑合一口，心里有点不是滋味', kind: 'bad', hours: 2 },
-    scene: '家里或巷口饭店', outfitHint: '日常便装', props: '家常菜',
     scene: '家里餐桌', outfitHint: '居家服', props: '速食饼干或泡面',
   }),
   cook: mkAct('cook', '买菜自己做', 55, 10, { food: 36, fun: 8, energy: -4, clean: -2 }, {
@@ -860,6 +882,7 @@ export const ACTS: Record<string, ActKind> = {
     scene: '滨河木栈道', outfitHint: '休闲外套',
   }),
   tidy: mkAct('tidy', '收拾屋子', 45, 0, { clean: 27, energy: -7, fun: -2 }, {
+    fit: 0.5,
     mood: { text: '屋里整整齐齐，看着顺眼', kind: 'good', hours: 3 },
     scene: '家里客厅与书桌', outfitHint: '居家服', props: '抹布与收纳篮',
   }),
@@ -923,12 +946,28 @@ export const ACTS: Record<string, ActKind> = {
     scene: '白塔山长椅', outfitHint: '耐脏帆布围裙与便装', props: '画板与水彩笔',
   }),
   workout: mkAct('workout', '跑步锻炼', 45, 0, { fun: 16, energy: -10, clean: -11, food: -5 }, {
+    fit: 3,
     mood: { text: '出了一身汗，整个人通透了', kind: 'good', hours: 3 },
     scene: '滨河跑道', outfitHint: '运动速干装与跑鞋', props: '毛巾与水壶',
   }),
   pond: mkAct('pond', '滨河散步看黄河', 40, 0, { fun: 14, social: 4, energy: -2 }, {
+    fit: 0.5,
     mood: { text: '风吹过河面，看着水车和水波挺解压', kind: 'good', hours: 3 },
     scene: '南滨河路水边', outfitHint: '休闲外套', props: '一点面包碎',
+  }),
+  swim: mkAct('swim', '去游泳', 60, 35, { fun: 28, clean: 20, energy: -9 }, {
+    fit: 2.5,
+    mood: { text: '在水里畅快游了几个来回，浑身轻快透亮', kind: 'good', hours: 3 },
+    scene: '城里恒温泳馆', outfitHint: '泳装与泳镜', props: '泳镜与浴巾',
+  }),
+  live_show: mkAct('live_show', '看现场演出', 120, 88, { fun: 58, social: 22, energy: -8 }, {
+    mood: { text: '现场灯光和台上的气氛太顶了，看完还在回味', kind: 'good', hours: 4 },
+    scene: '城里小剧场或 Livehouse', outfitHint: '亮眼出门便装', props: '演出票根与荧光手环',
+  }),
+  craft_shop: mkAct('craft_shop', '做手作工坊', 90, 55, { fun: 38, social: 10, energy: -6, clean: -2 }, {
+    know: 2,
+    mood: { text: '亲手做好一件小摆件带回来，心里满满当当的', kind: 'good', hours: 4 },
+    scene: '街巷陶艺或簇绒手作坊', outfitHint: '休闲便装系手作围裙', props: '簇绒布架或陶土转盘',
   }),
 
   // ---- 控制指令（0 分钟） ----
@@ -1286,6 +1325,7 @@ function normActivity(a: unknown, now: Date): ActiveTask | null {
     workPay: Number.isFinite(Number(o.workPay)) ? Number(o.workPay) : 0,
     workTier: o.workTier,
     mood: o.mood,
+    ...(typeof o.scene === 'string' && o.scene ? { scene: o.scene } : {}),
   };
 }
 
@@ -1464,6 +1504,8 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   const fromMs = to - hours * 3_600_000;
 
   const before: Vitals = { ...state.vitals };
+  const atHomeTown = ext?.phase !== 'staying' && ext?.phase !== 'traveling';
+  const sMods = atHomeTown ? ext?.streetMods : undefined;
 
   /* ---------------- 睡着的那一段 ---------------- */
 
@@ -1541,8 +1583,9 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
         if (delta > 0) {
           if (key === 'food' && actTask.kind === 'act' && hasStomach) delta *= 0.5;
           if (hasHangover) delta *= 0.75;
+          delta *= streetGainFactor(sMods, key);
         } else if (delta < 0) {
-          delta *= reliefOf(key);
+          delta *= reliefOf(key) * streetDecayFactor(sMods, key);
         }
         state.vitals[key] = clamp100(state.vitals[key] + delta);
         if (delta > 0 && state.vitals[key] >= LOW + 15 && state.nagged) {
@@ -1553,7 +1596,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
       }
 
       if (actTask.knowPerMin && actTask.knowPerMin > 0 && state.knowledge < KNOWLEDGE_MAX) {
-        state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + actTask.knowPerMin * actualMins);
+        state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + actTask.knowPerMin * actualMins * streetGainFactor(sMods, 'know'));
       }
 
       /* 按流逝分钟扣钱（整数元累进，不留浮点尾巴）。 */
@@ -1613,6 +1656,9 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
               ? 0
               : Math.round((actTask.workPay ?? 0) * g.mult);
           }
+          if (earned > 0 && sMods) {
+            earned = Math.max(0, Math.round(earned * streetGainFactor(sMods, 'work')));
+          }
 
           if (earned > 0) {
             state.money.cash += earned;
@@ -1670,10 +1716,18 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
           }
           const actDef = ACTS[actTask.id];
           if (!outOfCash) {
-            const fitGain = actTask.id === 'workout' ? 3 : (actTask.id === 'tidy' || actTask.id === 'pond' ? 0.5 : 0);
+            const fitGain = actDef?.fit ?? 0;
             if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain);
+            if (actTask.id === 'craft_shop') {
+              state.skills = state.skills ?? {};
+              state.skills.craft = Math.min(100, (state.skills.craft ?? 0) + 1.5);
+            }
           }
-          const sceneBit = (actTask.scene ?? actDef?.scene) ? `在${actTask.scene ?? actDef?.scene}` : '';
+          const fallbackScene = !actTask.scene
+            ? resolveActScene(actTask.id, { phase: ext?.phase, modeId: ext?.modeId, cityName: ext?.journeyCity, seatId: ext?.seatId, seat: ext?.seat }, state.street)
+            : undefined;
+          const finalScene = actTask.scene ?? fallbackScene ?? actDef?.scene;
+          const sceneBit = finalScene ? `在${finalScene}` : '';
           const propBit = actDef?.props ? `（${actDef.props}）` : '';
           remember(
             state,
@@ -1715,12 +1769,20 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
    * 潮气和通风不因为她躺着就绕道。
    */
   const stayingTier = ext?.phase === 'staying' && ext.hotelTier ? ext.hotelTier : null;
-  const travelMult = ext?.phase === 'traveling' && ext.modeId ? TRAVEL_MODE_DECAY_MULT[ext.modeId] : null;
+  const themeCruise = isThemeCruiseJourney(ext);
+  const regularCruise = !themeCruise && isCruiseJourney(ext);
+  const travelMult = themeCruise
+    ? { energy: 0.65, food: 1 }
+    : regularCruise
+      ? { energy: 0.75, food: 1 }
+      : (ext?.phase === 'traveling' && ext.modeId ? TRAVEL_MODE_DECAY_MULT[ext.modeId] : null);
   const hotelSleepBonus = stayingTier === 'luxury' ? 1.15 : stayingTier === 'view' ? 1.08 : 1;
-  const energyRegenMult = fitnessEnergyRegenMult(state.fitness) * hotelSleepBonus;
+  const energyRegenMult = fitnessEnergyRegenMult(state.fitness) * hotelSleepBonus * streetGainFactor(sMods, 'energy');
   const reliefOf = (key: VitalKey): number => {
     if (key === 'energy') return 1;
     if (stayingTier === 'luxury' && (key === 'fun' || key === 'social')) return 0;
+    if (themeCruise) return 0.7;
+    if (regularCruise) return 0.85;
     return stayingTier ? HOTEL_TIER_RELIEF[stayingTier] : (HOME_TIER_RELIEF[state.home.tier] ?? 1);
   };
 
@@ -1733,11 +1795,14 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
     const modeFactor = key === 'energy'
       ? (travelMult?.energy ?? 1)
       : (key === 'food' ? (travelMult?.food ?? 1) : 1);
+    const streetDecay = streetDecayFactor(sMods, key);
+    /* 睡眠回精（sleepDelta > 0）的街道增益已计入 energyRegenMult，不再叠加衰减乘数 */
+    const sleepStreet = sleepDelta > 0 ? 1 : streetDecay;
     const awakeUsed = key === 'energy' ? awakeHours : effectiveAwakeHours;
     const sleepUsed = key === 'energy' ? sleepHours : (sleepHours + nightSlept);
     const v = state.vitals[key]
-      - DECAY_PER_HOUR[key] * relief * modeFactor * awakeUsed
-      + sleepDelta * relief * sleepUsed;
+      - DECAY_PER_HOUR[key] * relief * modeFactor * streetDecay * awakeUsed
+      + sleepDelta * relief * sleepStreet * sleepUsed;
     state.vitals[key] = clamp100(v);
   }
 
@@ -2031,16 +2096,149 @@ export function busyRefusal(state: LifeState, now: Date, what: string): string {
 export interface ActJourneyContext {
   phase?: '' | 'home' | 'staying' | 'traveling';
   toName?: string;
+  cityName?: string;
   modeId?: string;
+  seatId?: string;
+  seat?: string;
+  hotelTier?: '' | 'budget' | 'comfort' | 'view' | 'luxury';
   onWay?: { what: string; arriveAt: string; leftMin: number } | null;
   atSpot?: { name: string; until: string } | null;
+}
+
+/** 是否正乘坐中长途过夜客轮或远洋游轮。 */
+export function isCruiseJourney(j?: { phase?: string; modeId?: string; seatId?: string; seat?: string }): boolean {
+  if (j?.phase !== 'traveling' || j?.modeId !== 'ship') return false;
+  if (j.seatId && ['inside-cabin', 'ocean-balcony', 'theme-cruise'].includes(j.seatId)) return true;
+  return /游轮|邮轮|客轮|阳台房|内舱/.test(j.seat ?? '');
+}
+
+/** 是否正乘坐一价全包的主题远洋游轮。 */
+export function isThemeCruiseJourney(j?: { phase?: string; modeId?: string; seatId?: string; seat?: string }): boolean {
+  if (!isCruiseJourney(j)) return false;
+  return j?.seatId === 'theme-cruise' || /主题|远洋游轮|远洋邮轮/.test(j?.seat ?? '');
+}
+
+const CRUISE_ACT_SCENES: Record<string, string> = {
+  feast: '游轮轮换主题餐厅（松露烤菌菇与炭烤牛排）',
+  eat: '游轮海景自助餐廊',
+  instant: '游轮客舱小桌旁',
+  tea: '游轮观海茶歇廊与奶茶铺',
+  supper: '游轮甲板夜宵吧',
+  drink: '游轮船尾观海酒廊',
+  sleep: '游轮客舱软床',
+  nap: '游轮客舱躺椅',
+  rest: '游轮观海甲板躺椅',
+  wash: '游轮客舱浴室',
+  spa: '游轮海上水疗中心',
+  sunbathe: '游轮船尾露天甲板',
+  study: '游轮观海阅览室',
+  play: '游轮室内电玩街区与海上过山车',
+  movie: '游轮星光放映厅',
+  karaoke: '游轮海上 KTV 包厢',
+  workout: '游轮海景健身房',
+  swim: '游轮顶层无边泳池与高空水滑道',
+  live_show: '游轮海上大剧院',
+  craft_shop: '游轮室内文创手作角',
+  chat: '游轮甲板或客舱',
+};
+
+/**
+ * 按当前所在位置与旅途阶段解析动作真实场景，防止在途或住店时显示成「在家里」。
+ */
+export function resolveActScene(
+  actId: string,
+  journey?: ActJourneyContext,
+  homeStreet?: string,
+): string | undefined {
+  const phase = journey?.phase;
+  if (phase === 'traveling') {
+    if (isCruiseJourney(journey)) {
+      return CRUISE_ACT_SCENES[actId] ?? '游轮甲板或公共休闲区';
+    }
+    const map: Record<string, string> = {
+      study: '旅途车厢座位旁',
+      instant: '旅途车上小桌板旁',
+      rest: '旅途车厢座位上',
+      nap: '旅途车厢座位上',
+      sleep: '旅途车厢铺位上',
+      drink: '旅途餐车小桌旁',
+      chat: '旅途车上或手机上',
+    };
+    if (map[actId]) return map[actId];
+    const baseScene = ACTS[actId]?.scene ?? '';
+    if (baseScene.includes('家里') || baseScene.includes('自家')) return '旅途车上';
+    return undefined;
+  }
+  if (phase === 'staying') {
+    if (journey?.onWay) {
+      const map: Record<string, string> = {
+        study: '城内车上',
+        instant: '车上或路边',
+        rest: '车上座位',
+        chat: '车上或手机上',
+      };
+      if (map[actId]) return map[actId];
+    }
+    const spot = String(journey?.atSpot?.name ?? '').trim();
+    if (spot) {
+      const map: Record<string, string> = {
+        study: `${spot}长椅旁`,
+        instant: `${spot}歇脚处`,
+        rest: `${spot}长椅上`,
+        paint: `${spot}写生角`,
+        sunbathe: `${spot}向阳处`,
+        picnic: `${spot}草坪上`,
+        pond: `${spot}水边`,
+      };
+      if (map[actId]) return map[actId];
+    }
+    const city = String(journey?.cityName ?? '').trim() || '当地';
+    const stayingMap: Record<string, string> = {
+      wash: '酒店浴室',
+      swim: '酒店恒温泳池',
+      study: '酒店书桌旁',
+      instant: '酒店房间小桌旁',
+      eat: '住处附近小馆子',
+      cook: '旅舍共享厨房',
+      sleep: '酒店房间床铺',
+      nap: '酒店房间床边',
+      tidy: '酒店房间与行李箱旁',
+      play: '酒店房间沙发边',
+      market: `${city}早市集市`,
+      paint: `${city}街头长椅`,
+      pond: `${city}河岸水边`,
+    };
+    return stayingMap[actId];
+  }
+  const st = String(homeStreet ?? '').trim();
+  if (st && actId === 'market') return `${st}早市`;
+  return undefined;
 }
 
 /** 可在车上、途中或景区顺手做而不占用物理场所的轻量动作。 */
 export const NON_OCCUPYING_ACTS = new Set(['chat', 'rest']);
 const COMMUTE_ALLOWED_ACTS = new Set(['wake', 'cancel', 'chat', 'rest', 'study', 'instant']);
 const TRAVEL_ALLOWED_ACTS = new Set(['wake', 'cancel', 'chat', 'rest', 'study', 'instant', 'sleep', 'nap', 'drink']);
+const CRUISE_ALLOWED_ACTS = new Set([
+  'wake', 'cancel', 'chat', 'rest', 'study', 'instant', 'sleep', 'nap', 'drink',
+  'eat', 'feast', 'tea', 'supper', 'wash', 'spa', 'sunbathe', 'play', 'movie',
+  'karaoke', 'workout', 'swim', 'live_show', 'craft_shop',
+]);
+const THEME_CRUISE_FREE_ACTS = new Set([
+  'eat', 'feast', 'tea', 'supper', 'swim', 'live_show', 'play', 'movie',
+]);
 const SPOT_BLOCKED_ACTS = new Set(['wash', 'tidy', 'cook', 'sleep', 'nap']);
+
+export function actEffectiveCost(act: ActKind, journey?: ActJourneyContext): number {
+  if (isThemeCruiseJourney(journey) && THEME_CRUISE_FREE_ACTS.has(act.id)) return 0;
+  if (act.id === 'swim' && (
+    isCruiseJourney(journey)
+    || (journey?.phase === 'staying' && (journey.hotelTier === 'luxury' || journey.hotelTier === 'view'))
+  )) {
+    return 0;
+  }
+  return act.cost;
+}
 
 export function applyAct(
   state: LifeState, kindId: string, now: Date, journey?: ActJourneyContext,
@@ -2186,17 +2384,32 @@ export function applyAct(
     };
   }
 
-  /* 旅途/通勤物理约束：车上不能洗澡做饭，跨城赶路不能去做本地居家活动。 */
-  if (journey?.phase === 'traveling' && !TRAVEL_ALLOWED_ACTS.has(act.id)) {
-    return {
-      ok: false,
-      reason: `你这会儿还在去${journey.toName || '下一站'}的路上，车上没法「${act.label}」—— `
-        + '先做点顺手的事（闲聊、歇会儿、看书、随便吃点），到了住下来再说。',
-      vitals: state.vitals,
-      mood: null,
-      cost: 0,
-      cash: state.money.cash,
-    };
+  /* 旅途/通勤物理约束：车上不能洗澡做饭，跨城赶路不能去做本地居家活动；过夜客轮与远洋游轮额外放行船上设施与吃喝演出。 */
+  if (journey?.phase === 'traveling') {
+    if (isCruiseJourney(journey)) {
+      if (!CRUISE_ALLOWED_ACTS.has(act.id)) {
+        return {
+          ok: false,
+          reason: `你这会儿正在去${journey.toName || '下一站'}的游轮上，船上没法「${act.label}」—— `
+            + '可以去顶层泳池游泳（swim）、海上剧院看演出（live_show）、主题餐厅吃顿好的（feast）、喝下午茶（tea）或打电玩（play），到了岸再做这件。',
+          vitals: state.vitals,
+          mood: null,
+          cost: 0,
+          cash: state.money.cash,
+        };
+      }
+    } else if (!TRAVEL_ALLOWED_ACTS.has(act.id)) {
+      const carrier = journey.modeId === 'ship' ? '船上' : journey.modeId === 'plane' ? '飞机上' : '车上';
+      return {
+        ok: false,
+        reason: `你这会儿还在去${journey.toName || '下一站'}的路上，${carrier}没法「${act.label}」—— `
+          + '先做点顺手的事（闲聊、歇会儿、看书、随便吃点），到了住下来再说。',
+        vitals: state.vitals,
+        mood: null,
+        cost: 0,
+        cash: state.money.cash,
+      };
+    }
   }
   if (journey?.phase === 'traveling' && (act.id === 'sleep' || act.id === 'nap')
     && (journey.modeId === 'walk' || journey.modeId === 'bike' || journey.modeId === 'motorcycle' || journey.modeId === 'scooter')) {
@@ -2239,14 +2452,15 @@ export function applyAct(
    * 只说「钱不够」她会愣在那儿，下次再试一次，还是不行。
    * 说「钱不够，只能将就吃一口」，她才知道路在哪儿。
    */
-  if (act.cost > state.money.cash) {
-    const alt = Object.values(ACTS).filter((a) => a.cost <= state.money.cash);
+  const effectiveCost = actEffectiveCost(act, journey);
+  if (effectiveCost > state.money.cash) {
+    const alt = Object.values(ACTS).filter((a) => actEffectiveCost(a, journey) <= state.money.cash);
     const altText = alt.length
       ? `现在还能做：${alt.map((a) => `${a.label}（${a.id}）`).join('　')}。`
       : '现在什么都做不了 —— 一分钱都没有了。';
     return {
       ok: false,
-      reason: `「${act.label}」要 ${act.cost} 元，你手上只有 ${state.money.cash} 元。${altText}`,
+      reason: `「${act.label}」要 ${effectiveCost} 元，你手上只有 ${state.money.cash} 元。${altText}`,
       vitals: state.vitals,
       mood: null,
       cost: 0,
@@ -2260,6 +2474,7 @@ export function applyAct(
    */
   if (act.id === 'sleep') {
     const untilIso = new Date(now.getTime() + act.minutes * 60_000).toISOString();
+    const sceneOverride = resolveActScene(act.id, journey, state.street);
     state.asleepFrom = now.toISOString();
     state.asleepUntil = untilIso;
     state.activity = {
@@ -2270,6 +2485,7 @@ export function applyAct(
       until: untilIso,
       minutes: act.minutes,
       perMin: act.perMin,
+      ...(sceneOverride ? { scene: sceneOverride } : {}),
     };
     remember(state, '睡下了。', now);
     state.updatedAt = now.toISOString();
@@ -2405,6 +2621,9 @@ export function applyAct(
     movie: ['电影', '看片'],
     paint: ['画画', '写生'],
     spa: ['spa', '泡汤', '按摩'],
+    swim: ['游泳', '泳池', '玩水', '水上滑道'],
+    live_show: ['演出', '音乐剧', '脱口秀', 'livehouse', '演唱会'],
+    craft_shop: ['手作', '陶艺', '簇绒', '蜡烛'],
   };
   const kws = actKeywords[act.id] ?? [];
   if (kws.length) {
@@ -2417,7 +2636,7 @@ export function applyAct(
   }
 
   const untilIso = new Date(now.getTime() + act.minutes * 60_000).toISOString();
-  const sceneOverride = act.id === 'wash' && journey?.phase === 'staying' ? '酒店浴室' : undefined;
+  const sceneOverride = resolveActScene(act.id, journey, state.street);
   state.activity = {
     kind: 'act',
     id: act.id,
@@ -2427,7 +2646,7 @@ export function applyAct(
     minutes: act.minutes,
     perMin: act.perMin,
     knowPerMin: act.know ? act.know / Math.max(1, act.minutes) : 0,
-    costPerMin: act.cost > 0 ? act.cost / Math.max(1, act.minutes) : 0,
+    costPerMin: effectiveCost > 0 ? effectiveCost / Math.max(1, act.minutes) : 0,
     costAcc: 0,
     costPaid: 0,
     mood: act.mood,
@@ -2989,9 +3208,11 @@ export function noteVisit(state: LifeState, now: Date): VisitResult {
 
 /** 他这几天来过几次 —— 给她说话用的口径。 */
 export function recentVisits(state: LifeState, now: Date, days = 7): number {
-  const from = new Date(now.getTime() - days * 86_400_000);
+  const span = Math.max(1, Math.floor(days));
+  const from = new Date(now.getTime() - (span - 1) * 86_400_000);
   const cut = localDateKey(from);
-  return state.presence.filter((p) => p.date >= cut).length;
+  const today = localDateKey(now);
+  return state.presence.filter((p) => p.date >= cut && p.date <= today).length;
 }
 
 /**
@@ -3130,6 +3351,46 @@ export function applyMove(state: LifeState, tier: HomeTier, now: Date): MoveResu
   remember(state, `搬到${q.label}了。`, now);
   state.updatedAt = now.toISOString();
   return { ok: true, from, to: tier, deposit: q.deposit, cash: state.money.cash };
+}
+
+export interface StreetMoveResult {
+  ok: boolean;
+  reason?: string;
+  from: string;
+  to: string;
+  profile?: StreetProfile | null;
+}
+
+/** 搬到同一座城市的其他街道：不收押金，切街后清空当日报到记录以便向 `/town/join` 同步更新。 */
+export function applyStreetMove(
+  state: LifeState,
+  street: string,
+  streets: readonly string[],
+  now: Date,
+  profile?: StreetProfile | null,
+): StreetMoveResult {
+  const target = String(street || '').trim();
+  const from = state.street || state.home.street || '';
+  if (isBusy(state, now)) {
+    return { ok: false, reason: busyRefusal(state, now, '换条街搬家'), from, to: target };
+  }
+  const valid = streets.map((s) => s.trim()).filter(Boolean);
+  if (!valid.length) {
+    return { ok: false, reason: '当前城市还没有划分具体街道，暂时没法换街。', from, to: target };
+  }
+  if (!target || !valid.includes(target)) {
+    return { ok: false, reason: `本城没有「${target || '（空）'}」这条街。能搬去的街道：${valid.join(' / ')}。`, from, to: target };
+  }
+  if (target === from) {
+    return { ok: false, reason: `你已经住在${target}了。`, from, to: target };
+  }
+  state.street = target;
+  state.home.street = target;
+  state.lastJoinedTownAt = '';
+  const modTxt = formatStreetMods(profile?.mods);
+  remember(state, `搬到本城的${target}住了${modTxt ? `（${modTxt}）` : ''}。`, now);
+  state.updatedAt = now.toISOString();
+  return { ok: true, from, to: target, profile };
 }
 
 /* ------------------------------------------------------------------ */
