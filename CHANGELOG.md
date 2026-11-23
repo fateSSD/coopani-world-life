@@ -1,5 +1,12 @@
 # 变更记录
 
+## 1.1.4 — 2026-11-23（本城街道按 `uid` 均匀分配 + 旧城街道自愈重报）
+
+- **修复所有用户被分配到同一条街（`南滨河路`）且本地未写街名**：
+  - `src/bridge.ts`：新增确定性 FNV-1a 哈希选街函数 `pickTownStreet(streets, seed)`（与服务端 `sight-cf` 同算法）；`joinTown()` 解析并回传服务端确认的 `street`。
+  - `src/world.ts`：新增 `ensureTownStreet()`，在 `start()`、配置热改、面板 `reloadTown` 与 `syncTownPresenceAndBulletin()` 时取代原先的 `this.town.streets[0]` 硬编码兜底；当本地尚未定街或存档残留旧城无效街道（如从成都迁至兰州后的 `'春熙路'`）时，按 `uid` 均匀分派到本城四条街之一并写回 `state.street` 与 `home.street`，同时清空 `lastJoinedTownAt` 以便立即重报 `/town/join` 更新线上记录。
+- **测试**：`test/stage23.test.mjs` 新增 40 个 `uid` 均匀覆盖四条街及老存档 `'春熙路'` 启动自动改派并重报的端到端测试。
+
 ## 1.1.3 — 2026-11-23（跨夜离线保底 30 + 通勤/景点防冲突 + 广播字段对齐）
 
 - **跨夜与整天离线五维地板 30 + 唤醒耗时修正**：`src/state.ts` 新增 `OFFLINE_VITAL_FLOOR = 30`，修正 `advance()` 中已睡小时 `nightSlept` 未从 `awakeHours` 扣除的问题；跨夜或跨天离线时对 `food / clean / fun / social` 保留地板 `Math.min(before[key], 30)`，避免离线一夜后除精力外全部归零。
