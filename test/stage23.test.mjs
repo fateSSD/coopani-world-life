@@ -9,7 +9,7 @@ const { LifeWorld } = await import('../src/world.ts');
 const { LIFE_DEFAULTS, parseTownUrls } = await import('../src/config.ts');
 const {
   freshState, advance, applyAct, applyWork, applyCert, applyLearn,
-  snapshot, weatherOf, fullMarketPrices,
+  snapshot, weatherOf, fullMarketPrices, localDateKey, StateStore,
 } = await import('../src/state.ts');
 const { JOBS } = await import('../src/jobs.ts');
 const { readJourney } = await import('../src/bridge.ts');
@@ -368,4 +368,88 @@ test('1.3 & 1.4 & 时区：晨集番茄鸡蛋面触发鲜蔬/夜晚豆干不触�
   assert.match(panelCode, /timeZone:\s*'Asia\/Shanghai'/);
   assert.equal(/\.slice\(11,\s*16\)|\.slice\(0,\s*16\)/.test(panelCode), false, '面板不得对 UTC ISO 字符串直接 slice 截断');
   assert.match(panelCode, /note\.hidden\s*=\s*true;\s*note\.textContent\s*=\s*''/, 'render(d) 开始时必须清空 note.textContent，防止街口黑板反复拼接增殖');
+});
+
+test('街道分配与迁移：多鱼按 uid 均匀分布到四条街，不再全挤南滨河路；旧城街道「春熙路」启动自愈重分并重新报到', async () => {
+  const { pickTownStreet } = await import('../src/bridge.ts');
+  const streets = ['南滨河路', '张掖路', '皋兰路', '雁滩路'];
+
+  // 1) 确定性哈希应把不同 uid 均匀分配到 4 条街，不会全部落到 streets[0]
+  const buckets = new Set();
+  for (let i = 0; i < 40; i++) {
+    const uid = i.toString(16).padStart(24, 'a');
+    buckets.add(pickTownStreet(streets, uid));
+  }
+  assert.equal(buckets.size, 4, `40 个不同 uid 应分布到全部 4 条街，实际只有：${[...buckets].join(',')}`);
+  assert.equal(pickTownStreet(streets, 'abcdef0123456789abcdef01'), pickTownStreet(streets, 'abcdef0123456789abcdef01'));
+
+  // 2) 老存档残留成都「春熙路」且 today 已经报过到：连到兰州服务器后应自动改派进兰州四街、清 lastJoinedTownAt 并立刻重报
+  const dir = mkDir();
+  const staleUid = '415dd826eadfc6cc5c6ca7fb';
+  writeFileSync(join(dir, 'meet-uid.txt'), staleUid, 'utf8');
+  const today = localDateKey(new Date());
+  const st = freshState(new Date());
+  st.street = '春熙路';
+  st.home.street = '春熙路';
+  st.lastJoinedTownAt = today;
+  new StateStore(dir).save(st);
+
+  const joinCalls = [];
+  const srv = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const p = body ? JSON.parse(body) : {};
+      if (req.url === '/town/info') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          town: 'lanzhou', name: '兰州', origin: '黄河穿城',
+          streets, rules: ['河里的不吃河里的'], custom: true,
+        }));
+        return;
+      }
+      if (req.url === '/town/join' && req.method === 'POST') {
+        joinCalls.push(p);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, town: 'lanzhou', name: '兰州', street: p.street }));
+        return;
+      }
+      if (req.url === '/town/stalls') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, stalls: [], bulletin: [] }));
+        return;
+      }
+      if (req.url?.startsWith('/town/deals')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, unseen: 0, deals: [] }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const { port } = srv.address();
+  try {
+    const world = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true, townUrl: `http://127.0.0.1:${port}` },
+      dataDir: dir,
+      botName: '大肥鱼',
+    });
+    await world.start(silentHost);
+    for (let i = 0; i < 30 && joinCalls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    assert.equal(joinCalls.length, 1, '旧街名迁走后即便今天已报过，也应立即重新向 /town/join 报到更新街道');
+    const assigned = joinCalls[0].street;
+    assert.ok(streets.includes(assigned), `新分配街道必须属于兰州：${assigned}`);
+    assert.equal(assigned, pickTownStreet(streets, staleUid));
+    assert.equal(world.envPromptVars()['life.street'], `你住在${assigned}。`);
+    const saved = JSON.parse(readFileSync(join(dir, 'life-state.json'), 'utf8'));
+    assert.equal(saved.street, assigned);
+    assert.equal(saved.home.street, assigned);
+    await world.stop();
+  } finally {
+    srv.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

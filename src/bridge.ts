@@ -198,6 +198,23 @@ export interface TownView {
 }
 
 /**
+ * 按 uid（或兜底种子）从本城街道中稳定、均匀地挑选一条。
+ * 与服务端 `sight-cf` 使用同一 FNV-1a 算法，避免全员堆到 `streets[0]`。
+ */
+export function pickTownStreet(streets: readonly string[], seed: string): string {
+  const list = streets.map((s) => s.trim()).filter(Boolean);
+  if (!list.length) return '';
+  const key = seed.trim();
+  if (!key) return list[Math.floor(Math.random() * list.length)];
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return list[(h >>> 0) % list.length];
+}
+
+/**
  * 内置的那座城。
  *
  * ⚠ **这份和服务端 `cloud/sight-cf/src/worker.js` 的 `TOWN_DEFAULTS` 是同一个东西**，
@@ -615,7 +632,7 @@ export async function joinTown(
   townUrl: string | readonly string[],
   payload: { uid: string; pet: string; street: string },
   opts: { timeoutMs?: number } = {},
-): Promise<{ ok: boolean; town?: string; reason?: string }> {
+): Promise<{ ok: boolean; town?: string; street?: string; reason?: string }> {
   const roots = parseTownUrls(townUrl);
   if (!roots.length || !payload.uid) return { ok: false, reason: '缺少地址或 uid' };
   const { res } = await tryTownFetch(
@@ -632,7 +649,11 @@ export async function joinTown(
   try {
     const j: any = await res.json().catch(() => ({}));
     if (!res.ok || !j?.ok) return { ok: false, reason: typeof j?.error === 'string' ? j.error : `入册失败 ${res.status}` };
-    return { ok: true, town: typeof j.town === 'string' ? j.town : undefined };
+    return {
+      ok: true,
+      town: typeof j.town === 'string' ? j.town : undefined,
+      street: typeof j.street === 'string' ? j.street : undefined,
+    };
   } catch {
     return { ok: false, reason: '城服务器响应异常' };
   }

@@ -22,7 +22,7 @@ import { JOBS, certOf, jobAllowedAt } from './jobs.ts';
 import {
   BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown,
   readPendingRequests, archivePendingRequest, fetchTownStalls, buyTownStall, joinTown, readMeetUid,
-  postTownStall, fetchTownDeals, ackTownDeals,
+  pickTownStreet, postTownStall, fetchTownDeals, ackTownDeals,
   type JourneyView, type TownView, type TownStall, type TownDeal,
 } from './bridge.ts';
 
@@ -288,20 +288,55 @@ export class LifeWorld implements World {
     return parseTownUrls(raw).join('|');
   }
 
+  /**
+   * 为她确定并同步当前城市的街道：
+   * - 原来只在 `/town/join` 时兜底拿 `this.town.streets[0]`，导致所有没选过街或刚迁城的老用户
+   *   全部挤到第一条街（南滨河路），且本地 `state.street` 长期留空。
+   * - 现在当街道列表非空且本地还没定街（或旧街名已不在新街道列表里，如成都「春熙路」迁至兰州）时，
+   *   按 uid 哈希均匀分配并落盘，同时清掉 `lastJoinedTownAt` 以便重新向服务器报到刷新。
+   */
+  private ensureTownStreet(uid = ''): string {
+    const streets = this.town.streets;
+    if (!streets.length) return this.state.street || '';
+    if (this.state.street && streets.includes(this.state.street)) {
+      if (this.state.home.street !== this.state.street) {
+        this.state.home.street = this.state.street;
+        this.stateSaveDirty = true;
+      }
+      return this.state.street;
+    }
+    const seed = uid || readMeetUid(this.opts.dataDir) || this.opts.botName || 'fish';
+    const picked = pickTownStreet(streets, seed);
+    if (this.town.source === 'failed') return picked;
+    if (picked && picked !== this.state.street) {
+      this.state.street = picked;
+      this.state.home.street = picked;
+      this.state.lastJoinedTownAt = '';
+      this.stateSaveDirty = true;
+    }
+    return this.state.street;
+  }
+
   private async syncTownPresenceAndBulletin(now: Date, generation: number): Promise<void> {
     const urls = parseTownUrls(this.cfg.townUrl);
     if (!urls.length) return;
     const today = localDateKey(now);
     const uid = readMeetUid(this.opts.dataDir);
+    const street = this.ensureTownStreet(uid);
     if (this.state.lastJoinedTownAt !== today && uid) {
-      const validStreet = this.state.street
-        && (!this.town.streets.length || this.town.streets.includes(this.state.street));
-      const street = validStreet ? this.state.street : (this.town.streets[0] || '');
       try {
         const res = await joinTown(this.cfg.townUrl, { uid, pet: this.opts.botName || 'fish', street });
         if (generation !== this.stateGeneration) return;
         if (res.ok) {
           this.state.lastJoinedTownAt = today;
+          if (
+            res.street
+            && (!this.town.streets.length || this.town.streets.includes(res.street))
+            && res.street !== this.state.street
+          ) {
+            this.state.street = res.street;
+            this.state.home.street = res.street;
+          }
           this.stateSaveDirty = true;
         }
       } catch { /* 网络失败下次重试 */ }
@@ -342,6 +377,8 @@ export class LifeWorld implements World {
     this.host = host;
     this.log = host.log;
     this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
+    this.ensureTownStreet();
+    if (this.stateSaveDirty && !this.stateCleared) this.saveDeliveredState();
     this.lastTownUrl = this.townUrlKey(this.cfg.townUrl);
     this.lastHomeCity = String(this.cfg.homeCity || '').trim();
     this.lastDiaryDir = String(this.cfg.diaryDir || '').trim();
@@ -582,6 +619,7 @@ export class LifeWorld implements World {
       this.lastBulletinFetchMs = 0;
       this.town = await readTown(this.cfg.townUrl, homeCity);
       if (generation !== this.stateGeneration) return;
+      this.ensureTownStreet();
       this.log?.info(`模拟鱼生：本城改成了 ${this.town.name}（${this.townSourceLabel()}）`);
     }
     await this.syncTownPresenceAndBulletin(now, generation);
@@ -3402,6 +3440,11 @@ export class LifeWorld implements World {
 
     if (method === 'reloadTown') {
       this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
+      this.ensureTownStreet();
+      if (this.stateSaveDirty && !this.stateCleared) {
+        this.saveDeliveredState();
+        this.broadcastLife(now);
+      }
       return { ok: true, town: this.town };
     }
 
