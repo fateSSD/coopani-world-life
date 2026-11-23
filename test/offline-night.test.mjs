@@ -28,7 +28,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { advance, freshState, offlineNightHours, DECAY_PER_HOUR, SLEEP_ENERGY_PER_HOUR } = await import('../src/state.ts');
+const { advance, applyAct, freshState, offlineNightHours, DECAY_PER_HOUR, SLEEP_ENERGY_PER_HOUR, OFFLINE_VITAL_FLOOR } = await import('../src/state.ts');
 
 /** 本地时刻。月份从 1 数，省得每次减一。 */
 const L = (y, mo, d, h, mi = 0) => new Date(y, mo - 1, d, h, mi, 0, 0);
@@ -184,4 +184,50 @@ test('睡前在睡、关机三天：后面还有完整夜，照样补', () => {
   });
   advance(s, now);
   assert.ok(s.vitals.energy >= 85, `后面两天各有一整夜，应当补回来，实际 ${s.vitals.energy}`);
+});
+
+test('周末离线两天：精力回 85，其余四条停在地板 30（不归零）', () => {
+  const from = L(2026, 11, 20, 17); // 周五 17:00
+  const to = L(2026, 11, 23, 9);    // 周一 09:00（64 小时）
+  const s = freshState(from);
+  s.vitals = { food: 100, energy: 100, clean: 100, fun: 100, social: 100 };
+  advance(s, to);
+  assert.equal(s.vitals.energy, 85, `周末两天精力应回到 85，实际 ${s.vitals.energy}`);
+  for (const k of ['food', 'clean', 'fun', 'social']) {
+    assert.equal(s.vitals[k], OFFLINE_VITAL_FLOOR, `${k} 应停在地板 ${OFFLINE_VITAL_FLOOR}，实际 ${s.vitals[k]}`);
+  }
+});
+
+test('离线前本来就低于 30 的条：跨夜后不倒涨回 30', () => {
+  const from = L(2026, 11, 20, 17);
+  const to = L(2026, 11, 23, 9);
+  const s = freshState(from);
+  s.vitals = { food: 18, energy: 60, clean: 12, fun: 80, social: 80 };
+  advance(s, to);
+  assert.equal(s.vitals.food, 18, `离线前 food=18 不该倒涨回 30，实际 ${s.vitals.food}`);
+  assert.equal(s.vitals.clean, 12, `离线前 clean=12 不该倒涨回 30，实际 ${s.vitals.clean}`);
+  assert.equal(s.vitals.fun, 30);
+  assert.equal(s.vitals.social, 30);
+});
+
+test('坐公交通勤中拦住洗澡、放行闲聊；住店洗澡记成酒店浴室', () => {
+  const now = L(2026, 11, 23, 9, 10);
+  const s = freshState(now);
+  const blocked = applyAct(s, 'wash', now, {
+    phase: 'staying',
+    onWay: { what: '坐公交去高处视野开的那一段', arriveAt: '09:30', leftMin: 20 },
+  });
+  assert.equal(blocked.ok, false, '坐公交时不应该能洗澡');
+  assert.ok(blocked.reason?.includes('坐公交'), `拦截提示应说明在坐车：${blocked.reason}`);
+
+  const okChat = applyAct(s, 'chat', now, {
+    phase: 'staying',
+    onWay: { what: '坐公交去高处视野开的那一段', arriveAt: '09:30', leftMin: 20 },
+  });
+  assert.equal(okChat.ok, true, '坐公交时应该允许闲聊');
+
+  const s2 = freshState(now);
+  const okWash = applyAct(s2, 'wash', now, { phase: 'staying' });
+  assert.equal(okWash.ok, true);
+  assert.equal(s2.activity?.scene, '酒店浴室', '外地住店洗澡应写酒店浴室');
 });

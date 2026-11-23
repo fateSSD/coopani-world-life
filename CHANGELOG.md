@@ -1,5 +1,11 @@
 # 变更记录
 
+## 1.1.3 — 2026-11-23（跨夜离线保底 30 + 通勤/景点防冲突 + 广播字段对齐）
+
+- **跨夜与整天离线五维地板 30 + 唤醒耗时修正**：`src/state.ts` 新增 `OFFLINE_VITAL_FLOOR = 30`，修正 `advance()` 中已睡小时 `nightSlept` 未从 `awakeHours` 扣除的问题；跨夜或跨天离线时对 `food / clean / fun / social` 保留地板 `Math.min(before[key], 30)`，避免离线一夜后除精力外全部归零。
+- **旅途物理冲突动作拦截与酒店浴室场景**：`src/bridge.ts` 扩展 `JourneyView` 解析 `onWay` 与 `atSpot`；`src/state.ts` `applyAct()` 在跨城移动、城内通勤或正在景区逛时拒绝会产生物理冲突的室内独占动作；住店期间 `wash` 的地点文案改为「酒店浴室」。
+- **生活快照公开五维与占用时段**：`src/world.ts` 写出的 `life-public.json` 补全完整五维、`activity.from` 与 `occupiesPlace`，并同步更新 `ENV_PROMPT.md` 说明供 `coopani-world-journey@2.6.0` 日程协同消费。
+
 ## 1.1.2 — 2026-11-22（内置城址迁至兰州 + 修复黑板增殖 + 新增 `rest`）
 
 - **内置城镇与街区更新**：内置城镇切换为 `兰州`（`南滨河路` / `张掖路` / `皋兰路` / `雁滩路`），同步更新市集描述、面板文案与测试基线。

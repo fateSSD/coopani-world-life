@@ -53,18 +53,26 @@ console.log('\n[2] 六个小时不管她');
   ok(s.social === undefined || s.vitals.social > s.vitals.food, '社交掉得比饱腹慢 —— 一会儿不说话不该难受');
 }
 
-console.log('\n[3] 一天不管，能不能掉到 0 以下（不能）');
+console.log('\n[3] 醒着掉到 0 不为负，离线跨天有地板 30 保护');
 {
+  const tWake = new Date('2026-11-15T01:00:00Z'); // 北京 09:00
+  const sLow = freshState(tWake);
+  sLow.vitals.food = 10;
+  sLow.vitals.clean = 8;
+  advance(sLow, new Date(tWake.getTime() + 6 * 3_600_000)); // 白天 6 小时不触发跨夜补睡
+  ok(sLow.vitals.food === 0, '白天醒着饱腹归零但不为负', String(sLow.vitals.food));
+  ok(sLow.vitals.clean === 0, '白天醒着清爽归零但不为负', String(sLow.vitals.clean));
+
   const t0 = new Date('2026-11-15T00:00:00Z');
   const s = freshState(t0);
   advance(s, new Date(t0.getTime() + 48 * 3_600_000));
-  ok(s.vitals.food === 0, '饱腹归零但不为负', String(s.vitals.food));
+  ok(s.vitals.food === 30, '离线两天饱腹停在地板 30，不归零', String(s.vitals.food));
   ok(s.vitals.energy >= 0, '精力不为负', String(s.vitals.energy));
   /*
-   * 离线满 24 小时精力回到 85 —— 她睡了。这条是「关机三天回来不该快饿死」的实现。
+   * 离线满 24 小时精力回到 85 —— 她睡了；其余四条走地板 30 保护。
    */
   ok(s.vitals.energy >= 85, '离线满一天，精力补到 85（她睡了）', String(s.vitals.energy));
-  ok(s.vitals.clean < 30, '清爽没法靠睡觉补回来 —— 还是脏的');
+  ok(s.vitals.clean === 30, '离线两天清爽停在地板 30', String(s.vitals.clean));
 }
 
 console.log('\n[4] 关机两周（超上限）');
@@ -75,10 +83,9 @@ console.log('\n[4] 关机两周（超上限）');
   ok(near(r.hours, MAX_CATCHUP_HOURS, 0.01),
     `只按上限 ${MAX_CATCHUP_HOURS} 小时算，不按 720 小时`, String(r.hours));
   /*
-   * 上限的意义：她该是「一直在等你」，不是「快饿死了」。
-   * 数值上两者都归零，但语义不同 —— 这里钉住的是「不按 720 小时算」这件事。
+   * 上限 + 地板的意义：她该是「一直在等你」，不是「快饿死了」。
    */
-  ok(s.vitals.food === 0, '该归零还是归零');
+  ok(s.vitals.food === 30 && s.vitals.social === 30, '超长离线走地板 30 保护', `${s.vitals.food}/${s.vitals.social}`);
 }
 
 console.log('\n[5] 时间倒着走（时钟被拨回去）');

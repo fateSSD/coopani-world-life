@@ -10,7 +10,7 @@ import type {
 } from 'cortico/core/types.ts';
 import { LIFE_ID, lifeConfigGroups, parseTownUrls, type LifeConfigSection } from './config.ts';
 import {
-  ACTS, CRITICAL, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, LOW, MAX_PENDING, MAX_PLEDGES,
+  ACTS, CRITICAL, DECAY_PER_HOUR, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, LOW, MAX_PENDING, MAX_PLEDGES, NON_OCCUPYING_ACTS,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL, SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG,
   advance, applyAct, applyMove, applySpend, applyWork, applyCert, applyLearn, applyGift, asleepRefusal, busyRefusal, freshState, isAsleep, isBusy,
   jobGate, localDateKey, noteVisit, quoteMove, readyGoals,
@@ -1063,7 +1063,11 @@ export class LifeWorld implements World {
           travelAllowance: allowance,
         },
         vitals: {
+          food: Math.round(this.state.vitals.food),
           energy: Math.round(this.state.vitals.energy),
+          clean: Math.round(this.state.vitals.clean),
+          fun: Math.round(this.state.vitals.fun),
+          social: Math.round(this.state.vitals.social),
           fitness: Math.round(this.state.fitness),
         },
         settled: this.recentSettled.slice(-40),
@@ -1072,15 +1076,18 @@ export class LifeWorld implements World {
           const a = this.state.activity;
           if (!a || Date.parse(a.until) <= now.getTime()) return null;
           const def = ACTS[a.id];
+          const scene = a.scene ?? def?.scene ?? null;
           return {
             id: a.id,
             kind: a.kind,
             label: a.label,
+            from: a.from,
             until: a.until,
-            scene: def?.scene ?? null,
+            occupiesPlace: a.kind === 'work' || !NON_OCCUPYING_ACTS.has(a.id),
+            scene,
             outfitHint: def?.outfitHint ?? null,
             props: def?.props ?? null,
-            visualPrompt: def ? this.library.composeVisualPrompt({ label: a.label, scene: def.scene, outfitHint: def.outfitHint, props: def.props }) : null,
+            visualPrompt: def ? this.library.composeVisualPrompt({ label: a.label, scene: scene ?? undefined, outfitHint: def.outfitHint, props: def.props }) : null,
           };
         })(),
         libraryDir: this.library.rootDir,
@@ -1502,7 +1509,15 @@ export class LifeWorld implements World {
         await this.settleBeforeTool(now);
         const generation = this.stateGeneration;
         const kindId = String(args?.kind ?? '');
-        const r = applyAct(this.state, kindId, now);
+        const j = readJourney(this.opts.dataDir, now);
+        this.journey = j;
+        const r = applyAct(this.state, kindId, now, {
+          phase: j.phase,
+          toName: j.toName,
+          modeId: j.modeId,
+          onWay: j.onWay,
+          atSpot: j.atSpot,
+        });
         if (!r.ok) return { text: r.reason ?? '这件事做不了。' };
         if (r.advanced && r.advanced.hours > 0) {
           await this.settleAdvanceEffects(r.advanced, now, generation);
@@ -2857,7 +2872,11 @@ export class LifeWorld implements World {
       ? (j.phase === 'traveling'
         ? `在去${j.toName || '下一站'}的路上（出发地 ${j.cityName || '不明'}）`
         : j.phase === 'staying'
-          ? `在${j.cityName || '外地'}`
+          ? (j.onWay
+            ? `在${j.cityName || '外地'}（${j.onWay.what}，预计 ${j.onWay.arriveAt || '很快'} 到）`
+            : j.atSpot
+              ? `在${j.cityName || '外地'}（正在${j.atSpot.name}）`
+              : `在${j.cityName || '外地'}`)
           : j.phase === 'home' ? `在家` : '位置不明')
       : '';
 

@@ -54,6 +54,10 @@ export interface JourneyView {
   /** 这趟同行的真鱼朋友名列表（外地社交条的硬事实来源）。 */
   partyWith: string[];
   partyDays: number;
+  /** 此刻正在城内通勤中（坐公交/打车去景点等）。 */
+  onWay: { what: string; arriveAt: string; leftMin: number } | null;
+  /** 此刻正在某个景点内。 */
+  atSpot: { name: string; until: string } | null;
 }
 
 const EMPTY_JOURNEY: JourneyView = {
@@ -75,6 +79,8 @@ const EMPTY_JOURNEY: JourneyView = {
   tripWork: null,
   partyWith: [],
   partyDays: 0,
+  onWay: null,
+  atSpot: null,
 };
 
 /**
@@ -133,6 +139,21 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
     ? raw.party.with.filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0)
     : [];
   const partyDays = raw.party && Number.isFinite(Number(raw.party.days)) ? Math.max(0, Number(raw.party.days)) : 0;
+  const rawOnWay = phase === 'staying' && raw.onWay && typeof raw.onWay === 'object' ? raw.onWay : null;
+  const onWay = rawOnWay && typeof rawOnWay.what === 'string' && rawOnWay.what
+    ? {
+      what: rawOnWay.what,
+      arriveAt: typeof rawOnWay.arriveAt === 'string' ? rawOnWay.arriveAt : '',
+      leftMin: Math.max(1, Math.round(Number(rawOnWay.leftMin) || 1)),
+    }
+    : null;
+  const rawAtSpot = phase === 'staying' && raw.atSpot && typeof raw.atSpot === 'object' ? raw.atSpot : null;
+  const atSpot = rawAtSpot && typeof rawAtSpot.name === 'string' && rawAtSpot.name
+    ? {
+      name: rawAtSpot.name,
+      until: typeof rawAtSpot.until === 'string' ? rawAtSpot.until : '',
+    }
+    : null;
 
   return {
     installed: true, phase, cityId, cityName, worldNow, speed, toName, staleSec,
@@ -146,6 +167,8 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
     tripWork,
     partyWith,
     partyDays,
+    onWay,
+    atSpot,
   };
 }
 

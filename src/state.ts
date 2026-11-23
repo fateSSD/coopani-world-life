@@ -382,6 +382,8 @@ export interface ActiveTask {
   workPay?: number;
   workTier?: 'odd' | 'skilled' | 'certified' | 'professional';
   mood?: { text: string; kind: 'good' | 'bad'; hours: number };
+  /** 覆盖动作默认场景（例如旅途住店洗澡时为「酒店浴室」而非「家里浴室」）。 */
+  scene?: string;
 }
 
 /** G 类轻载具/司机连续接单时段（§4.15）。 */
@@ -584,6 +586,8 @@ export const LOW = 30;
 export const CRITICAL = 15;
 /** 单次推进最多按多少小时算。见文件头「离线的那段时间怎么办」。 */
 export const MAX_CATCHUP_HOURS = 7 * 24;
+/** 触发离线补睡（跨过至少一夜或整天）时，其余四条需求的离线保底地板（不低于离线前原值）。 */
+export const OFFLINE_VITAL_FLOOR = 30;
 
 /**
  * 「夜里」从几点算到几点（本地时间）。
@@ -1669,7 +1673,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             const fitGain = actTask.id === 'workout' ? 3 : (actTask.id === 'tidy' || actTask.id === 'pond' ? 0.5 : 0);
             if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain);
           }
-          const sceneBit = actDef?.scene ? `在${actDef.scene}` : '';
+          const sceneBit = (actTask.scene ?? actDef?.scene) ? `在${actTask.scene ?? actDef?.scene}` : '';
           const propBit = actDef?.props ? `（${actDef.props}）` : '';
           remember(
             state,
@@ -1696,6 +1700,12 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   }
 
   const awakeHours = Math.max(0, hours - sleepHours - actHours);
+  const wholeDays = Math.floor(awakeHours / 24);
+  const nightSlept = Math.min(
+    offlineNightHours(fromMs, to, sleepSeg ? { skip: sleepSeg, fullNightOnly: true } : {}),
+    awakeHours,
+  );
+  const effectiveAwakeHours = Math.max(0, awakeHours - nightSlept);
 
   /* ---------------- 结算 ---------------- */
 
@@ -1723,9 +1733,11 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
     const modeFactor = key === 'energy'
       ? (travelMult?.energy ?? 1)
       : (key === 'food' ? (travelMult?.food ?? 1) : 1);
+    const awakeUsed = key === 'energy' ? awakeHours : effectiveAwakeHours;
+    const sleepUsed = key === 'energy' ? sleepHours : (sleepHours + nightSlept);
     const v = state.vitals[key]
-      - DECAY_PER_HOUR[key] * relief * modeFactor * awakeHours
-      + sleepDelta * relief * sleepHours;
+      - DECAY_PER_HOUR[key] * relief * modeFactor * awakeUsed
+      + sleepDelta * relief * sleepUsed;
     state.vitals[key] = clamp100(v);
   }
 
@@ -1745,41 +1757,18 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   }
 
   /*
-   * 离线补睡。
+   * 离线补睡与四条保底地板（2026-11-23）。
    *
-   * 每**跨过一夜**（本地 23:00–07:00，至少盖住 4 小时）她至少睡下过一次，精力回到 85。
-   * 这样关机三天回来，她是「有点饿、有点闷」，不是「快不行了」。
-   * 只补精力 —— 吃饭、洗澡、找乐子、见人这些**不能凭空补**，
-   * 补了就等于「她不在的时候你替她过了日子」，那她的日子就不算她的。
-   *
-   * ## 判据从「醒着满 24 小时」改成「跨过一夜」（2026-11-20 Mr.Q 报的）
-   *
-   * 原来按 `floor(awakeHours / 24)` 算。**上班族的日子永远够不着这个数**：
-   * 17 点关机、次日 9 点开机只有 16 小时，那一整夜就按「她醒着」结算了。
-   * 他的原话是「她应该自己吃饭睡觉才对，可精力没恢复」，面板上是 28 ——
-   * 跑一遍旧公式：`100 − 4.6 × 15.7 ≈ 26.4`。差的 1.6 点落在「那天到底几点关机」上，
-   * 曲线是一条斜率固定的直线，不是巧合。
-   * 也就是说旧规则下她的精力在周一到周五**只降不升**，一夜掉 72 点。
-   *
-   * 现在按夜算。**仍然按醒着的小时数封顶**：她真的睡过的那一段
-   * （`asleepFrom/asleepUntil`）已经结算过，再按整段时间补一次等于同一觉领两份。
-   *
-   * ## 但「挖掉睡眠段」这件事第一版漏了（2026-11-20 当天回补）
-   *
-   * 只数整段的话，那一觉会被数第二遍 —— 实测三组反例全部击穿：
-   * 饿醒后硬熬 8 小时回 85、睡满 8h 再醒 15h 回 100、短睡 2.5h 熬 13.5h 回 85。
-   * **她已经醒了，之后是清醒的代价**，补睡不该把它抹平。
-   *
-   * 所以 `sleepSeg` 传下去当「已结算段」挖掉，并且有睡眠记录时只认整夜
-   * （那一夜 23:00–07:00 要不被睡眠占满才算「她离线时也睡了」）。
+   * 每**跨过一夜**（本地 23:00–07:00，至少盖住 4 小时）或整天离线，
+   * 精力回到 85，其余四条（饱腹/清爽/娱乐/社交）设地板 30（若离线前本就低于 30，
+   * 不倒涨回 30，按原值封底）。这样关机周末两天再开，不会一上线四条全归零。
    */
-  const wholeDays = Math.floor(awakeHours / 24);
-  const nightSlept = Math.min(
-    offlineNightHours(fromMs, to, sleepSeg ? { skip: sleepSeg, fullNightOnly: true } : {}),
-    awakeHours,
-  );
   if (wholeDays > 0 || nightSlept > 0) {
     state.vitals.energy = clamp100(Math.max(state.vitals.energy, 85));
+    for (const key of ['food', 'clean', 'fun', 'social'] as const) {
+      const floor = Math.min(before[key], OFFLINE_VITAL_FLOOR);
+      if (state.vitals[key] < floor) state.vitals[key] = floor;
+    }
     /*
      * 回上来了就把这一档的提醒配额清掉。
      *
@@ -2039,8 +2028,22 @@ export function busyRefusal(state: LifeState, now: Date, what: string): string {
  * 生活事件是「说与不说」的原料（方案 §6.3）。不记，她事后就没素材可讲，
  * 说出来的全是空的「我今天过得还行」。
  */
+export interface ActJourneyContext {
+  phase?: '' | 'home' | 'staying' | 'traveling';
+  toName?: string;
+  modeId?: string;
+  onWay?: { what: string; arriveAt: string; leftMin: number } | null;
+  atSpot?: { name: string; until: string } | null;
+}
+
+/** 可在车上、途中或景区顺手做而不占用物理场所的轻量动作。 */
+export const NON_OCCUPYING_ACTS = new Set(['chat', 'rest']);
+const COMMUTE_ALLOWED_ACTS = new Set(['wake', 'cancel', 'chat', 'rest', 'study', 'instant']);
+const TRAVEL_ALLOWED_ACTS = new Set(['wake', 'cancel', 'chat', 'rest', 'study', 'instant', 'sleep', 'nap', 'drink']);
+const SPOT_BLOCKED_ACTS = new Set(['wash', 'tidy', 'cook', 'sleep', 'nap']);
+
 export function applyAct(
-  state: LifeState, kindId: string, now: Date,
+  state: LifeState, kindId: string, now: Date, journey?: ActJourneyContext,
 ): ActResult {
   const act = ACTS[kindId];
   if (!act) {
@@ -2176,6 +2179,53 @@ export function applyAct(
     return {
       ok: false,
       reason: busyRefusal(state, now, act.label),
+      vitals: state.vitals,
+      mood: null,
+      cost: 0,
+      cash: state.money.cash,
+    };
+  }
+
+  /* 旅途/通勤物理约束：车上不能洗澡做饭，跨城赶路不能去做本地居家活动。 */
+  if (journey?.phase === 'traveling' && !TRAVEL_ALLOWED_ACTS.has(act.id)) {
+    return {
+      ok: false,
+      reason: `你这会儿还在去${journey.toName || '下一站'}的路上，车上没法「${act.label}」—— `
+        + '先做点顺手的事（闲聊、歇会儿、看书、随便吃点），到了住下来再说。',
+      vitals: state.vitals,
+      mood: null,
+      cost: 0,
+      cash: state.money.cash,
+    };
+  }
+  if (journey?.phase === 'traveling' && (act.id === 'sleep' || act.id === 'nap')
+    && (journey.modeId === 'walk' || journey.modeId === 'bike' || journey.modeId === 'motorcycle' || journey.modeId === 'scooter')) {
+    return {
+      ok: false,
+      reason: `你这会儿还在骑行或步行往${journey.toName || '下一站'}赶路，没法直接睡觉 —— 先停下来歇会儿（rest）。`,
+      vitals: state.vitals,
+      mood: null,
+      cost: 0,
+      cash: state.money.cash,
+    };
+  }
+  if (journey?.phase === 'staying' && journey.onWay && !COMMUTE_ALLOWED_ACTS.has(act.id)) {
+    const arr = journey.onWay.arriveAt ? `（预计 ${journey.onWay.arriveAt} 到）` : '';
+    return {
+      ok: false,
+      reason: `你这会儿正在「${journey.onWay.what}」${arr}，车上没法「${act.label}」—— `
+        + '先闲聊（chat）、歇会儿（rest）或看会儿书（study）；等到了再做，或者实在急着处理就用 `journey_rest` 先回酒店。',
+      vitals: state.vitals,
+      mood: null,
+      cost: 0,
+      cash: state.money.cash,
+    };
+  }
+  if (journey?.phase === 'staying' && journey.atSpot && SPOT_BLOCKED_ACTS.has(act.id)) {
+    return {
+      ok: false,
+      reason: `你这会儿还在「${journey.atSpot.name}」逛着呢，景区里没法「${act.label}」—— `
+        + '要是急着洗漱休息，可以先用 `journey_rest` 回酒店，或者等逛完回酒店再做。',
       vitals: state.vitals,
       mood: null,
       cost: 0,
@@ -2367,6 +2417,7 @@ export function applyAct(
   }
 
   const untilIso = new Date(now.getTime() + act.minutes * 60_000).toISOString();
+  const sceneOverride = act.id === 'wash' && journey?.phase === 'staying' ? '酒店浴室' : undefined;
   state.activity = {
     kind: 'act',
     id: act.id,
@@ -2380,6 +2431,7 @@ export function applyAct(
     costAcc: 0,
     costPaid: 0,
     mood: act.mood,
+    ...(sceneOverride ? { scene: sceneOverride } : {}),
   };
   state.updatedAt = now.toISOString();
   return {
