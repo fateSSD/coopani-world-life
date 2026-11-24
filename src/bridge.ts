@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
-import { parseTownUrls } from './config.ts';
+import { clampWeatherTimeoutMs, normWeatherUrl, parseTownUrls, skyFromExternal, type WeatherSky } from './config.ts';
 import { STALL_CATEGORY_LABEL, type StallCategory } from './farm.ts';
 
 export { STALL_CATEGORY_LABEL, type StallCategory };
@@ -441,7 +441,7 @@ export async function readTown(
   const { res, lastStatus } = await tryTownFetch(
     roots,
     '/town/info',
-    { headers: { accept: 'application/json' } },
+    { headers: { accept: 'application/json' }, cache: 'no-store' },
     opts.timeoutMs ?? 2500,
   );
   if (!res) {
@@ -1142,4 +1142,77 @@ export async function ackTownDeals(
     opts.timeoutMs ?? 2500,
   );
   return Boolean(res && res.ok);
+}
+
+/* ------------------------------------------------------------------ */
+/* 外部真实天气源                                                      */
+/* ------------------------------------------------------------------ */
+
+export interface ExternalWeatherResult {
+  ok: boolean;
+  city?: string;
+  sky?: WeatherSky;
+  rawWeather?: string;
+  temperature?: number;
+  source?: string;
+  error?: string;
+}
+
+/**
+ * 从外部天气服务读实时天象：`GET {weatherUrl}/now?city=<城名>`。
+ * 只保留有限数字温度与非空状态串，任何网络/解析异常一律返回 `{ ok: false, error }` 绝不外抛。
+ */
+export async function fetchExternalWeather(
+  weatherUrl: string,
+  city: string,
+  timeoutMs = 2500,
+): Promise<ExternalWeatherResult> {
+  const root = normWeatherUrl(weatherUrl);
+  const cleanCity = String(city || '').trim();
+  if (!root || !cleanCity) {
+    return { ok: false, error: !root ? '未配置外部天气地址' : '缺少城市名称' };
+  }
+  const ctrl = new AbortController();
+  const ms = clampWeatherTimeoutMs(timeoutMs);
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(`${root}/now?city=${encodeURIComponent(cleanCity)}`, {
+      headers: { accept: 'application/json' },
+      cache: 'no-store',
+      signal: ctrl.signal,
+    });
+    const j: any = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = typeof j?.error === 'string' && j.error.trim() ? j.error.trim() : `HTTP ${res.status}`;
+      return { ok: false, error: msg };
+    }
+    if (!j || j.ok === false) {
+      const msg = typeof j?.error === 'string' && j.error.trim() ? j.error.trim() : '外部天气返回 ok=false';
+      return { ok: false, error: msg };
+    }
+    const rawWeather = typeof j?.current?.weather === 'string' ? j.current.weather.trim() : '';
+    if (!rawWeather) {
+      return { ok: false, error: '外部天气缺少 current.weather 字段' };
+    }
+    const tempRaw = Number(j?.current?.temperature);
+    const temperature = Number.isFinite(tempRaw) ? Math.round(tempRaw * 10) / 10 : undefined;
+    const srcFromCur = typeof j?.current?.source === 'string' ? j.current.source.trim() : '';
+    const srcFromArr = Array.isArray(j?.source) && typeof j.source[0] === 'string' ? j.source[0].trim() : '';
+    const source = srcFromCur || srcFromArr || '外部天气';
+    return {
+      ok: true,
+      city: cleanCity,
+      sky: skyFromExternal(rawWeather),
+      rawWeather,
+      ...(temperature !== undefined ? { temperature } : {}),
+      source,
+    };
+  } catch (e: unknown) {
+    const msg = e instanceof Error && e.name === 'AbortError'
+      ? `请求超时（>${ms}ms）`
+      : (e instanceof Error && e.message ? e.message : '连接外部天气失败');
+    return { ok: false, error: msg };
+  } finally {
+    clearTimeout(timer);
+  }
 }

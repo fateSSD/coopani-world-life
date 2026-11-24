@@ -1,5 +1,5 @@
 /*
- * 模拟鱼生面板（1.3.0，原生 ES module，零打包直跑）。
+ * 模拟鱼生面板（1.3.1，原生 ES module，零打包直跑）。
  */
 
 const TEXT = {
@@ -915,7 +915,11 @@ export default {
           tag.textContent = t(lang, d.town.source === 'server' ? 'server' : d.town.source === 'own' ? 'townOwn' : 'builtin');
           const bits = [`${d.dayPart} ${d.clock}`];
           if (d.solarTerm && d.solarTerm.name) bits.push(lang === 'en' ? `Solar term: ${d.solarTerm.name}` : `节气·${d.solarTerm.name}`);
-          if (d.weather && d.weather.sky) bits.push(d.weather.sky);
+          if (d.weather && d.weather.sky) {
+            bits.push(typeof d.weather.temperature === 'number'
+              ? `${d.weather.sky} ${Math.round(d.weather.temperature)}°C`
+              : d.weather.sky);
+          }
           if (d.streetWindow && d.streetWindow.label) bits.push(`${d.streetWindow.place}${d.streetWindow.label}`);
           if (d.street) bits.push(d.street);
           sub.textContent = bits.join(' · ');
@@ -1160,8 +1164,7 @@ export default {
         const bridgeCard = el('div', 'lf-card');
         cols.append(visitsCard, giftsCard, bridgeCard);
 
-        const marketCard = el('div', 'lf-card');
-        app.append(head, cols, marketCard);
+        app.append(head, cols);
 
         const render = (d) => {
           if (!d) return;
@@ -1223,49 +1226,6 @@ export default {
             for (const text of rows) ul.append(el('li', null, text));
             bridgeCard.append(ul);
           }
-
-          marketCard.innerHTML = '';
-          const mktHead = el('div', 'lf-mkt-head');
-          mktHead.append(el('h3', null, '鱼市街'));
-          const tipBox = el('details', 'lf-mkt-tip');
-          tipBox.append(el('summary', null, '怎么买卖、扣本与收款 ▾'));
-          const tipList = el('ul');
-          tipList.append(
-            el('li', null, '购买：对话里说「逛鱼市街」或「买某样货」，它用零花钱下单；买鲜蔬会自动存进储物篮（供自家下厨省本或料理摊抵原料费）。'),
-            el('li', null, '摆摊：鲜蔬/料理/手作/写作/影像五大品类都会先扣真实本钱与精力（写作扣纸笔排版与印刷费），3 天未售出过期亏本；卖出后查回执自动入账。'),
-            el('li', null, '配点：1–150 元每 +1 元给 2 点预算（可换 +2 五维、+0.1 见识或 +0.05 体质）；完整菜园与规则表请切到「菜园与鱼市街」页签查看。'),
-          );
-          tipBox.append(tipList);
-          mktHead.append(tipBox);
-          marketCard.append(mktHead);
-          marketCard.append(el('p', 'lf-mkt-guide', '面板只读：完整种植槽进度、储物篮与五大赛道成本对照表见「菜园与鱼市街」页签；想买卖在对话里跟它说一声就会去。'));
-          const bd = d.bulletin || [];
-          if (bd.length) {
-            marketCard.append(el('div', 'lf-board-strip', `《街口黑板报》 ${bd.join('；')}`));
-          }
-
-          const recordMap = new Map((d.stallRecords || []).map((r) => [r.id, r]));
-          const os = d.otherStalls || [];
-          if (!os.length) {
-            marketCard.append(el('p', 'lf-muted', '街坊这会儿还没摆出摊子。'));
-          } else {
-            marketCard.append(el('div', 'lf-subh', `街坊在售（${os.length}）`));
-            for (const st of os) marketCard.append(renderStallRow(st, true, recordMap));
-          }
-
-          const split = el('div', 'lf-mkt-split');
-          const mineCol = el('div', null);
-          mineCol.append(el('div', 'lf-subh', '我的摊位'));
-          const ms = d.myStalls || [];
-          if (!ms.length) mineCol.append(el('p', 'lf-muted', '暂无在架摊位。'));
-          else for (const st of ms) mineCol.append(renderStallRow(st, false, recordMap));
-
-          const dealCol = el('div', null);
-          const un = Number(d.unseenDeals || 0);
-          dealCol.append(el('div', 'lf-subh', un > 0 ? `成交回执（未读 ${un}）` : '成交回执'));
-          dealCol.append(renderDealsList(d.deals || []));
-          split.append(mineCol, dealCol);
-          marketCard.append(split);
         };
 
         const load = () => ctx.invoke('snapshot').then(render).catch(() => {});

@@ -643,8 +643,11 @@ test('recentVisits 连续 8 天只计数近 7 天，relation 面板修复 [objec
   const panelCode = readFileSync(new URL(`../${pkg.cortico.webUiClient}`, import.meta.url), 'utf8');
   assert.doesNotMatch(panelCode, /el\(\s*['"]span['"]\s*,\s*['"]lf-chip['"]\s*,\s*day\s*\)/, '禁止再把 day 对象直接传进 .lf-chip');
   assert.match(panelCode, /day\?\.date|day\.date/, '胶囊应提取 day.date');
-  assert.match(panelCode, /d\.otherStalls/, 'relation 面板应展示鱼市街街坊在售摊位');
+  assert.match(panelCode, /d\.otherStalls/, 'market 面板应展示鱼市街街坊在售摊位');
   assert.match(panelCode, /resolveStallEffects/, '面板应按摊位价格动态推导默认属性');
+  const relBlock = panelCode.slice(panelCode.indexOf('relation: {'), panelCode.indexOf('market: {'));
+  assert.ok(relBlock.length > 0, '应定位到 relation 面板块');
+  assert.doesNotMatch(relBlock, /marketCard|d\.otherStalls|《街口黑板报》/, '「你和它」页签不再重复渲染鱼市街卡片');
 });
 
 test('鱼市街摆摊自定义 effects 与买摊叠加五维/见识/体质/邻里社交及好心情 + 状态/黑板报直接曝光摊位', async () => {

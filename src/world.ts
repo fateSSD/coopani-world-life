@@ -8,21 +8,24 @@ import { ImageLibrary, LIBRARY_CATEGORIES, LIBRARY_CATEGORY_LABEL, type LibraryC
 import type {
   Logger, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp, TriggerMode, EventTag, EventEnvelope, StoragePart,
 } from 'cortico/core/types.ts';
-import { LIFE_ID, lifeConfigGroups, parseTownUrls, type LifeConfigSection } from './config.ts';
+import {
+  LIFE_ID, clampWeatherTimeoutMs, lifeConfigGroups, normWeatherUrl, parseTownUrls,
+  type ExternalWeatherOverride, type LifeConfigSection, type WeatherMode, type WeatherSky,
+} from './config.ts';
 import {
   ACTS, CRITICAL, DECAY_PER_HOUR, FITNESS_MAX, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, KNOWLEDGE_MAX, LOW, MAX_PENDING, MAX_PLEDGES, NON_OCCUPYING_ACTS,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL, SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG,
-  HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_SIGNUP_FEE, LEASE_MONTHLY_RENT, SEEDS, STALL_CATEGORY_LABEL, STALL_RULES_GUIDE,
+  HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_MONTHLY_RENT, LEASE_SIGNUP_FEE, SEEDS, STALL_CATEGORY_LABEL, STALL_RULES_GUIDE,
   advance, applyAct, applyMove, applyStreetMove, applySpend, applyWork, applyCert, applyLearn, applyGift, asleepRefusal, busyRefusal, freshState, isAsleep, isBusy, isCruiseJourney, isThemeCruiseJourney, isRiverCruiseJourney, isScenicTrainJourney, isCampervanJourney,
   applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm, addPantryItem, consumePantry, pantryCount, evaluateStallPlan, solarTermOf,
   jobGate, localDateKey, noteVisit, quoteMove, readyGoals,
   recentVisits, remember, snapshot, streetDecayFactor, SLEEP_ENERGY_PER_HOUR,
   appendLedger, readLedger, fullMarketPrices, weatherOf,
-  type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type PendingNotice, type Snapshot, type VitalKey, type SkillDomain, type StallCategory,
+  type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type PendingNotice, type Snapshot, type VitalKey, type SkillDomain, type StallCategory, type WeatherInfo,
 } from './state.ts';
 import { JOBS, certOf, jobAllowedAt } from './jobs.ts';
 import {
-  BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown,
+  BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown, fetchExternalWeather,
   readPendingRequests, archivePendingRequest, fetchTownStalls, buyTownStall, joinTown, readMeetUid,
   pickTownStreet, postTownStall, fetchTownDeals, ackTownDeals, findStreetProfile, formatStreetMods, normStallEffects, resolveStallEffects, formatStallEffects,
   type JourneyView, type TownView, type TownStall, type TownDeal, type StreetMods, type StallEffects,
@@ -282,6 +285,20 @@ export class LifeWorld implements World {
 
   private townBulletin: string[] = [];
   private lastBulletinFetchMs = 0;
+  private lastTownFetchMs = 0;
+  private townRefreshInFlight: Promise<boolean> | null = null;
+  private lastWeatherCfgKey: string | null = null;
+  private externalWeather: {
+    city: string;
+    sky: WeatherSky;
+    rawWeather: string;
+    temperature?: number;
+    source: string;
+    fetchedAt: number;
+  } | null = null;
+  private externalWeatherError = '';
+  private externalWeatherAttemptAt = 0;
+  private externalWeatherInFlight: Promise<void> | null = null;
   private myStallsCache: TownStall[] = [];
   private otherStallsCache: TownStall[] = [];
   private myDealsCache: TownDeal[] = [];
@@ -356,9 +373,153 @@ export class LifeWorld implements World {
         }
       } catch { /* 网络失败下次重试 */ }
     }
+    if (Date.now() - this.lastTownFetchMs >= 15 * 60_000) {
+      await this.refreshTownInfo(generation, { minIntervalMs: 15 * 60_000 });
+      if (generation !== this.stateGeneration) return;
+    }
     if (Date.now() - this.lastBulletinFetchMs >= 15 * 60_000) {
       await this.refreshTownMarket(generation);
     }
+  }
+
+  /**
+   * 节流或强制从服务器重拉 `/town/info`，同步最新的城名、街道简介与增益属性。
+   * 未配置 `townUrl` 且非强制时零请求直接返回 `false`；临时断网/5xx 自动刷新时保留既有服务端档案防闪烁。
+   */
+  private async refreshTownInfo(
+    generation: number,
+    opts: { force?: boolean; minIntervalMs?: number } = {},
+  ): Promise<boolean> {
+    if (!opts.force && parseTownUrls(this.cfg.townUrl).length === 0) return false;
+    const minInterval = opts.minIntervalMs ?? 15 * 60_000;
+    if (!opts.force && this.lastTownFetchMs > 0 && Date.now() - this.lastTownFetchMs < minInterval) {
+      return false;
+    }
+    if (this.townRefreshInFlight) {
+      if (!opts.force) return this.townRefreshInFlight;
+      await this.townRefreshInFlight.catch(() => false);
+      if (generation !== this.stateGeneration) return false;
+    }
+    const run = (async (): Promise<boolean> => {
+      const fresh = await readTown(this.cfg.townUrl, this.cfg.homeCity);
+      if (generation !== this.stateGeneration) return false;
+      if (!opts.force && fresh.source === 'failed' && this.town.source === 'server') {
+        this.lastTownFetchMs = Math.max(this.lastTownFetchMs, Date.now() - Math.max(0, minInterval - 120_000));
+        return false;
+      }
+      this.town = fresh;
+      this.lastTownFetchMs = Date.now();
+      this.ensureTownStreet();
+      if (this.stateSaveDirty && !this.stateCleared) {
+        this.saveDeliveredState();
+        this.broadcastLife(this.now());
+      }
+      return fresh.source === 'server';
+    })().finally(() => {
+      this.townRefreshInFlight = null;
+    });
+    this.townRefreshInFlight = run;
+    return run;
+  }
+
+  private weatherMode(): WeatherMode {
+    const raw = String(this.cfg.weatherMode || 'auto').trim();
+    if (raw === 'external' || raw === 'builtin') return raw;
+    return 'auto';
+  }
+
+  private weatherCfgKey(): string {
+    return `${this.weatherMode()}|${normWeatherUrl(this.cfg.weatherUrl)}|${clampWeatherTimeoutMs(this.cfg.weatherTimeoutMs)}`;
+  }
+
+  /** 解析应传给外部天气服务的真实地理城名，绝不传街道名或未确认的内置假名以外的街道串。 */
+  private weatherCityName(j?: JourneyView): string {
+    if (j?.installed && j.phase === 'staying' && j.cityName.trim()) {
+      return j.cityName.trim();
+    }
+    if ((this.town.source === 'server' || this.town.source === 'own') && this.town.name.trim()) {
+      return this.town.name.trim();
+    }
+    return String(this.cfg.homeCity || '').trim() || this.town.name.trim() || '兰州';
+  }
+
+  private activeExternalWeatherOverride(city: string): ExternalWeatherOverride | null {
+    const mode = this.weatherMode();
+    const url = normWeatherUrl(this.cfg.weatherUrl);
+    if (mode === 'builtin' || !url || !this.externalWeather) return null;
+    if (this.externalWeather.city !== city) return null;
+    if (Date.now() - this.externalWeather.fetchedAt >= 10 * 60_000) return null;
+    return {
+      sky: this.externalWeather.sky,
+      source: this.externalWeather.source,
+      rawWeather: this.externalWeather.rawWeather,
+      ...(this.externalWeather.temperature !== undefined ? { temperature: this.externalWeather.temperature } : {}),
+    };
+  }
+
+  private currentWeather(now: Date, j?: JourneyView): WeatherInfo {
+    const city = this.weatherCityName(j);
+    const override = this.activeExternalWeatherOverride(city);
+    return weatherOf(city, now, override);
+  }
+
+  /** 按 10 分钟节流异步拉取外部实时天气；失败只记缓存错误供状态灯显示，永不抛出或阻塞 tick。 */
+  private async refreshExternalWeather(now: Date, opts: { force?: boolean } = {}): Promise<void> {
+    const mode = this.weatherMode();
+    const url = normWeatherUrl(this.cfg.weatherUrl);
+    if (mode === 'builtin' || !url) {
+      this.externalWeather = null;
+      this.externalWeatherError = '';
+      this.externalWeatherAttemptAt = 0;
+      return;
+    }
+    const j = this.journey?.installed ? this.journey : readJourney(this.opts.dataDir, now);
+    const city = this.weatherCityName(j);
+    const freshHit = Boolean(
+      this.externalWeather
+      && this.externalWeather.city === city
+      && Date.now() - this.externalWeather.fetchedAt < 10 * 60_000,
+    );
+    if (!opts.force) {
+      if (freshHit) return;
+      if (this.externalWeatherAttemptAt > 0 && Date.now() - this.externalWeatherAttemptAt < 120_000) return;
+    }
+    if (this.externalWeatherInFlight) {
+      if (!opts.force) return this.externalWeatherInFlight;
+      await this.externalWeatherInFlight.catch(() => {});
+    }
+    const generation = this.stateGeneration;
+    const run = (async (): Promise<void> => {
+      this.externalWeatherAttemptAt = Date.now();
+      const res = await fetchExternalWeather(url, city, clampWeatherTimeoutMs(this.cfg.weatherTimeoutMs));
+      if (generation !== this.stateGeneration) return;
+      if (res.ok && res.sky) {
+        this.externalWeather = {
+          city,
+          sky: res.sky,
+          rawWeather: res.rawWeather ?? res.sky,
+          ...(res.temperature !== undefined ? { temperature: res.temperature } : {}),
+          source: res.source ?? '外部天气',
+          fetchedAt: Date.now(),
+        };
+        this.externalWeatherError = '';
+        this.log?.debug?.(`模拟鱼生：外部天气已更新 ${city} ${this.externalWeather.rawWeather}（${this.externalWeather.source}）`);
+      } else {
+        this.externalWeatherError = res.error || '外部天气获取失败';
+        if (
+          !this.externalWeather
+          || this.externalWeather.city !== city
+          || Date.now() - this.externalWeather.fetchedAt >= 10 * 60_000
+        ) {
+          this.externalWeather = null;
+        }
+        this.log?.debug?.(`模拟鱼生：外部天气获取失败（${city}），回退内置天气：${this.externalWeatherError}`);
+      }
+    })().finally(() => {
+      this.externalWeatherInFlight = null;
+    });
+    this.externalWeatherInFlight = run;
+    return run;
   }
 
   /** 拉取鱼市街黑板报、摊位与成交回执；仅成功时置满 15 分钟冷却，失败则 1 分钟后允许重试。 */
@@ -447,10 +608,12 @@ export class LifeWorld implements World {
     this.host = host;
     this.log = host.log;
     this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
+    this.lastTownFetchMs = Date.now();
     this.ensureTownStreet();
     if (this.stateSaveDirty && !this.stateCleared) this.saveDeliveredState();
     this.lastTownUrl = this.townUrlKey(this.cfg.townUrl);
     this.lastHomeCity = String(this.cfg.homeCity || '').trim();
+    this.lastWeatherCfgKey = this.weatherCfgKey();
     this.lastDiaryDir = String(this.cfg.diaryDir || '').trim();
     const dh = this.diary.configure(this.lastDiaryDir);
     if (dh.problem) host.log.warn(`模拟鱼生：${dh.problem}`);
@@ -471,6 +634,7 @@ export class LifeWorld implements World {
     if (parseTownUrls(this.cfg.townUrl).length) {
       void this.syncTownPresenceAndBulletin(new Date(), this.stateGeneration);
     }
+    void this.refreshExternalWeather(new Date(), { force: true });
     this.restartTimer();
     host.log.info(
       `模拟鱼生已就绪：${this.town.name}（${this.townSourceLabel()}）`
@@ -523,7 +687,7 @@ export class LifeWorld implements World {
           streetMods: this.currentStreetMods(),
         });
       }
-      const s = snapshot(previewState, now);
+      const s = snapshot(previewState, now, this.activeExternalWeatherOverride(this.weatherCityName(j)));
       const body = (Object.keys(VITAL_LABEL) as VitalKey[])
         .map((k) => `${VITAL_LABEL[k]} ${Math.round(s.vitals[k])}`)
         .join(' ');
@@ -691,6 +855,7 @@ export class LifeWorld implements World {
       this.lastHomeCity = homeCity;
       this.lastBulletinFetchMs = 0;
       this.town = await readTown(this.cfg.townUrl, homeCity);
+      this.lastTownFetchMs = Date.now();
       if (generation !== this.stateGeneration) return;
       this.ensureTownStreet();
       this.log?.info(`模拟鱼生：本城改成了 ${this.town.name}（${this.townSourceLabel()}）`);
@@ -699,6 +864,17 @@ export class LifeWorld implements World {
     if (generation !== this.stateGeneration) return;
 
     this.journey = readJourney(this.opts.dataDir, now);
+    const weatherCfgKey = this.weatherCfgKey();
+    if (this.lastWeatherCfgKey !== null && weatherCfgKey !== this.lastWeatherCfgKey) {
+      this.lastWeatherCfgKey = weatherCfgKey;
+      this.externalWeather = null;
+      this.externalWeatherError = '';
+      this.externalWeatherAttemptAt = 0;
+      void this.refreshExternalWeather(now, { force: true });
+    } else {
+      if (this.lastWeatherCfgKey === null) this.lastWeatherCfgKey = weatherCfgKey;
+      void this.refreshExternalWeather(now);
+    }
     /* presence 要在 advance 之前记 —— 它是「今天」的事，跟衰减无关。 */
     this.checkPresence(now);
     /*
@@ -1173,7 +1349,7 @@ export class LifeWorld implements World {
        * 剩下的才是真能拿去走远的。仍然是「能动用的」，不是「全部」。
        */
       const allowance = Math.max(0, Math.round(this.state.money.cash * .7));
-      const w = weatherOf(this.town.name, now);
+      const w = this.currentWeather(now, this.journey);
       writeFileSync(tmp, JSON.stringify({
         schema: 2,
         asleepUntil: awake ? '' : until,
@@ -1608,7 +1784,7 @@ export class LifeWorld implements World {
         await this.settleBeforeTool(now);
         const j = readJourney(this.opts.dataDir, now);
         this.journey = j;
-        const s = snapshot(this.state, now);
+        const s = snapshot(this.state, now, this.activeExternalWeatherOverride(this.weatherCityName(j)));
         return { text: this.statusText(s, j, now) };
       },
     };
@@ -1655,6 +1831,7 @@ export class LifeWorld implements World {
           hotelTier: j.hotelTier,
           onWay: j.onWay,
           atSpot: j.atSpot,
+          weatherSky: this.currentWeather(now, j).sky,
         });
         if (!r.ok) return { text: r.reason ?? '这件事做不了。' };
         if (r.advanced && r.advanced.hours > 0) {
@@ -2016,7 +2193,7 @@ export class LifeWorld implements World {
          * 给满就等于编造了一次不存在的相遇。
          */
         s.vitals.social = Math.min(100, s.vitals.social + 6);
-        const w = weatherOf(this.town.name, now);
+        const w = this.currentWeather(now, this.journey);
         const extraNote = w.sky === '小雨'
           ? `下雨天去${where}转了一圈，路边积水映着灯。`
           : where.includes('鱼市')
@@ -3250,7 +3427,7 @@ export class LifeWorld implements World {
         const body = String(args?.body ?? '').trim();
         if (!body) return { text: '日记正文是空的，写点今天发生的事再存吧。' };
         const key = String(args?.dateKey ?? '').trim().slice(0, 10) || localDateKey(now);
-        const w = weatherOf(this.town.name, now);
+        const w = this.currentWeather(now, j);
         const todayRows = readLedger(this.opts.dataDir, 20)
           .filter((e) => localDateKey(new Date(e.ts)) === key);
         const inc = todayRows.filter((e) => e.kind === 'income').reduce((a, b) => a + b.amount, 0);
@@ -3413,7 +3590,7 @@ export class LifeWorld implements World {
   envPromptVars(): Record<string, string> {
     const now = new Date();
     const j = readJourney(this.opts.dataDir, now);
-    const s = snapshot(this.state, now);
+    const s = snapshot(this.state, now, this.activeExternalWeatherOverride(this.weatherCityName(j)));
     const at = herNow(j, now);
 
     const lowText = s.low.length
@@ -3603,7 +3780,32 @@ export class LifeWorld implements World {
             : j.phase === 'staying' ? `在${j.cityName || '外地'}` : `在家${j.cityName ? `（${j.cityName}）` : ''}`,
         };
 
-    return [alive, town, travel];
+    /* ---- 外部天气 ---- */
+    const wMode = this.weatherMode();
+    const wUrl = normWeatherUrl(this.cfg.weatherUrl);
+    const wCity = this.weatherCityName(j);
+    const wExt = this.activeExternalWeatherOverride(wCity);
+    const weatherLamp: WorldLamp = wMode === 'builtin'
+      ? { label: '外部天气', state: 'offline', hint: '已设为仅用内置节气天气 —— **不用管**' }
+      : !wUrl
+        ? (wMode === 'external'
+          ? { label: '外部天气', state: 'error', hint: '选了外部优先模式，但还没填外部天气地址；暂用内置天气兜底' }
+          : { label: '外部天气', state: 'offline', hint: '没配外部天气地址，用内置节气天气 —— **不用管**' })
+        : wExt
+          ? {
+            label: '外部天气',
+            state: 'online',
+            hint: `${wExt.source || '外部天气'} · ${wCity} ${wExt.rawWeather || wExt.sky}${typeof wExt.temperature === 'number' ? ` ${wExt.temperature}°C` : ''}（映射：${wExt.sky}）`,
+          }
+          : (this.externalWeatherError || wMode === 'external')
+            ? {
+              label: '外部天气',
+              state: 'error',
+              hint: `${this.externalWeatherError || '外部天气暂不可达'}；已回退内置天气兜底，不影响过日子`,
+            }
+            : { label: '外部天气', state: 'offline', hint: `正在获取 ${wCity} 外部天气，暂用内置天气` };
+
+    return [alive, town, travel, weatherLamp];
   }
 
   webUi(): WorldWebUiDecl {
@@ -3699,6 +3901,10 @@ export class LifeWorld implements World {
             const prevAttempts = new Map(this.deliveryAttempts);
             const prevGeneration = this.stateGeneration;
             const prevDirty = this.stateSaveDirty;
+            const prevLastTownFetchMs = this.lastTownFetchMs;
+            const prevExternalWeather = this.externalWeather ? { ...this.externalWeather } : null;
+            const prevExternalWeatherError = this.externalWeatherError;
+            const prevExternalWeatherAttemptAt = this.externalWeatherAttemptAt;
             const prevFpBytes = existsSync(fp) ? readFileSync(fp) : null;
             const prevBakBytes = existsSync(bak) ? readFileSync(bak) : null;
             try {
@@ -3711,6 +3917,10 @@ export class LifeWorld implements World {
               this.stateCleared = true;
               this.dayWorkPending = null;
               this.stateSaveDirty = false;
+              this.lastTownFetchMs = 0;
+              this.externalWeather = null;
+              this.externalWeatherError = '';
+              this.externalWeatherAttemptAt = 0;
               this.broadcastLife(now, { strict: true });
               return '已清除生活档案（含 .bak 备份）并重置内存与公开快照。';
             } catch (e) {
@@ -3721,6 +3931,10 @@ export class LifeWorld implements World {
               for (const [id, attempt] of prevAttempts) this.deliveryAttempts.set(id, attempt);
               this.stateGeneration = prevGeneration;
               this.stateSaveDirty = prevDirty;
+              this.lastTownFetchMs = prevLastTownFetchMs;
+              this.externalWeather = prevExternalWeather;
+              this.externalWeatherError = prevExternalWeatherError;
+              this.externalWeatherAttemptAt = prevExternalWeatherAttemptAt;
               throwRollback(e, restoreFiles([
                 { file: fp, bytes: prevFpBytes },
                 { file: bak, bytes: prevBakBytes },
@@ -3814,7 +4028,6 @@ export class LifeWorld implements World {
     const now = new Date();
     const j = readJourney(this.opts.dataDir, now);
     this.journey = j;
-    const s = snapshot(this.state, now);
 
     if (panel === 'library') {
       const raw = (Array.isArray(args) ? args[0] : args) as any;
@@ -4017,16 +4230,15 @@ export class LifeWorld implements World {
 
     if (method === 'snapshot' || method === '') {
       await this.settleBeforeTool(now);
+      if (parseTownUrls(this.cfg.townUrl).length > 0) {
+        await this.refreshTownInfo(this.stateGeneration, { minIntervalMs: 30_000 });
+      }
       return this.panelSnapshot(now);
     }
 
     if (method === 'reloadTown') {
-      this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
-      this.ensureTownStreet();
-      if (this.stateSaveDirty && !this.stateCleared) {
-        this.saveDeliveredState();
-        this.broadcastLife(now);
-      }
+      await this.refreshTownInfo(this.stateGeneration, { force: true });
+      await this.refreshExternalWeather(now, { force: true });
       return { ok: true, town: this.town };
     }
 
@@ -4037,7 +4249,7 @@ export class LifeWorld implements World {
   private panelSnapshot(now: Date): Record<string, unknown> {
     const j = readJourney(this.opts.dataDir, now);
     this.journey = j;
-    const s = snapshot(this.state, now);
+    const s = snapshot(this.state, now, this.activeExternalWeatherOverride(this.weatherCityName(j)));
     {
       const at = herNow(j, now);
       return {

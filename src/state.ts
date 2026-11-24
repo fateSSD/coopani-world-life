@@ -33,8 +33,11 @@
  */
 import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { skyFromExternal, type ExternalWeatherOverride, type WeatherSky } from './config.ts';
 import { type JobDef, findJob, certOf, CERTS, jobAllowedAt } from './jobs.ts';
 import { type StreetMods, type StreetProfile, formatStreetMods } from './bridge.ts';
+
+export { skyFromExternal, type ExternalWeatherOverride, type WeatherSky };
 import {
   SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, findCourse, findEquip,
   rollWorkGrade, solarTermOf, streetWindowOf, marketCatalogOf, isLateNightQuiet, buildDreamSlice,
@@ -2177,6 +2180,7 @@ export interface ActJourneyContext {
   hotelTier?: '' | 'budget' | 'comfort' | 'view' | 'luxury';
   onWay?: { what: string; arriveAt: string; leftMin: number } | null;
   atSpot?: { name: string; until: string } | null;
+  weatherSky?: WeatherSky;
 }
 
 /** 是否正乘坐内河游轮航线。 */
@@ -2780,7 +2784,7 @@ export function applyAct(
     remember(state, quirk, now);
   }
 
-  if (act.id === 'cook' && weatherOf(state.street || '兰州', now).sky === '小雨') {
+  if (act.id === 'cook' && (journey?.weatherSky ?? weatherOf(state.street || '兰州', now).sky) === '小雨') {
     state.moodlets = state.moodlets.filter((m) => m.source !== 'weather-cook');
     state.moodlets.push({
       id: `m-wc-${now.getTime().toString(36)}`,
@@ -2816,7 +2820,7 @@ export function applyAct(
 
   if (act.id === 'miniature') {
     const late = isLateNightQuiet(now);
-    const rainy = weatherOf(state.street || '兰州', now).sky === '小雨';
+    const rainy = (journey?.weatherSky ?? weatherOf(state.street || '兰州', now).sky) === '小雨';
     if (late || rainy) {
       state.moodlets = state.moodlets.filter((m) => m.source !== 'cozy-miniature');
       state.moodlets.push({
@@ -3728,26 +3732,45 @@ export interface Snapshot {
 }
 
 export interface WeatherInfo {
-  sky: '晴' | '多云' | '小雨' | '起风';
+  sky: WeatherSky;
   seasonNote: string;
   solarTerm?: string;
+  source?: string;
+  rawWeather?: string;
+  temperature?: number;
+  external?: boolean;
 }
+
+const VALID_SKIES = new Set<WeatherSky>(['晴', '多云', '小雨', '起风']);
 
 /**
  * 确定性本地天气与兰州物候（§6.6 ③ & §4.19 二十四节气）：同一天同一个时段大家看到一样。
+ * 传入 `override` 时只替换 `sky`（并附带可选温度/来源说明），`seasonNote` 与 `solarTerm` 保持本地节气逻辑。
  */
-export function weatherOf(city: string, now: Date): WeatherInfo {
+export function weatherOf(city: string, now: Date, override?: ExternalWeatherOverride | null): WeatherInfo {
   const key = `${city || '兰州'}-${localDateKey(now)}-${Math.floor(now.getHours() / 8)}`;
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
-  const skies: WeatherInfo['sky'][] = ['晴', '多云', '晴', '小雨', '起风', '多云'];
-  const sky = skies[h % skies.length];
+  const skies: WeatherSky[] = ['晴', '多云', '晴', '小雨', '起风', '多云'];
+  const useExt = Boolean(override && VALID_SKIES.has(override.sky));
+  const sky: WeatherSky = useExt ? override!.sky : skies[h % skies.length];
   const term = solarTermOf(now);
   const termLabel = `节气·${term.name}`;
   const seasonNote = sky === '小雨'
     ? `${termLabel}（小雨），${term.note}`
     : `${termLabel} · ${term.note}`;
-  return { sky, seasonNote, solarTerm: term.name };
+  if (!useExt) return { sky, seasonNote, solarTerm: term.name };
+  return {
+    sky,
+    seasonNote,
+    solarTerm: term.name,
+    external: true,
+    ...(override!.source ? { source: override!.source } : {}),
+    ...(override!.rawWeather ? { rawWeather: override!.rawWeather } : {}),
+    ...(typeof override!.temperature === 'number' && Number.isFinite(override!.temperature)
+      ? { temperature: override!.temperature }
+      : {}),
+  };
 }
 
 /** 他伸手给她留一样东西（一天最多一件，不进金额、不刷好感数值）。 */
@@ -3840,7 +3863,11 @@ export const VITAL_LABEL: Record<VitalKey, string> = {
   social: '社交',
 };
 
-export function snapshot(state: LifeState, now: Date): Snapshot {
+export function snapshot(
+  state: LifeState,
+  now: Date,
+  weatherOverride?: ExternalWeatherOverride | null,
+): Snapshot {
   const low = (Object.keys(state.vitals) as VitalKey[])
     .filter((k) => state.vitals[k] < LOW)
     .map((k) => ({ key: k, value: Math.round(state.vitals[k]), label: VITAL_LABEL[k] }))
@@ -3906,7 +3933,7 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     overdue: state.pledges.filter((p) => Date.parse(p.dueAt) <= now.getTime()),
     visitedDays: recentVisits(state, now, 7),
     gifts: state.gifts,
-    weather: weatherOf(state.street || '兰州', now),
+    weather: weatherOf(state.street || '兰州', now, weatherOverride),
     asleep,
     activity: activitySnap,
     knowledge: Math.round(state.knowledge * 10) / 10,

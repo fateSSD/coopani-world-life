@@ -12,6 +12,36 @@ import type { WorldSection } from 'cortico/world.ts';
  */
 export const LIFE_ID = 'life';
 
+export type WeatherMode = 'auto' | 'external' | 'builtin';
+
+export type WeatherSky = '晴' | '多云' | '小雨' | '起风';
+
+export interface ExternalWeatherOverride {
+  sky: WeatherSky;
+  source?: string;
+  rawWeather?: string;
+  temperature?: number;
+}
+
+export function skyFromExternal(text: string): WeatherSky {
+  const s = String(text || '').trim();
+  if (/雨|雷|阵雨|毛毛雨/.test(s)) return '小雨';
+  if (/雪|雾|阴/.test(s)) return '多云';
+  if (/风|沙|霾/.test(s)) return '起风';
+  if (/晴/.test(s)) return '晴';
+  return '多云';
+}
+
+export function normWeatherUrl(raw: unknown): string {
+  return String(raw || '').trim().replace(/\/+$/, '').replace(/\/now$/i, '').replace(/\/+$/, '');
+}
+
+export function clampWeatherTimeoutMs(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 2500;
+  return Math.max(500, Math.min(3000, Math.round(n)));
+}
+
 export interface LifeConfigSection extends WorldSection {
   /**
    * 她住在哪座城。留空 = 内置的兰州（南滨河路 / 张掖路 / 皋兰路 / 雁滩路）。
@@ -22,6 +52,12 @@ export interface LifeConfigSection extends WorldSection {
   homeCity: string;
   /** 她住的那座城由哪台服务器定。填了 = 覆盖上面那座（支持单个 URL 或逗号/换行分隔多台，留位置兼容 F1 联邦）。 */
   townUrl: string | string[];
+  /** 天气模式：auto（有外部地址优先、失败静默回退内置）/ external（外部优先、失联兜底并红灯提示）/ builtin（仅内置）。 */
+  weatherMode: WeatherMode;
+  /** 外部天气服务根地址（不带 `/now`，如 `http://127.0.0.1:7791`；留空不发请求）。 */
+  weatherUrl: string;
+  /** 外部天气请求超时（毫秒，默认 2500，上限 3000）。 */
+  weatherTimeoutMs: number;
   /** 她多久检查一次自己。**和「掉得快慢」无关**，只影响提醒的准时程度。 */
   tickMs: number;
   /** 阈值提醒的密度。 */
@@ -53,6 +89,9 @@ export const LIFE_DEFAULTS = (): LifeConfigSection => ({
   enabled: false,
   homeCity: '',
   townUrl: '',
+  weatherMode: 'auto',
+  weatherUrl: '',
+  weatherTimeoutMs: 2500,
   tickMs: 60_000,
   notify: 'once',
   diaryDir: '',
@@ -85,6 +124,30 @@ export function lifeConfigGroups(): ConfigGroup[] {
           description: '填你的服务器域名（如 https://cooppetsjourney.top），支持逗号或换行填多个备选地址。'
             + '\n填了：同步城名/街规与《街口黑板报》，可在鱼市街买菜、挂摊卖货；留空：纯本地单机过日子，不发网络请求。'
             + '\n管理城名与看全城鱼数，打开服务器的 /pets/life 页面。',
+          'x-hot': true,
+        },
+        'worlds.life.weatherMode': {
+          type: 'string',
+          title: '天气来源模式',
+          enum: ['auto', 'external', 'builtin'],
+          enumNames: ['自动（有外部地址优先，失败回退内置）', '外部优先（失联时兜底并红灯提示）', '仅用内置'],
+          description: '决定天气晴雨从哪里拿：推荐保持「自动」，配了外部天气地址就用真实天气，没配或连不上时静默回退内置节气天气。',
+          'x-hot': true,
+        },
+        'worlds.life.weatherUrl': {
+          type: 'string',
+          title: '外部天气服务地址',
+          description: '外部天气服务根地址，不带 /now（例如 http://127.0.0.1:7791）。'
+            + '\n留空时不发任何网络请求；每 10 分钟最多同步一次，不拖慢检查间隔。',
+          'x-hot': true,
+        },
+        'worlds.life.weatherTimeoutMs': {
+          type: 'integer',
+          title: '外部天气超时',
+          description: '请求外部天气服务的超时上限，建议 2500 毫秒，最高不超过 3000 毫秒。',
+          minimum: 500,
+          maximum: 3000,
+          'x-suffix': '毫秒',
           'x-hot': true,
         },
         'worlds.life.tickMs': {

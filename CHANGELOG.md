@@ -1,5 +1,16 @@
 # 变更记录
 
+## 1.3.1 — 2026-11-24（外部天气源接入 + 本城街道属性自动同步 + 「你和它」页签精简）
+
+- **外部真实天气源接入**（`src/config.ts`、`src/bridge.ts`、`src/state.ts`、`src/world.ts`、`web/panel-1.3.1.js`）：
+  - 新增热更新配置项 `worlds.life.weatherMode`（`auto` / `external` / `builtin`，默认 `auto`）、`worlds.life.weatherUrl`（默认留空不发请求，自动剥尾 `/now`）与 `worlds.life.weatherTimeoutMs`（默认 `2500`，上限 `3000` 毫秒）；
+  - 在 `LifeWorld` 实例上按 10 分钟节流异步拉取 `GET {weatherUrl}/now?city=<真城名>`，以 `skyFromExternal()` 映射回四枚举 `晴` / `多云` / `小雨` / `起风` 并透传可选 `temperature`/`source`/`rawWeather`，`seasonNote` 保持本地二十四节气文案；无论 `auto` 或 `external` 模式失联均由内置天气兜底、永不抛空值，仅在状态灯第 4 盏「外部天气」标红/写明原因。
+- **修复管理页保存街道属性后 Life UI 不同步**（`src/bridge.ts`、`src/world.ts`）：
+  - `readTown()` 补上 `cache: 'no-store'`；新增 `refreshTownInfo()`，在 `tick()` / 邻里同步每 15 分钟重拉 `/town/info`，并在打开或轮询「她此刻」面板（`snapshot`）时按 30 秒冷却同步、`reloadTown` 强刷；自动刷新遇临时 500/断网保留原服务端街道档案不闪烁回默认。
+- **「你和它」页签精简**（`web/panel-1.3.1.js`）：
+  - 移除 `relation` 页签重复的鱼市街黑板与摊位卡片，鱼市街统一收口至 `market`（「菜园与鱼市街」）页签；完成 `1.3.1` / `web/panel-1.3.1.js` 三同步。
+- **测试**：`node --check web/panel-1.3.1.js` 通过、`test/smoke.mjs` **394/394** 通过、`test/*.test.mjs` **75/75** 通过。
+
 ## 1.3.0 — 2026-11-24（节气标题标注 + 二期活动与慢旅行联动 + 种菜租地与五赛道成本闭环 + 菜园只读 UI）
 
 - **节气标注消歧**：`statusText`、面板与相关摘要统一标注为「二十四节气·<节气>」，避免「小雪」等节气词被误读为实时降雪预报。
