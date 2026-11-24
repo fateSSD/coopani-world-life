@@ -351,6 +351,12 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-st-info .lf-chips { margin-top: 4px; }
 
 /* 鱼市街单行紧凑摊位清单 */
+.lf-mkt-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.lf-mkt-head h3 { margin: 0; }
+.lf-mkt-guide { font-size: 11.5px; color: #64748b; margin: 0 0 8px; line-height: 1.5; }
+.lf-mkt-tip { font-size: 11.5px; color: #64748b; margin: 0 0 8px; }
+.lf-mkt-tip summary { cursor: pointer; color: #2f6fed; user-select: none; }
+.lf-mkt-tip ul { margin: 5px 0 0; padding-left: 16px; line-height: 1.65; color: #475569; }
 .lf-board-strip { font-size: 12px; padding: 6px 9px; border-radius: 7px; background: #fdf8ec; border: 1px solid #ecd9b6; color: #7a5b1c; margin-bottom: 8px; }
 .lf-stall { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px dashed #f0f1f3; }
 .lf-stall:last-child { border-bottom: 0; }
@@ -1077,7 +1083,20 @@ export default {
           }
 
           marketCard.innerHTML = '';
-          marketCard.append(el('h3', null, '鱼市街'));
+          const mktHead = el('div', 'lf-mkt-head');
+          mktHead.append(el('h3', null, '鱼市街'));
+          const tipBox = el('details', 'lf-mkt-tip');
+          tipBox.append(el('summary', null, '怎么买卖与配点 ▾'));
+          const tipList = el('ul');
+          tipList.append(
+            el('li', null, '购买：对话里说「逛鱼市街」或「买某样货」，它用自己的零花钱下单，另叠邻里社交 +4 与 3 小时好心情。'),
+            el('li', null, '摆摊：对话里让它「挂摊卖什么、定价几元几份」（每人最多 3 个在架摊位，有效期 3 天），卖出后会在下方收到成交回执。'),
+            el('li', null, '配点：1–150 元每 +1 元给 2 点预算（可换 +2 五维、+0.1 见识或 +0.05 体质）；不单配也会按定价自动分配饱腹与娱乐。'),
+          );
+          tipBox.append(tipList);
+          mktHead.append(tipBox);
+          marketCard.append(mktHead);
+          marketCard.append(el('p', 'lf-mkt-guide', '面板只读：想让小家伙买街坊的货或自己挂摊卖东西，在对话里说一声就会去（如「买份烤红薯」「挂摊卖手工面 15 元」）。'));
           const bd = d.bulletin || [];
           if (bd.length) {
             marketCard.append(el('div', 'lf-board-strip', `《街口黑板报》 ${bd.join('；')}`));

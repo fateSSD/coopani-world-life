@@ -355,28 +355,37 @@ export class LifeWorld implements World {
       } catch { /* 网络失败下次重试 */ }
     }
     if (Date.now() - this.lastBulletinFetchMs >= 15 * 60_000) {
-      this.lastBulletinFetchMs = Date.now();
-      try {
-        const remote = await fetchTownStalls(this.cfg.townUrl);
-        if (generation !== this.stateGeneration) return;
-        if (remote.ok) {
-          this.townBulletin = remote.bulletin;
-          const myName = this.opts.botName || 'fish';
-          this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
-          this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 8);
-        }
-      } catch { /* 静默保留上次黑板 */ }
-      if (uid) {
-        try {
-          const d = await fetchTownDeals(this.cfg.townUrl, uid, { ack: false });
-          if (generation !== this.stateGeneration) return;
-          if (d.ok) {
-            this.myDealsCache = d.deals;
-            this.unseenDealsCount = d.unseen;
-          }
-        } catch { /* 静默保留上次成交 */ }
-      }
+      await this.refreshTownMarket(generation);
     }
+  }
+
+  /** 拉取鱼市街黑板报、摊位与成交回执；仅成功时置满 15 分钟冷却，失败则 1 分钟后允许重试。 */
+  private async refreshTownMarket(generation: number): Promise<void> {
+    if (!parseTownUrls(this.cfg.townUrl).length) return;
+    const uid = readMeetUid(this.opts.dataDir);
+    let ok = false;
+    try {
+      const remote = await fetchTownStalls(this.cfg.townUrl);
+      if (generation !== this.stateGeneration) return;
+      if (remote.ok) {
+        ok = true;
+        this.townBulletin = remote.bulletin;
+        const myName = this.opts.botName || 'fish';
+        this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
+        this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 8);
+      }
+    } catch { /* 静默保留上次黑板 */ }
+    if (uid) {
+      try {
+        const d = await fetchTownDeals(this.cfg.townUrl, uid, { ack: false });
+        if (generation !== this.stateGeneration) return;
+        if (d.ok) {
+          this.myDealsCache = d.deals;
+          this.unseenDealsCount = d.unseen;
+        }
+      } catch { /* 静默保留上次成交 */ }
+    }
+    this.lastBulletinFetchMs = ok ? Date.now() : Math.max(this.lastBulletinFetchMs, Date.now() - 14 * 60_000);
   }
 
   /** 版本号与新版本检查。面板表头那个徽章读它。 */
@@ -3598,6 +3607,12 @@ export class LifeWorld implements World {
 
     if (panel === 'relation') {
       if (method === 'snapshot' || method === 'list' || method === '') {
+        if (parseTownUrls(this.cfg.townUrl).length > 0) {
+          const emptyCache = !this.otherStallsCache.length && !this.myStallsCache.length && !this.townBulletin.length;
+          if (emptyCache || Date.now() - this.lastBulletinFetchMs >= 60_000) {
+            await this.refreshTownMarket(this.stateGeneration);
+          }
+        }
         return {
           ...this.panelSnapshot(now),
           bulletin: [...this.townBulletin],

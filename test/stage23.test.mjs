@@ -930,3 +930,63 @@ test('审查回归：panelSnapshot().journey 与面板代码透出游轮舱位�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('审查回归：启动首次 /town/stalls 失败不锁死 15 分钟冷却，打开 relation 面板当场补拉在售摊位', async () => {
+  const dir = mkDir();
+  let stallsHits = 0;
+  const srv = createServer((req, res) => {
+    if (req.url === '/town/info') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ town: 'lanzhou', name: '兰州', origin: '黄河穿城', streets: ['南滨河路'], rules: [] }));
+      return;
+    }
+    if (req.url === '/town/join' && req.method === 'POST') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, town: 'lanzhou', name: '兰州', street: '南滨河路' }));
+      return;
+    }
+    if (req.url === '/town/stalls' && req.method === 'GET') {
+      stallsHits += 1;
+      if (stallsHits === 1) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        stalls: [{ id: 'st-1', seller: '阿青', kind: 'goods', item: '烤红薯', price: 9, stock: 3 }],
+        bulletin: ['鱼市街正常营业'],
+      }));
+      return;
+    }
+    if (req.url?.startsWith('/town/deals')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, unseen: 0, deals: [] }));
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const { port } = srv.address();
+  try {
+    const world = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true, townUrl: `http://127.0.0.1:${port}` },
+      dataDir: dir,
+      botName: '大肥鱼',
+    });
+    await world.start(silentHost);
+    for (let i = 0; i < 40 && stallsHits < 1; i++) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(stallsHits >= 1, '启动时已触发一次后台拉取');
+
+    const relSnap = await world.webUi().invoke('relation', 'snapshot');
+    assert.equal(relSnap.otherStalls.length, 1, '打开 relation 面板应当场补拉并展示在售摊位');
+    assert.equal(relSnap.otherStalls[0].item, '烤红薯');
+    assert.equal(relSnap.bulletin[0], '鱼市街正常营业');
+
+    await world.stop();
+  } finally {
+    srv.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
