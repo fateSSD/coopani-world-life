@@ -2,6 +2,9 @@
  * 模拟鱼生面板（1.3.1，原生 ES module，零打包直跑）。
  */
 
+/** 作者的 QQ 群。反馈栏那一行和简介里写的是同一个号，改这里一处就够。 */
+const QQ_GROUP = '284525159';
+
 const TEXT = {
   zh: {
     loading: '读她的日子…',
@@ -21,6 +24,7 @@ const TEXT = {
     fbOpenWant: '提需求 ↗',
     fbCopied: '已复制 ✓',
     fbAddr: '仓库：',
+    fbGroupLead: 'QQ 群：',
     fbWhy: '仅复制脱敏版本号与当前状态，点右侧链接可粘贴至 Issue。',
     who: '此刻概览',
     visits: '陪伴天数',
@@ -91,6 +95,7 @@ const TEXT = {
     fbOpenWant: 'Request feature ↗',
     fbCopied: 'Copied ✓',
     fbAddr: 'Repo: ',
+    fbGroupLead: 'QQ group: ',
     fbWhy: 'Copies sanitized version & state, then paste into GitHub Issue.',
     who: 'Overview',
     visits: 'Visits',
@@ -893,7 +898,10 @@ export default {
           const addr = el('div', 'addr');
           addr.append(el('span', null, t(lang, 'fbAddr')));
           addr.append(el('code', null, fb.repo));
-          fbBox.append(addr, el('p', 'lf-note-line', t(lang, 'fbWhy')));
+          const grp = el('div', 'addr');
+          grp.append(el('span', null, t(lang, 'fbGroupLead')));
+          grp.append(el('code', null, QQ_GROUP));
+          fbBox.append(addr, grp, el('p', 'lf-note-line', t(lang, 'fbWhy')));
         };
 
         const drawHelp = () => {
