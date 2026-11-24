@@ -1,5 +1,5 @@
 /*
- * 模拟鱼生面板（1.2.1 精简版，原生 ES module，零打包直跑）。
+ * 模拟鱼生面板（1.3.0，原生 ES module，零打包直跑）。
  */
 
 const TEXT = {
@@ -30,9 +30,9 @@ const TEXT = {
     job: '当前营生',
     certs: '证书',
     knowledge: '见识',
-    knowledgeHint: '影响考证胜算，读书或高阶工作涨',
+    knowledgeHint: '影响考证胜算与写作摆摊门槛，读书或高阶工作涨',
     fitness: '体质',
-    fitnessHint: '运动/体力活涨，加快睡眠回精',
+    fitnessHint: '运动/体力活/收菜涨，加快睡眠回精',
     verSelf: 'v{v}',
     verNew: 'v{v} → v{new}',
     verHint: '新版本 {new} 已在市场上',
@@ -50,7 +50,7 @@ const TEXT = {
     moveTo: '搬过去',
     cantMove: '钱不够',
     moving: '搬…',
-    moveNote: '换房押二付一（老房子押金不退）；与 life_move 共用同一本账。',
+    moveNote: '换房押二付一（老房子押金不退）；住得越好除日常损耗更慢，家里种植槽也越多（1→2→4→8 槽）。',
     noGoal: '暂未定目标。',
     left: '还差 ¥{n}',
     canNow: '攒够了，可以办了',
@@ -100,7 +100,7 @@ const TEXT = {
     job: 'Doing',
     certs: 'Certs',
     knowledge: 'Knowledge',
-    knowledgeHint: 'decides exam pass chance',
+    knowledgeHint: 'decides exam pass chance and writing stall threshold',
     fitness: 'Fitness',
     fitnessHint: 'speeds up sleep recovery',
     verSelf: 'v{v}',
@@ -120,7 +120,7 @@ const TEXT = {
     moveTo: 'Move',
     cantMove: 'short',
     moving: 'moving…',
-    moveNote: 'Two months deposit upfront; same books as life_move.',
+    moveNote: 'Two months deposit upfront; better housing gives more garden slots (1→2→4→8).',
     noGoal: 'No goal set.',
     left: '¥{n} left',
     canNow: 'ready',
@@ -192,6 +192,70 @@ const EFFECT_RULE = {
   knowledge: { label: '见识', short: '识', max: 10, weight: 20, step: 0.1 },
   fitness: { label: '体质', short: '体', max: 5, weight: 40, step: 0.05 },
 };
+
+const CAT_LABEL = {
+  produce: '鲜蔬农产',
+  food: '料理熟食',
+  craft: '手作文创',
+  writing: '写作出版',
+  photo: '影像周边',
+};
+
+const ORIGIN_LABEL = {
+  'home-grown': '自产',
+  'town-buy': '街坊',
+  market: '早市',
+};
+
+const HOME_SLOTS_FALLBACK = {
+  'urban-village': 1,
+  old: 2,
+  new: 4,
+  villa: 8,
+};
+
+const DEFAULT_STALL_RULES = [
+  {
+    category: 'produce',
+    label: '鲜蔬农产',
+    requirement: '自家种植收成入储物篮；未种菜时 ≤20 元可按早市现批转卖（利润薄），>20 元或指定鲜蔬摊需自产鲜蔬',
+    costFormula: '用自产鲜蔬仅扣 3 元/批打包保鲜费；现批进货另扣约定价 60%/份',
+    energyNote: '扣 3–12 精力',
+    examples: '香葱、浅滩嫩莲藕、蜜薯红薯、奶油草莓',
+  },
+  {
+    category: 'food',
+    label: '料理熟食',
+    requirement: '≤25 元家常小吃不限；>25 元需「厨师证 / 烹饪≥10 / 小烤箱 / 老小区及以上厨房」其一',
+    costFormula: '先消耗储物篮鲜蔬（仅 3 元/份油盐燃料费）；无囤货从早市现买原料（定价 38%/份，持厨师证 28%）',
+    energyNote: '扣 4–18 精力',
+    examples: '手擀面、桂花糕、卤豆干、菌菇砂锅饭',
+  },
+  {
+    category: 'writing',
+    label: '写作出版',
+    requirement: '≤25 元小书签/手抄单不限；>25 元需「见识≥15 / 文字≥10 / 二手笔记本电脑」其一',
+    costFormula: '纸笔排版底费 8 元/批（有电脑降为 3 元，10 元以内小件 3 元）+ 印刷装帧费 25%–30%/份',
+    energyNote: '耗心神：扣 6–22 精力',
+    examples: '芦花塘随笔集、手绘攻略册、手写诗签本',
+  },
+  {
+    category: 'craft',
+    label: '手作文创',
+    requirement: '≤25 元小物不限；>25 元需「手作≥5 / 老式缝纫机」其一',
+    costFormula: '毛线/陶土/布料/包装耗材费按定价 38%/份（手作≥20 或有缝纫机降至 30%）',
+    energyNote: '扣 5–20 精力',
+    examples: '陶土小摆件、拼微缩书屋、刺绣茶垫',
+  },
+  {
+    category: 'photo',
+    label: '影像周边',
+    requirement: '≤15 元小贴纸/照片卡不限；>15 元需「二手胶片微单 / 影像≥10」其一',
+    costFormula: '冲扫底费 6 元/批（10 元以内 3 元）+ 相纸冲印费 30%/份',
+    energyNote: '扣 4–16 精力',
+    examples: '胶片明信片、旅途风光画册、拍立得照片',
+  },
+];
 
 function budgetOfPrice(price) {
   const p = Math.max(1, Math.min(999, Math.round(Number(price) || 1)));
@@ -350,10 +414,10 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-st-info .st-desc { font-size: 11.5px; color: #6b7280; margin-top: 1px; }
 .lf-st-info .lf-chips { margin-top: 4px; }
 
-/* 鱼市街单行紧凑摊位清单 */
+/* 鱼市街单行紧凑摊位清单 & 菜园种植槽 */
 .lf-mkt-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
 .lf-mkt-head h3 { margin: 0; }
-.lf-mkt-guide { font-size: 11.5px; color: #64748b; margin: 0 0 8px; line-height: 1.5; }
+.lf-mkt-guide { font-size: 11.5px; color: #64748b; margin: 0 0 8px; line-height: 1.55; }
 .lf-mkt-tip { font-size: 11.5px; color: #64748b; margin: 0 0 8px; }
 .lf-mkt-tip summary { cursor: pointer; color: #2f6fed; user-select: none; }
 .lf-mkt-tip ul { margin: 5px 0 0; padding-left: 16px; line-height: 1.65; color: #475569; }
@@ -365,10 +429,40 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-stall-l .seller { font-size: 11.5px; color: #94a3b8; }
 .lf-fx-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #f1f5f9; color: #475569; white-space: nowrap; }
 .lf-veg-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #eaf5ee; color: #2f855a; white-space: nowrap; }
+.lf-cost-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #fff7ed; color: #b45309; border: 1px solid #fed7aa; white-space: nowrap; }
+.lf-income-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; margin-left: 5px; font-weight: 600; white-space: nowrap; }
+.lf-cat-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; white-space: nowrap; font-weight: 500; }
+.lf-cat-pill[data-cat="produce"] { background: #ecfdf5; color: #047857; }
+.lf-cat-pill[data-cat="food"] { background: #fef3c7; color: #92400e; }
+.lf-cat-pill[data-cat="craft"] { background: #f3e8ff; color: #6b21a8; }
+.lf-cat-pill[data-cat="writing"] { background: #e0f2fe; color: #0369a1; }
+.lf-cat-pill[data-cat="photo"] { background: #fce7f3; color: #9d174d; }
 .lf-stall-r { flex: 0 0 auto; font-size: 12px; font-variant-numeric: tabular-nums; color: #475569; white-space: nowrap; }
 .lf-stall-r b { color: #1a6b4a; font-weight: 600; margin-right: 4px; }
 .lf-mkt-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #eef0f3; }
 .lf-subh { font-size: 11.5px; font-weight: 600; color: #6b7280; margin: 0 0 6px; }
+
+.lf-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.lf-step { padding: 8px 10px; border-radius: 8px; border: 1px solid #e5e7eb; background: #f8fafc; }
+.lf-step .st-t { font-size: 12px; font-weight: 650; color: #1e3a8a; margin-bottom: 3px; }
+.lf-step .st-d { font-size: 11.5px; color: #475569; line-height: 1.5; }
+.lf-plots { display: grid; grid-template-columns: repeat(auto-fill, minmax(185px, 1fr)); gap: 8px; margin-bottom: 8px; }
+.lf-plot { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; background: #fbfcfd; display: flex; flex-direction: column; gap: 4px; }
+.lf-plot.ready { border-color: #86efac; background: #f0fdf4; }
+.lf-plot.empty { border-style: dashed; border-color: #cbd5e1; background: #f8fafc; justify-content: center; min-height: 76px; }
+.lf-plot .ptop { display: flex; justify-content: space-between; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: #1f2937; }
+.lf-plot .ptag { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: #eef2f7; color: #475569; font-weight: 500; }
+.lf-plot.ready .ptag { background: #dcfce7; color: #166534; }
+.lf-plot .pmeta { font-size: 11px; color: #64748b; display: flex; justify-content: space-between; gap: 4px; flex-wrap: wrap; }
+.lf-plot .ptrack { height: 6px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
+.lf-plot .pfill { height: 100%; border-radius: 999px; background: #3b82f6; }
+.lf-plot.ready .pfill { background: #16a34a; }
+.lf-table-wrap { overflow-x: auto; width: 100%; margin-top: 6px; border: 1px solid #e5e7eb; border-radius: 8px; }
+.lf-table { width: 100%; min-width: 520px; border-collapse: collapse; font-size: 11.5px; }
+.lf-table thead th { background: #f3f4f6; color: #374151; font-weight: 600; text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
+.lf-table tbody td { padding: 6px 8px; border-bottom: 1px dashed #eef0f3; color: #334155; vertical-align: top; line-height: 1.5; }
+.lf-table tbody tr:last-child td { border-bottom: 0; }
+.lf-say-list { margin: 6px 0 0; padding-left: 16px; font-size: 11.5px; color: #475569; line-height: 1.65; }
 
 .lf-list { margin: 0; padding: 0; list-style: none; }
 .lf-list li { font-size: 12.5px; padding: 4px 0; border-bottom: 1px dashed #f0f1f3; color: #374151; }
@@ -443,6 +537,53 @@ const copyText = (text) => {
   } catch { /* ignore */ }
   return Promise.resolve();
 };
+
+function renderStallRow(st, showSeller, recordMap) {
+  const row = el('div', 'lf-stall');
+  if (st.note) row.title = `摊主吆喝：${st.note}`;
+  const left = el('div', 'lf-stall-l');
+  if (st.category && CAT_LABEL[st.category]) {
+    const cPill = el('span', 'lf-cat-pill', CAT_LABEL[st.category]);
+    cPill.setAttribute('data-cat', st.category);
+    left.append(cPill);
+  }
+  left.append(el('span', 'nm', st.item));
+  if (showSeller && st.seller) left.append(el('span', 'seller', st.seller));
+  if (st.freshVeg) left.append(el('span', 'lf-veg-pill', '鲜蔬'));
+  const rec = recordMap && st.id ? recordMap.get(st.id) : null;
+  if (!showSeller && rec && rec.totalCost > 0) {
+    if (!st.category && rec.category && CAT_LABEL[rec.category]) {
+      const cPill = el('span', 'lf-cat-pill', CAT_LABEL[rec.category]);
+      cPill.setAttribute('data-cat', rec.category);
+      left.prepend(cPill);
+    }
+    left.append(el('span', 'lf-cost-pill', `本钱 ¥${rec.totalCost}`));
+  }
+  const fx = resolveStallEffects(st.effects, st.price);
+  const pill = el('span', 'lf-fx-pill', fmtEffectsText(fx, true));
+  pill.title = fmtEffectsText(fx, false);
+  left.append(pill);
+
+  const right = el('div', 'lf-stall-r');
+  right.append(el('b', null, `¥${st.price}`), document.createTextNode(`×${st.stock}`));
+  row.append(left, right);
+  return row;
+}
+
+function renderDealsList(ds) {
+  if (!ds || !ds.length) return el('p', 'lf-muted', '最近没有成交回执。');
+  const ul = el('ul', 'lf-list');
+  for (const dl of ds) {
+    const li = el('li');
+    li.append(document.createTextNode(`${dl.seen ? '' : '[新] '}${dl.buyerPet} 买走 ${dl.qty} 份「${dl.item}」`));
+    if (dl.income > 0) {
+      li.append(el('span', 'lf-income-pill', `+¥${dl.income}`));
+    }
+    if (dl.at) li.append(el('span', 'id', fmtLocal(dl.at, 'mdhm')));
+    ul.append(li);
+  }
+  return ul;
+}
 
 export default {
   panels: {
@@ -544,7 +685,25 @@ export default {
             subRow.append(el('span', 'lf-chip', `家伙：${gNames.join('、')}`));
           }
           if (d.shift) subRow.append(el('span', 'lf-chip info', `跑单：${d.shift.label} (${d.shift.minutes}m)`));
-          if (d.freshVeg) subRow.append(el('span', 'lf-chip good', '带鲜蔬（下厨更香）'));
+          if (d.farm) {
+            const fm = d.farm;
+            const fChip = el(
+              'span',
+              'lf-chip' + (fm.readyCount > 0 ? ' good' : ''),
+              `菜园 ${fm.usedSlots}/${fm.totalSlots}槽${fm.readyCount > 0 ? `（可收${fm.readyCount}）` : ''}${fm.leased ? '·含租地' : ''}`,
+            );
+            fChip.title = '详细作物进度、租地与五赛道摆摊说明请查看「菜园与鱼市街」页签';
+            subRow.append(fChip);
+          }
+          const pan = d.pantry || [];
+          const panQty = pan.reduce((sum, x) => sum + (Number(x.qty) || 0), 0);
+          if (panQty > 0) {
+            const pChip = el('span', 'lf-chip good', `储物篮 ${panQty} 份`);
+            pChip.title = pan.map((x) => `${x.name}×${x.qty}(${ORIGIN_LABEL[x.origin] || x.origin})`).join('、');
+            subRow.append(pChip);
+          } else if (d.freshVeg) {
+            subRow.append(el('span', 'lf-chip good', '带鲜蔬（下厨更香）'));
+          }
           whoCard.append(subRow);
         };
 
@@ -635,8 +794,9 @@ export default {
             const row = el('div', 'lf-move' + (q.current ? ' now' : ''));
             row.append(el('span', 'nm', q.label));
             const cost = el('div', 'cost');
+            const slots = q.farmSlots ?? HOME_SLOTS_FALLBACK[q.tier] ?? 1;
             cost.append(el('b', null, `¥${q.monthly}/月`));
-            cost.append(document.createTextNode(` · 押 ${q.deposit}`));
+            cost.append(document.createTextNode(` · 押 ${q.deposit} · ${slots} 种植槽`));
             if (!q.current && !q.ok) cost.append(el('span', 'short', `（差 ${Number(q.short).toLocaleString('zh-CN')}）`));
             row.append(cost);
             const box = el('div', 'btnbox');
@@ -754,7 +914,7 @@ export default {
           town.textContent = d.town.name || '—';
           tag.textContent = t(lang, d.town.source === 'server' ? 'server' : d.town.source === 'own' ? 'townOwn' : 'builtin');
           const bits = [`${d.dayPart} ${d.clock}`];
-          if (d.solarTerm && d.solarTerm.name) bits.push(d.solarTerm.name);
+          if (d.solarTerm && d.solarTerm.name) bits.push(lang === 'en' ? `Solar term: ${d.solarTerm.name}` : `节气·${d.solarTerm.name}`);
           if (d.weather && d.weather.sky) bits.push(d.weather.sky);
           if (d.streetWindow && d.streetWindow.label) bits.push(`${d.streetWindow.place}${d.streetWindow.label}`);
           if (d.street) bits.push(d.street);
@@ -859,7 +1019,7 @@ export default {
             : (d.activity ? `正在「${d.activity.label}」（剩 ${d.activity.minutesLeft}m）` : '空闲');
           const parts = [
             `${d.today || ''} ${d.dayPart || ''} ${d.clock || ''}`.trim(),
-            d.solarTerm?.name,
+            d.solarTerm?.name ? `节气·${d.solarTerm.name}` : '',
             d.streetWindow ? `${d.streetWindow.place}${d.streetWindow.label}` : '',
             statusNow,
           ].filter(Boolean);
@@ -1003,24 +1163,6 @@ export default {
         const marketCard = el('div', 'lf-card');
         app.append(head, cols, marketCard);
 
-        const renderStallRow = (st, showSeller) => {
-          const row = el('div', 'lf-stall');
-          if (st.note) row.title = `摊主吆喝：${st.note}`;
-          const left = el('div', 'lf-stall-l');
-          left.append(el('span', 'nm', st.item));
-          if (showSeller && st.seller) left.append(el('span', 'seller', st.seller));
-          if (st.freshVeg) left.append(el('span', 'lf-veg-pill', '鲜蔬'));
-          const fx = resolveStallEffects(st.effects, st.price);
-          const pill = el('span', 'lf-fx-pill', fmtEffectsText(fx, true));
-          pill.title = fmtEffectsText(fx, false);
-          left.append(pill);
-
-          const right = el('div', 'lf-stall-r');
-          right.append(el('b', null, `¥${st.price}`), document.createTextNode(`×${st.stock}`));
-          row.append(left, right);
-          return row;
-        };
-
         const render = (d) => {
           if (!d) return;
           visitsCard.innerHTML = '';
@@ -1086,28 +1228,29 @@ export default {
           const mktHead = el('div', 'lf-mkt-head');
           mktHead.append(el('h3', null, '鱼市街'));
           const tipBox = el('details', 'lf-mkt-tip');
-          tipBox.append(el('summary', null, '怎么买卖与配点 ▾'));
+          tipBox.append(el('summary', null, '怎么买卖、扣本与收款 ▾'));
           const tipList = el('ul');
           tipList.append(
-            el('li', null, '购买：对话里说「逛鱼市街」或「买某样货」，它用自己的零花钱下单，另叠邻里社交 +4 与 3 小时好心情。'),
-            el('li', null, '摆摊：对话里让它「挂摊卖什么、定价几元几份」（每人最多 3 个在架摊位，有效期 3 天），卖出后会在下方收到成交回执。'),
-            el('li', null, '配点：1–150 元每 +1 元给 2 点预算（可换 +2 五维、+0.1 见识或 +0.05 体质）；不单配也会按定价自动分配饱腹与娱乐。'),
+            el('li', null, '购买：对话里说「逛鱼市街」或「买某样货」，它用零花钱下单；买鲜蔬会自动存进储物篮（供自家下厨省本或料理摊抵原料费）。'),
+            el('li', null, '摆摊：鲜蔬/料理/手作/写作/影像五大品类都会先扣真实本钱与精力（写作扣纸笔排版与印刷费），3 天未售出过期亏本；卖出后查回执自动入账。'),
+            el('li', null, '配点：1–150 元每 +1 元给 2 点预算（可换 +2 五维、+0.1 见识或 +0.05 体质）；完整菜园与规则表请切到「菜园与鱼市街」页签查看。'),
           );
           tipBox.append(tipList);
           mktHead.append(tipBox);
           marketCard.append(mktHead);
-          marketCard.append(el('p', 'lf-mkt-guide', '面板只读：想让小家伙买街坊的货或自己挂摊卖东西，在对话里说一声就会去（如「买份烤红薯」「挂摊卖手工面 15 元」）。'));
+          marketCard.append(el('p', 'lf-mkt-guide', '面板只读：完整种植槽进度、储物篮与五大赛道成本对照表见「菜园与鱼市街」页签；想买卖在对话里跟它说一声就会去。'));
           const bd = d.bulletin || [];
           if (bd.length) {
             marketCard.append(el('div', 'lf-board-strip', `《街口黑板报》 ${bd.join('；')}`));
           }
 
+          const recordMap = new Map((d.stallRecords || []).map((r) => [r.id, r]));
           const os = d.otherStalls || [];
           if (!os.length) {
             marketCard.append(el('p', 'lf-muted', '街坊这会儿还没摆出摊子。'));
           } else {
             marketCard.append(el('div', 'lf-subh', `街坊在售（${os.length}）`));
-            for (const st of os) marketCard.append(renderStallRow(st, true));
+            for (const st of os) marketCard.append(renderStallRow(st, true, recordMap));
           }
 
           const split = el('div', 'lf-mkt-split');
@@ -1115,28 +1258,259 @@ export default {
           mineCol.append(el('div', 'lf-subh', '我的摊位'));
           const ms = d.myStalls || [];
           if (!ms.length) mineCol.append(el('p', 'lf-muted', '暂无在架摊位。'));
-          else for (const st of ms) mineCol.append(renderStallRow(st, false));
+          else for (const st of ms) mineCol.append(renderStallRow(st, false, recordMap));
 
           const dealCol = el('div', null);
           const un = Number(d.unseenDeals || 0);
           dealCol.append(el('div', 'lf-subh', un > 0 ? `成交回执（未读 ${un}）` : '成交回执'));
-          const ds = d.deals || [];
-          if (!ds.length) dealCol.append(el('p', 'lf-muted', '最近没有成交回执。'));
-          else {
-            const ul = el('ul', 'lf-list');
-            for (const dl of ds) {
-              const li = el('li');
-              li.append(document.createTextNode(`${dl.seen ? '' : '[新] '}${dl.buyerPet} 买走 ${dl.qty} 份「${dl.item}」`));
-              if (dl.at) li.append(el('span', 'id', fmtLocal(dl.at, 'mdhm')));
-              ul.append(li);
-            }
-            dealCol.append(ul);
-          }
+          dealCol.append(renderDealsList(d.deals || []));
           split.append(mineCol, dealCol);
           marketCard.append(split);
         };
 
         const load = () => ctx.invoke('snapshot').then(render).catch(() => {});
+        await load();
+        const loop = () => ctx.timeout(() => load().finally(loop), 30_000);
+        loop();
+      },
+    },
+
+    market: {
+      async mount(ctx) {
+        ensureStyle(ctx.root);
+        const app = el('div', 'lf');
+        ctx.root.append(app);
+
+        const head = el('div', 'lf-head');
+        const title = el('h1', 'lf-town', '菜园与鱼市街');
+        const ver = el('span', 'lf-ver', '');
+        head.append(title, ver);
+        const sub = el('p', 'lf-sub', '读取中…');
+
+        const guideCard = el('div', 'lf-card');
+        const farmCard = el('div', 'lf-card');
+        const pantryCard = el('div', 'lf-card');
+        const stallCard = el('div', 'lf-card');
+
+        const foot = el('div', 'lf-foot');
+        const reload = el('button', 'lf-btn', '刷新');
+        reload.type = 'button';
+        const msg = el('span', 'lf-msg', '');
+        foot.append(reload, msg);
+        app.append(head, sub, guideCard, farmCard, pantryCard, stallCard, foot);
+
+        const render = (d) => {
+          if (!d) return;
+          ver.textContent = d.version ? `· v${d.version}` : '';
+          const parts = [
+            d.town?.name || '兰州',
+            d.solarTerm?.name ? `节气·${d.solarTerm.name}` : '',
+            d.home?.tierLabel ? `${d.home.tierLabel}（自有 ${d.farm?.homeSlots ?? 1} 种植槽）` : '',
+            d.money ? `现金 ¥${Number(d.money.cash || 0).toLocaleString('zh-CN')}` : '',
+          ].filter(Boolean);
+          sub.textContent = parts.join(' · ');
+
+          /* 1. 玩法全链路图解 + 五大赛道成本说明表 */
+          guideCard.innerHTML = '';
+          guideCard.append(el('h3', null, '怎么玩转菜园、储物篮与鱼市街（面板只读，对话指令触发）'));
+          const steps = el('div', 'lf-steps');
+          const stepDefs = [
+            ['① 拿地扩槽', '城中村窗台 1 槽、老小区 2 槽、新小区 4 槽、别墅区 8 槽；住得小也能花 ¥100 起租 4 槽城郊菜地（月租 ¥150，按天扣 ¥5）。'],
+            ['② 慢养收成', '8 种节气作物需 4–9 天成熟；每天浇 1 次水耗 3 精力，浇满 2 次多收 1 份，赶上当季好节气再 +1 份，采收顺便涨体质。'],
+            ['③ 储物篮衔接', '自家收成与鱼市街买来的鲜蔬都会放进储物篮；自己下厨优先用囤菜省至 ¥3 油盐钱，开料理摊也优先消耗囤菜省早市进货费。'],
+            ['④ 真实扣本与入账', '摆摊按五大品类真扣本钱与精力（卖不掉 3 天过期亏本）；成交后在 life_deals 自动把货款打进钱包，同两人每日限买 2 单防刷。'],
+          ];
+          for (const [st, sd] of stepDefs) {
+            const box = el('div', 'lf-step');
+            box.append(el('div', 'st-t', st), el('div', 'st-d', sd));
+            steps.append(box);
+          }
+          guideCard.append(steps);
+
+          const rulesFold = el('details', 'lf-fold');
+          const rulesSum = el('summary', null, '五大赛道门槛、本钱明细与常用对话示范');
+          rulesSum.append(el('span', 'hint', '点击展开规则表'));
+          const rulesBody = el('div', null);
+          const wrap = el('div', 'lf-table-wrap');
+          const table = el('table', 'lf-table');
+          const thead = document.createElement('thead');
+          const thr = document.createElement('tr');
+          for (const hText of ['赛道品类', '准入门槛', '真实本钱结算', '精力消耗', '代表商品']) {
+            thr.append(el('th', null, hText));
+          }
+          thead.append(thr);
+          const tbody = document.createElement('tbody');
+          const rules = d.stallRules || DEFAULT_STALL_RULES;
+          for (const r of rules) {
+            const tr = document.createElement('tr');
+            const cTd = document.createElement('td');
+            const cp = el('span', 'lf-cat-pill', r.label);
+            cp.setAttribute('data-cat', r.category);
+            cTd.append(cp);
+            tr.append(
+              cTd,
+              el('td', null, r.requirement),
+              el('td', null, r.costFormula),
+              el('td', null, r.energyNote),
+              el('td', null, r.examples),
+            );
+            tbody.append(tr);
+          }
+          table.append(thead, tbody);
+          wrap.append(table);
+          rulesBody.append(wrap);
+
+          const sayTitle = el('div', 'lf-subh', '常用对话示范（在聊天里对它说即可）');
+          sayTitle.style.marginTop = '9px';
+          const sayList = el('ul', 'lf-say-list');
+          sayList.append(
+            el('li', null, '租地与种菜：「看看家里菜园和这节气适合种啥」「花一百块租一块城郊菜地」「在阳台种点香葱和西红柿」'),
+            el('li', null, '浇水与收割：「给地里的菜浇浇水」「看看菜熟了没有，熟了就收进储物篮」'),
+            el('li', null, '农产/料理联动：「把自家收的莲藕挂鱼市街卖 12 元 3 份」「用储物篮里的青菜做碗面挂摊卖 18 元」'),
+            el('li', null, '写作/手作/影像与收款：「整理一本《芦花塘随笔集》挂摊卖 32 元」「去看看鱼市街成交回执，把货款领进钱包」'),
+          );
+          rulesBody.append(sayTitle, sayList);
+          rulesFold.append(rulesSum, rulesBody);
+          guideCard.append(rulesFold);
+
+          /* 2. 菜园与种植槽 */
+          farmCard.innerHTML = '';
+          const fm = d.farm || { homeSlots: 1, leased: false, leasedSlots: 0, leasedMonthly: 150, totalSlots: 1, usedSlots: 0, readyCount: 0, plots: [] };
+          const leaseCfg = d.leaseConfig || { slots: 4, signupFee: 100, monthly: 150 };
+          const fHead = el('div', 'lf-mkt-head');
+          fHead.append(el('h3', null, `菜园与种植槽（${fm.usedSlots}/${fm.totalSlots} 槽已种${fm.readyCount > 0 ? ` · ${fm.readyCount} 槽已熟可收` : ''}）`));
+          const fTag = el(
+            'span',
+            'lf-chip ' + (fm.leased ? 'info' : ''),
+            fm.leased
+              ? `城郊租地已签约：+${fm.leasedSlots}槽（¥${fm.leasedMonthly}/月 · 约¥${Math.round(fm.leasedMonthly / 30)}/天）`
+              : `住处自带 ${fm.homeSlots} 槽（可选签城郊 ${leaseCfg.slots} 槽：签约 ¥${leaseCfg.signupFee} + ¥${leaseCfg.monthly}/月）`,
+          );
+          fHead.append(fTag);
+          farmCard.append(fHead);
+
+          const plotsGrid = el('div', 'lf-plots');
+          for (const p of (fm.plots || [])) {
+            const card = el('div', 'lf-plot' + (p.ready ? ' ready' : ''));
+            const top = el('div', 'ptop');
+            top.append(el('span', null, p.name || p.seedId));
+            top.append(el('span', 'ptag', p.ready ? '可收割' : `剩 ${p.daysLeft}天`));
+            const meta1 = el('div', 'pmeta');
+            meta1.append(
+              el('span', null, `${p.source === 'leased' ? '城郊租地' : '住处槽'} · 预产 ${p.expectedYield} 份`),
+              el('span', null, `浇水 ${p.waterCount}/2${p.wateredToday ? ' ✓今' : ''}`),
+            );
+            const track = el('div', 'ptrack');
+            const fill = el('div', 'pfill');
+            fill.style.width = `${Math.max(4, Math.min(100, Math.round((p.progress || 0) * 100)))}%`;
+            track.append(fill);
+            const meta2 = el('div', 'pmeta');
+            meta2.append(
+              el('span', null, p.solarBonus ? '★当季节气 +1 产' : `成熟：${fmtLocal(p.matureAt, 'mdhm')}`),
+              el('span', null, `${Math.round((p.progress || 0) * 100)}%`),
+            );
+            card.append(top, meta1, track, meta2);
+            plotsGrid.append(card);
+          }
+          const emptyCount = Math.max(0, (fm.totalSlots || 0) - (fm.plots || []).length);
+          for (let i = 0; i < emptyCount; i++) {
+            const ec = el('div', 'lf-plot empty');
+            ec.append(el('p', 'lf-muted', '空种植槽 · 对话里说「种棵青菜/西红柿」即可播种'));
+            plotsGrid.append(ec);
+          }
+          farmCard.append(plotsGrid);
+
+          const seedsFold = el('details', 'lf-fold');
+          const seedsSum = el('summary', null, '节气种子目录（4–9 天慢熟 · 严守鱼不吃鱼）');
+          seedsSum.append(el('span', 'hint', `共 ${(d.seeds || []).length} 种`));
+          const sWrap = el('div', 'lf-table-wrap');
+          const sTable = el('table', 'lf-table');
+          const sThead = document.createElement('thead');
+          const sThr = document.createElement('tr');
+          for (const hText of ['作物名称', '种子费', '周期', '基础产量', '加产节气', '说明']) sThr.append(el('th', null, hText));
+          sThead.append(sThr);
+          const sTbody = document.createElement('tbody');
+          const curTerm = d.solarTerm?.name || '';
+          for (const sd of (d.seeds || [])) {
+            const tr = document.createElement('tr');
+            const hitTerm = curTerm && Array.isArray(sd.solarTerms) && sd.solarTerms.includes(curTerm);
+            const nmTd = el('td', null, sd.name + (hitTerm ? ' ★当季+1' : ''));
+            if (hitTerm) nmTd.style.color = '#166534';
+            tr.append(
+              nmTd,
+              el('td', null, `¥${sd.price}`),
+              el('td', null, `${Math.round(sd.growHours / 24)} 天`),
+              el('td', null, `${sd.baseYield} 份`),
+              el('td', null, (sd.solarTerms || []).join(' / ')),
+              el('td', null, sd.note || ''),
+            );
+            sTbody.append(tr);
+          }
+          sTable.append(sThead, sTbody);
+          sWrap.append(sTable);
+          seedsFold.append(seedsSum, sWrap);
+          farmCard.append(seedsFold);
+
+          /* 3. 储物篮 */
+          pantryCard.innerHTML = '';
+          const pan = d.pantry || [];
+          const panTotal = pan.reduce((s, x) => s + (Number(x.qty) || 0), 0);
+          pantryCard.append(el('h3', null, `食材储物篮（共 ${panTotal} 份）`));
+          if (!pan.length) {
+            pantryCard.append(el('p', 'lf-muted', '储物篮眼下空着。等菜地成熟收割，或在鱼市街/早市买回鲜蔬后会自动收入这里（自家下厨只扣 ¥3 油盐钱，开料理摊也能直接抵扣原料费）。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const item of pan) {
+              const li = el('li');
+              const originTxt = item.origin === 'home-grown'
+                ? '自家种植'
+                : (item.origin === 'town-buy' ? `购自 ${item.fromSeller || '街坊'}` : '早市采购');
+              const pill = el('span', 'lf-chip ' + (item.origin === 'home-grown' ? 'good' : (item.origin === 'town-buy' ? 'info' : '')), originTxt);
+              pill.style.marginRight = '6px';
+              li.append(pill, document.createTextNode(`${item.name} ×${item.qty}`), el('span', 'id', `折合本钱 ¥${item.unitCost}/份`));
+              ul.append(li);
+            }
+            pantryCard.append(ul);
+            pantryCard.append(el('p', 'lf-note-line', '做饭（cook）或摆料理摊（food）时优先从「自家种植 → 街坊鲜蔬 → 早市采购」顺序消耗；摆鲜蔬摊（produce）仅耗自产囤货。'));
+          }
+
+          /* 4. 鱼市街与成交入账 */
+          stallCard.innerHTML = '';
+          stallCard.append(el('h3', null, '鱼市街 · 摊位与成交入账'));
+          const bd = d.bulletin || [];
+          if (bd.length) stallCard.append(el('div', 'lf-board-strip', `《街口黑板报》 ${bd.join('；')}`));
+
+          const recordMap = new Map((d.stallRecords || []).map((r) => [r.id, r]));
+          const os = d.otherStalls || [];
+          if (!os.length) {
+            stallCard.append(el('p', 'lf-muted', '街坊这会儿还没摆出摊子（或未连接城服务器）。'));
+          } else {
+            stallCard.append(el('div', 'lf-subh', `街坊在售（${os.length}）`));
+            for (const st of os) stallCard.append(renderStallRow(st, true, recordMap));
+          }
+
+          const split = el('div', 'lf-mkt-split');
+          const mineCol = el('div', null);
+          mineCol.append(el('div', 'lf-subh', '我的在架摊位'));
+          const ms = d.myStalls || [];
+          if (!ms.length) mineCol.append(el('p', 'lf-muted', '暂无在架摊位（每人最多挂 3 摊，3 天有效）。'));
+          else for (const st of ms) mineCol.append(renderStallRow(st, false, recordMap));
+
+          const dealCol = el('div', null);
+          const un = Number(d.unseenDeals || 0);
+          dealCol.append(el('div', 'lf-subh', un > 0 ? `成交入账回执（未读 ${un}）` : '成交入账回执'));
+          dealCol.append(renderDealsList(d.deals || []));
+          split.append(mineCol, dealCol);
+          stallCard.append(split);
+        };
+
+        const load = () => ctx.invoke('snapshot').then(render).catch((e) => {
+          sub.textContent = (e && e.message) ? e.message : '读取失败';
+        });
+        reload.addEventListener('click', () => {
+          msg.textContent = '刷新中…';
+          load().then(() => { msg.textContent = '已刷新 ✓'; }).catch(() => { msg.textContent = '刷新失败'; });
+        });
         await load();
         const loop = () => ctx.timeout(() => load().finally(loop), 30_000);
         loop();

@@ -16,7 +16,8 @@ import {
   ACTS, DECAY_PER_HOUR, HOME_TIER_COST, LOW, MAX_CATCHUP_HOURS, MAX_PENDING, StateStore,
   advance, applyAct, applyGift, applyMove, applyWork, freshState, localDateKey, noteVisit, normalize,
   quoteMove, recentVisits, snapshot, applyCert, applySpend, appendLedger, readLedger, marketPrices, weatherOf,
-  certChance,
+  certChance, SEEDS, applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm,
+  evaluateStallPlan, pantryCount,
 } from '../src/state.ts';
 import { readTown, fetchTownStalls, buyTownStall } from '../src/bridge.ts';
 import { LifeWorld } from '../src/world.ts';
@@ -264,10 +265,10 @@ console.log('\n[12] 快照');
   ok(snap.low[0].key === 'food', '缺得最狠的排前面', snap.low[0].key);
   ok(snap.unsaid.length === 1, '还没说出去的那条在');
   /*
-   * 三十三件事：含三档吃、睡、午睡、坐着歇会儿、洗、玩、见人、闲聊、做饭、小酌、复合动作、双栖新动作 + wake / cancel。
+   * 三十五件事：含三档吃、睡、午睡、坐着歇会儿、洗、玩、见人、闲聊、做饭、小酌、复合动作、双栖新动作、露营微缩二期动作 + wake / cancel。
    * `wake` 不是可有可无的补充 —— 睡着时所有动作都被拦，没有它她就永远醒不过来。
    */
-  ok(Object.keys(ACTS).length === 33, '三十三件事（含 rest、chat、复合动作、双栖新动作、wake 与 cancel）', String(Object.keys(ACTS).length));
+  ok(Object.keys(ACTS).length === 35, '三十五件事（含 rest、chat、复合动作、双栖与二期新动作、wake 与 cancel）', String(Object.keys(ACTS).length));
   ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
   ok(Boolean(ACTS.cancel) && ACTS.cancel.cost === 0, '「停下来」不花钱');
   ok(ACTS.feast.cost > ACTS.eat.cost && ACTS.eat.cost > ACTS.instant.cost, '三档饭价依次递减');
@@ -1522,6 +1523,133 @@ console.log('\n[53] 远洋游轮在途特权与双栖新活动（swim / live_sho
   ok(!carBlock.ok && carBlock.reason?.includes('车上没法'), '自驾在途照常拦截 swim 且提示车上', carBlock.reason);
   const ferryBlock = applyAct(sCar, 'feast', t0, { phase: 'traveling', toName: '舟山', modeId: 'ship', seatId: 'ferry', seat: '普通渡轮' });
   ok(!ferryBlock.ok && ferryBlock.reason?.includes('船上没法'), '短途渡轮被拦截时提示「船上没法」而非「车上」', ferryBlock.reason);
+}
+
+console.log('\n[54] 二期活动（glamping / miniature）与全景观光专列 / 房车 / 内河游轮在途联动');
+{
+  // 1) glamping：120m / 95 元 / food+40, fun+45, social+28, energy-5，且严守鱼不吃鱼
+  const glampText = `${ACTS.glamping.scene ?? ''} ${ACTS.glamping.props ?? ''} ${ACTS.glamping.mood?.text ?? ''}`;
+  ok(!/鱼|虾|蟹|贝|海鲜/.test(glampText), 'glamping 严守鱼不吃鱼底线', glampText);
+  const tDay = new Date(2026, 10, 24, 14, 0, 0);
+  const sGlamp = freshState(tDay);
+  sGlamp.home.monthly = 0;
+  sGlamp.vitals = { food: 40, energy: 80, clean: 80, fun: 40, social: 40 };
+  const rg = applyAct(sGlamp, 'glamping', tDay);
+  ok(rg.ok && rg.started, '白天可开始城郊精致露营');
+  advance(sGlamp, new Date(tDay.getTime() + ACTS.glamping.minutes * 60_000));
+  ok(sGlamp.money.cash === 2905, 'glamping 完整耗时扣 95 元', String(sGlamp.money.cash));
+  ok(sGlamp.vitals.food > 70 && sGlamp.vitals.fun > 75 && sGlamp.vitals.social > 60, 'glamping 同步回饱腹/娱乐/社交', JSON.stringify(sGlamp.vitals));
+
+  // 2) miniature：75m / 25 元 / fun+32, know+1, skills.craft+1，深夜 01:30 触发安静陪伴好心情
+  const tLate = new Date(2026, 10, 24, 1, 30, 0);
+  const sMini = freshState(tLate);
+  sMini.home.monthly = 0;
+  const rm = applyAct(sMini, 'miniature', tLate);
+  ok(rm.ok && rm.started, '深夜可开始拼微缩模型');
+  ok(sMini.moodlets.some((m) => m.source === 'cozy-miniature' && m.kind === 'good'), '深夜拼微缩模型触发安静踏实好心情');
+  advance(sMini, new Date(tLate.getTime() + ACTS.miniature.minutes * 60_000));
+  ok(near(sMini.skills.craft ?? 0, 1, 0.05) && sMini.money.cash === 2975, 'miniature 完结涨 skills.craft +1 且扣 25 元', `${sMini.skills.craft}/${sMini.money.cash}`);
+  ok(sMini.knowledge > 0.8, 'miniature 完结涨见识', String(sMini.knowledge));
+
+  // 3) 全景观光专列（scenic-train）：放行 feast / tea / drink / sleep，正常扣费不白嫖，拦截 swim
+  const scenicCtx = { phase: 'traveling', toName: '拉萨', modeId: 'train', seatId: 'scenic-train', seat: '全景观光专列' };
+  const sTrain = freshState(tDay);
+  sTrain.home.monthly = 0;
+  const rTrainFeast = applyAct(sTrain, 'feast', tDay, scenicCtx);
+  ok(rTrainFeast.ok && sTrain.activity?.scene?.includes('观光专列全景餐车'), '观光专列放行 feast 并映射全景餐车', sTrain.activity?.scene);
+  advance(sTrain, new Date(tDay.getTime() + ACTS.feast.minutes * 60_000), scenicCtx);
+  ok(sTrain.money.cash === 2960, '观光专列餐车正常扣 40 元', String(sTrain.money.cash));
+  const rTrainBlock = applyAct(sTrain, 'swim', new Date(tDay.getTime() + 70 * 60_000), scenicCtx);
+  ok(!rTrainBlock.ok && rTrainBlock.reason?.includes('专列'), '观光专列拦截 swim 并提示专列');
+
+  // 4) 房车自驾（campervan）：放行 cook / sleep / glamping，映射便携灶台/星空卧铺，拦截 swim
+  const camperCtx = { phase: 'traveling', toName: '大理', modeId: 'car', seatId: 'campervan', seat: '房车自驾' };
+  const sCamper = freshState(tDay);
+  sCamper.home.monthly = 0;
+  const rCampCook = applyAct(sCamper, 'cook', tDay, camperCtx);
+  ok(rCampCook.ok && sCamper.activity?.scene?.includes('房车'), '房车在途放行 cook 并映射房车便携灶台', sCamper.activity?.scene);
+  advance(sCamper, new Date(tDay.getTime() + ACTS.cook.minutes * 60_000), camperCtx);
+  const tSleep = new Date(tDay.getTime() + 70 * 60_000);
+  const rCampSleep = applyAct(sCamper, 'sleep', tSleep, camperCtx);
+  ok(rCampSleep.ok && sCamper.activity?.scene === '房车星空卧铺床', '房车在途睡觉映射星空卧铺', sCamper.activity?.scene);
+  const rCampBlock = applyAct(freshState(tDay), 'swim', tDay, camperCtx);
+  ok(!rCampBlock.ok && rCampBlock.reason?.includes('房车'), '房车在途拦截 swim 并提示房车');
+
+  // 5) 内河游轮（river-cruise）：不误走主题远洋游轮 0 元免单与海上场景，映射江景餐厅与两岸山影
+  const riverCtx = { phase: 'traveling', toName: '宜昌', modeId: 'ship', seatId: 'river-cruise', seat: '内河峡谷游轮' };
+  const sRiver = freshState(tDay);
+  sRiver.home.monthly = 0;
+  sRiver.money.cash = 100;
+  const rRiverFeast = applyAct(sRiver, 'feast', tDay, riverCtx);
+  ok(rRiverFeast.ok && sRiver.activity?.scene?.includes('内河游轮江景餐厅'), '内河游轮映射江景餐厅且不含鱼虾', sRiver.activity?.scene);
+  ok(!/鱼|虾|蟹|贝|海鲜/.test(sRiver.activity?.scene ?? ''), '内河游轮江景餐厅严守鱼不吃鱼');
+  ok((sRiver.activity?.costPerMin ?? 0) > 0, '内河游轮不误走主题远洋游轮 0 元免单', String(sRiver.activity?.costPerMin));
+  const rRiverBlock = applyAct(freshState(tDay), 'swim', tDay, riverCtx);
+  ok(!rRiverBlock.ok && rRiverBlock.reason?.includes('河轮'), '内河游轮拦截 swim 并提示河轮');
+}
+
+console.log('\n[55] 种菜（4–9 天慢节奏）、城郊租地、储物篮减费与五赛道摆摊真实成本');
+{
+  const t0 = new Date('2026-11-24T09:00:00+08:00');
+  const s = freshState(t0);
+  s.home.monthly = 0;
+
+  // 1) 鱼不吃鱼校验：8 种种子与说明不得出现鱼/虾/蟹/贝/海鲜
+  const seedBlob = SEEDS.map((x) => `${x.name} ${x.note} ${x.aliases.join(' ')}`).join(' ');
+  ok(!/鱼|虾|蟹|贝|海鲜/.test(seedBlob), 'SEEDS 严守鱼不吃鱼底线');
+
+  // 2) 城中村自带 1 槽：浅滩嫩莲藕需要 >= 2 槽会被拦下；种香葱占满 1 槽后再种会被拦
+  const rLotusBlocked = applyPlant(s, '莲藕', t0);
+  ok(!rLotusBlocked.ok && rLotusBlocked.reason?.includes('2 个种植槽'), '城中村 1 槽拦截浅滩嫩莲藕');
+  const rPlant1 = applyPlant(s, '香葱', t0);
+  ok(rPlant1.ok && s.farm.plots.length === 1 && s.money.cash === 2995, '城中村成功种下香葱并扣 5 元种子钱');
+  const rPlantFull = applyPlant(s, '青菜', t0);
+  ok(!rPlantFull.ok && rPlantFull.reason?.includes('城郊菜地'), '满槽提示升级住处或租城郊菜地');
+
+  // 3) 签约城郊菜地（100 起租费 + 150/月 = 5 元/天）后共 5 槽，可种莲藕，且 advance() 按天扣菜地月租
+  const rRent = applyRentFarm(s, t0);
+  ok(rRent.ok && s.farm.leased && s.money.cash === 2895, '租城郊菜地扣 100 元起租费');
+  const rLotusOk = applyPlant(s, '莲藕', t0);
+  ok(rLotusOk.ok && s.farm.plots[1]?.source === 'leased' && s.money.cash === 2881, '租地后莲藕落入 leased 槽并扣 14 元种子钱');
+  advance(s, new Date(t0.getTime() + 24 * 3_600_000), {});
+  ok(s.money.cash === 2876, '城郊菜地推进 1 天精准扣 5 元月租（150/30）', String(s.money.cash));
+
+  // 4) 浇水每天每块地限一次，耗精力 3，满 2 次收成 +1 份；4 天后香葱熟，莲藕（7 天）未熟
+  const d1 = new Date(t0.getTime() + 24 * 3_600_000);
+  const w1 = applyWater(s, s.farm.plots[0].id, d1);
+  ok(w1.ok && s.farm.plots[0].waterCount === 1, '第 1 天给香葱浇水成功');
+  const wDup = applyWater(s, s.farm.plots[0].id, new Date(d1.getTime() + 3600_000));
+  ok(!wDup.ok && wDup.reason?.includes('今天已经浇过'), '同天同块地不许重复浇水');
+  const d2 = new Date(t0.getTime() + 48 * 3_600_000);
+  const w2 = applyWater(s, s.farm.plots[0].id, d2);
+  ok(w2.ok && s.farm.plots[0].waterCount === 2, '第 2 天浇水达到 2 次增产线');
+
+  const d3 = new Date(t0.getTime() + 72 * 3_600_000);
+  ok(!applyHarvest(s, s.farm.plots[0].id, d3).ok, '第 3 天香葱（需 4 天）尚未成熟不得早收');
+  const d4 = new Date(t0.getTime() + 96 * 3_600_000);
+  const hRes = applyHarvest(s, s.farm.plots[0].id, d4);
+  ok(hRes.ok && hRes.totalQty >= 3, '第 4 天香葱成熟收割且因浇水×2 至少收 3 份进储物篮', String(hRes.totalQty));
+  ok(pantryCount(s.pantry) === hRes.totalQty, '收成准确写入储物篮');
+
+  // 5) 在家做饭（cook）优先消耗 1 份储物篮鲜蔬，现金成本从 10 元降到 3 元
+  const cashBeforeCook = s.money.cash;
+  const rCookPantry = applyAct(s, 'cook', d4);
+  ok(rCookPantry.ok && (s.activity?.costPerMin ?? 0) * ACTS.cook.minutes <= 3.01, '有囤菜时下厨总扣款降为 3 元油盐费');
+  ok(pantryCount(s.pantry) === hRes.totalQty - 1, '下厨消耗 1 份储物篮囤菜');
+  advance(s, new Date(d4.getTime() + ACTS.cook.minutes * 60_000), {});
+  ok(s.money.cash <= cashBeforeCook - 3 && s.money.cash >= cashBeforeCook - 3.5, '完结 cook 实扣约 3 元');
+
+  // 6) 五赛道真实成本与高价门控校核
+  const pChefBlock = evaluateStallPlan(s, { item: '私房佛跳墙菌菇煲', price: 45, stock: 2, freshVeg: false, category: 'food' });
+  ok(!pChefBlock.ok && pChefBlock.reason?.includes('厨师证'), '无厨师证/烹饪/烤箱/独立厨房卖 45 元高价菜被拦');
+  const pWriteBlock = evaluateStallPlan(s, { item: '芦花塘风物手札', price: 32, stock: 2, freshVeg: false, category: 'writing' });
+  ok(!pWriteBlock.ok && pWriteBlock.reason?.includes('见识'), '零见识零电脑卖 32 元书被拦');
+  s.knowledge = 25;
+  const pWriteOk = evaluateStallPlan(s, { item: '芦花塘风物手札', price: 32, stock: 2, freshVeg: false, category: 'writing' });
+  ok(pWriteOk.ok && pWriteOk.cashCost > 10 && pWriteOk.energyCost >= 10, '见识达标后写作摆摊扣纸笔印刷费与精力', `${pWriteOk.cashCost}元/${pWriteOk.energyCost}精`);
+  const rUnrentBlock = applyUnrentFarm(s, false, d4);
+  ok(!rUnrentBlock.ok && rUnrentBlock.reason?.includes('莲藕'), '租地里还有未收莲藕时默认拦截退租');
+  ok(applyUnrentFarm(s, true, d4).ok && !s.farm.leased, '传 force=true 可放弃作物退租');
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

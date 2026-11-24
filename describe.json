@@ -19,7 +19,7 @@
     },
     {
       "name": "life_act",
-      "description": "开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m) swim(60m/35元/涨体质/泳池免费)；闲/学/社：study(60m/涨见识) play(60m/22元) live_show(120m/88元) craft_shop(90m/55元/涨手作) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。",
+      "description": "开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m) swim(60m/35元/涨体质/泳池免费)；闲/学/社：study(60m/涨见识) play(60m/22元) live_show(120m/88元) craft_shop(90m/55元/涨手作) glamping(120m/95元) miniature(75m/25元/涨手作与见识) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -61,10 +61,12 @@
               "swim",
               "live_show",
               "craft_shop",
+              "glamping",
+              "miniature",
               "wake",
               "cancel"
             ],
-            "description": "动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/swim/study/play/live_show/craft_shop/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。"
+            "description": "动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/swim/study/play/live_show/craft_shop/glamping/miniature/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。"
           }
         }
       },
@@ -410,7 +412,7 @@
     },
     {
       "name": "life_buy",
-      "description": "去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来；买鱼市街街坊摊位除商品本身补给外还会额外叠邻里社交与好心情）。",
+      "description": "去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来；买鱼市街街坊摊位会额外叠邻里社交与好心情，买鲜蔬果品还会收入储物篮供下厨与摆料理摊省本钱）。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -431,14 +433,14 @@
     },
     {
       "name": "life_stall",
-      "description": "去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成；还可传 effects 自己分配商品给买家带来的属性回复（东西越贵可分配点数越多，每 1 元有 2 点预算：可换五维 +2、见识 +0.1 或体质 +0.05，不填则按定价自动分配饱腹与娱乐，超出预算按比例折算）。",
+      "description": "去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位与储物篮余量）。价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效，卖不掉过期亏本）。五大品类各扣真实本钱与精力：鲜蔬农产（produce，耗自产鲜蔬或早市现批+3元打包）、料理熟食（food，先用储物篮鲜蔬仅收3元/份油盐费，无囤货现买原料；单价>25需厨师证/烹饪≥10/烤箱/独立厨房）、写作出版（writing，扣纸笔排版底费+印刷装帧费及较多精力；>25需见识≥15/文字≥10/电脑）、手作文创（craft，扣材料包装费；>25需手作≥5/缝纫机）、影像周边（photo，扣冲扫+相纸费；>15需微单/影像≥10）。做新鲜蔬果时可标 fresh_veg: true；也可传 effects 自定义给买家回复的属性点数（每 1 元定价 = 2 点预算）。卖出后在 life_deals 自动进账。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
           "item": {
             "type": "string",
-            "description": "卖什么东西，不填则查看自己此刻挂着的摊位。"
+            "description": "卖什么东西，不填则查看自己此刻挂着的摊位与储物篮备料。"
           },
           "price": {
             "type": "number",
@@ -447,6 +449,21 @@
           "stock": {
             "type": "number",
             "description": "准备卖几份（1–99，默认 3）。"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "produce",
+              "food",
+              "craft",
+              "writing",
+              "photo"
+            ],
+            "description": "可选赛道品类：produce(鲜蔬农产)/food(料理熟食)/craft(手作文创)/writing(写作出版)/photo(影像周边)；不填则自动识别。"
+          },
+          "use_pantry": {
+            "type": "boolean",
+            "description": "料理/鲜蔬摊是否优先消耗储物篮里的鲜蔬（默认 true）。"
           },
           "fresh_veg": {
             "type": "boolean",
@@ -503,7 +520,7 @@
     },
     {
       "name": "life_deals",
-      "description": "看看自己在鱼市街的摊位有没有被人买走，返回最近成交回执（谁买了什么、几份，以及未读条数），并顺手把看过的回执标成已读。",
+      "description": "看看自己在鱼市街的摊位有没有被人买走，返回最近成交回执（谁买了什么、几份、进账多少，以及未读条数），并把新成交的货款打进钱包，顺手把看过的回执标成已读。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -520,6 +537,47 @@
       "summary": {
         "zh": "查看自己在鱼市街的成交回执。",
         "en": "Check sales receipts from your town stalls."
+      }
+    },
+    {
+      "name": "life_farm",
+      "description": "打理家里阳台/院子的种植槽，或签约城郊菜地种慢熟果蔬（4–9 天成熟）：action=status 看槽位、作物进度、储物篮与节气种子单；plant 选种子播种（需空槽与种子费，部分浅滩莲藕需 ≥2 槽）；water 浇水（每块地每天限 1 次，耗 3 精力，累计浇满 2 次收成 +1 份）；harvest 采摘成熟作物入储物篮（供自家下厨降本或上鱼市街卖鲜蔬，顺手涨体质）；rent 签约 4 槽城郊菜地（签约费 100 元 + 月租 150 元按天扣）；unrent 退租。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "plant",
+              "water",
+              "harvest",
+              "rent",
+              "unrent"
+            ],
+            "description": "操作类型：status(看菜园与种子，默认)/plant(播种)/water(浇水)/harvest(收割)/rent(租城郊菜地)/unrent(退租)。"
+          },
+          "seed": {
+            "type": "string",
+            "description": "plant 时传种子 id 或名字（如 香葱、小青菜、西红柿、香菇、茄子、莲藕、红薯、草莓）。"
+          },
+          "plot_id": {
+            "type": "string",
+            "description": "water / harvest 可选：指定某块地的 id，不填则自动浇水或收割全部成熟地。"
+          },
+          "force": {
+            "type": "boolean",
+            "description": "unrent 时若地里还有未收作物，传 true 确认放弃并退租。"
+          }
+        }
+      },
+      "tags": [
+        "write"
+      ],
+      "summary": {
+        "zh": "在家种植槽或城郊菜地种菜收成、浇水或租地。",
+        "en": "Plant, water, harvest crops or lease a garden plot."
       }
     },
     {

@@ -40,9 +40,29 @@ import {
   rollWorkGrade, solarTermOf, streetWindowOf, marketCatalogOf, isLateNightQuiet, buildDreamSlice,
   type SkillDomain, type SolarTermInfo, type StreetWindow, type MarketItem,
 } from './town-life.ts';
+import {
+  HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_SIGNUP_FEE, LEASE_MONTHLY_RENT,
+  SEEDS, STALL_CATEGORY_LABEL, STALL_RULES_GUIDE,
+  freshFarm, normFarm, normPantry, normStallRecords, normSettledDeals,
+  homeFarmSlots, totalFarmSlots, findSeed, farmPlotView, addPantryItem, pantryCount, consumePantry,
+  applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm,
+  inferStallCategory, evaluateStallPlan,
+  type FarmState, type FarmPlot, type FarmPlotView, type PantryItem,
+  type StallCategory, type StallRecord, type StallPlanResult, type SeedDef,
+} from './farm.ts';
 
-export type { SkillDomain, SolarTermInfo, StreetWindow, MarketItem };
-export { SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, solarTermOf, streetWindowOf, rollWorkGrade };
+export type {
+  SkillDomain, SolarTermInfo, StreetWindow, MarketItem,
+  FarmState, FarmPlot, FarmPlotView, PantryItem, StallCategory, StallRecord, StallPlanResult, SeedDef,
+};
+export {
+  SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, solarTermOf, streetWindowOf, rollWorkGrade,
+  HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_SIGNUP_FEE, LEASE_MONTHLY_RENT,
+  SEEDS, STALL_CATEGORY_LABEL, STALL_RULES_GUIDE,
+  homeFarmSlots, totalFarmSlots, findSeed, farmPlotView, addPantryItem, pantryCount, consumePantry,
+  applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm,
+  inferStallCategory, evaluateStallPlan,
+};
 
 /* ------------------------------------------------------------------ */
 /* 类型                                                                */
@@ -510,6 +530,14 @@ export interface LifeState {
   freshVegUntil?: string;
   /** 最近一次向 `/town/join` 报到的本地日期（按天去重）。 */
   lastJoinedTownAt?: string;
+  /** 菜园土地与种植槽状态（自带随住处升级 + 城郊租地）。 */
+  farm: FarmState;
+  /** 食材储物篮（自产收成与买回来的鲜蔬，下厨/摆摊共用）。 */
+  pantry: PantryItem[];
+  /** 本地摆摊台账（记录挂摊单价与已扣成本，用于成交入账兜底与面板展示）。 */
+  stallRecords: StallRecord[];
+  /** 已结算入账的成交回执 id 列表（防重复入账）。 */
+  settledDeals: string[];
 }
 
 export interface PendingNotice {
@@ -797,6 +825,8 @@ export interface ActKind {
   know?: number;
   /** 做完一整个动作涨多少体质。 */
   fit?: number;
+  /** 做完一整个动作涨多少手作熟练度。 */
+  craft?: number;
   /** 做完可能产生的情绪。 */
   mood?: { text: string; kind: 'good' | 'bad'; hours: number };
   /** 轻量场景、穿搭与手边物品提示（供日记素材与跨扩展生图联动）。 */
@@ -816,6 +846,7 @@ const mkAct = (
     perMin?: Partial<Record<VitalKey, number>>;
     know?: number;
     fit?: number;
+    craft?: number;
     mood?: { text: string; kind: 'good' | 'bad'; hours: number };
     scene?: string;
     outfitHint?: string;
@@ -828,7 +859,7 @@ const mkAct = (
       perMin[k as VitalKey] = r2(Number(v) / minutes);
     }
   }
-  return { id, label, minutes, cost, gain, perMin, know: opts.know, fit: opts.fit, mood: opts.mood, scene: opts.scene, outfitHint: opts.outfitHint, props: opts.props };
+  return { id, label, minutes, cost, gain, perMin, know: opts.know, fit: opts.fit, craft: opts.craft, mood: opts.mood, scene: opts.scene, outfitHint: opts.outfitHint, props: opts.props };
 };
 
 export const ACTS: Record<string, ActKind> = {
@@ -966,8 +997,19 @@ export const ACTS: Record<string, ActKind> = {
   }),
   craft_shop: mkAct('craft_shop', '做手作工坊', 90, 55, { fun: 38, social: 10, energy: -6, clean: -2 }, {
     know: 2,
+    craft: 1.5,
     mood: { text: '亲手做好一件小摆件带回来，心里满满当当的', kind: 'good', hours: 4 },
     scene: '街巷陶艺或簇绒手作坊', outfitHint: '休闲便装系手作围裙', props: '簇绒布架或陶土转盘',
+  }),
+  glamping: mkAct('glamping', '城郊精致露营', 120, 95, { food: 40, fun: 45, social: 28, energy: -5 }, {
+    mood: { text: '天幕下烤着菌菇鲜蔬配热茶，山风吹着整个人都松下来了', kind: 'good', hours: 4 },
+    scene: '城郊山脚或黄河滩露营营地', outfitHint: '户外休闲外套与宽松长裤', props: '天幕、折叠椅、炭炉烤菌菇鲜蔬与热茶壶',
+  }),
+  miniature: mkAct('miniature', '拼微缩模型', 75, 25, { fun: 32, energy: -3 }, {
+    know: 1,
+    craft: 1,
+    mood: { text: '台灯下把一小间微缩屋子拼出模样，心里安静又踏实', kind: 'good', hours: 4 },
+    scene: '家里书桌台灯下', outfitHint: '舒适居家服', props: '木质微缩书店零件、镊子与暖光台灯',
   }),
 
   // ---- 控制指令（0 分钟） ----
@@ -1055,6 +1097,10 @@ export function freshState(now: Date = new Date()): LifeState {
     shift: null,
     freshVegUntil: '',
     lastJoinedTownAt: '',
+    farm: freshFarm(),
+    pantry: [],
+    stallRecords: [],
+    settledDeals: [],
   };
 }
 
@@ -1263,6 +1309,10 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     shift: normShift(s.shift),
     freshVegUntil: typeof s.freshVegUntil === 'string' ? s.freshVegUntil : '',
     lastJoinedTownAt: typeof s.lastJoinedTownAt === 'string' ? s.lastJoinedTownAt : '',
+    farm: normFarm(s.farm),
+    pantry: normPantry(s.pantry),
+    stallRecords: normStallRecords(s.stallRecords),
+    settledDeals: normSettledDeals(s.settledDeals),
   };
 }
 
@@ -1718,9 +1768,10 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
           if (!outOfCash) {
             const fitGain = actDef?.fit ?? 0;
             if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain);
-            if (actTask.id === 'craft_shop') {
+            const craftGain = actDef?.craft ?? 0;
+            if (craftGain > 0) {
               state.skills = state.skills ?? {};
-              state.skills.craft = Math.min(100, (state.skills.craft ?? 0) + 1.5);
+              state.skills.craft = Math.min(100, (state.skills.craft ?? 0) + craftGain);
             }
           }
           const fallbackScene = !actTask.scene
@@ -1770,19 +1821,31 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
    */
   const stayingTier = ext?.phase === 'staying' && ext.hotelTier ? ext.hotelTier : null;
   const themeCruise = isThemeCruiseJourney(ext);
-  const regularCruise = !themeCruise && isCruiseJourney(ext);
+  const riverCruise = !themeCruise && isRiverCruiseJourney(ext);
+  const regularCruise = !themeCruise && !riverCruise && isCruiseJourney(ext);
+  const scenicTrain = isScenicTrainJourney(ext);
+  const campervan = isCampervanJourney(ext);
   const travelMult = themeCruise
     ? { energy: 0.65, food: 1 }
-    : regularCruise
+    : riverCruise
       ? { energy: 0.75, food: 1 }
-      : (ext?.phase === 'traveling' && ext.modeId ? TRAVEL_MODE_DECAY_MULT[ext.modeId] : null);
+      : regularCruise
+        ? { energy: 0.75, food: 1 }
+        : scenicTrain
+          ? { energy: 0.72, food: 1 }
+          : campervan
+            ? { energy: 0.85, food: 1 }
+            : (ext?.phase === 'traveling' && ext.modeId ? TRAVEL_MODE_DECAY_MULT[ext.modeId] : null);
   const hotelSleepBonus = stayingTier === 'luxury' ? 1.15 : stayingTier === 'view' ? 1.08 : 1;
   const energyRegenMult = fitnessEnergyRegenMult(state.fitness) * hotelSleepBonus * streetGainFactor(sMods, 'energy');
   const reliefOf = (key: VitalKey): number => {
     if (key === 'energy') return 1;
     if (stayingTier === 'luxury' && (key === 'fun' || key === 'social')) return 0;
     if (themeCruise) return 0.7;
+    if (riverCruise) return 0.82;
     if (regularCruise) return 0.85;
+    if (scenicTrain) return 0.8;
+    if (campervan) return 0.88;
     return stayingTier ? HOTEL_TIER_RELIEF[stayingTier] : (HOME_TIER_RELIEF[state.home.tier] ?? 1);
   };
 
@@ -1871,6 +1934,17 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
     rentMissed = paid < rent;
     if (rentMissed) {
       remember(state, '这个月的房租没凑够。', now);
+    }
+  }
+  if (state.farm.leased && state.farm.leasedMonthly > 0) {
+    const farmRent = Math.round((state.farm.leasedMonthly / 30) * hours / 24);
+    if (farmRent > 0) {
+      const paidFarm = Math.min(farmRent, state.money.cash);
+      state.money.cash -= paidFarm;
+      state.money.spent += paidFarm;
+      if (paidFarm < farmRent) {
+        remember(state, '城郊菜地的月租没凑够。', now);
+      }
     }
   }
 
@@ -2105,18 +2179,92 @@ export interface ActJourneyContext {
   atSpot?: { name: string; until: string } | null;
 }
 
-/** 是否正乘坐中长途过夜客轮或远洋游轮。 */
+/** 是否正乘坐内河游轮航线。 */
+export function isRiverCruiseJourney(j?: { phase?: string; modeId?: string; seatId?: string; seat?: string }): boolean {
+  if (j?.phase !== 'traveling' || j?.modeId !== 'ship') return false;
+  if (j.seatId === 'river-cruise') return true;
+  return /内河|河轮|峡谷游轮/.test(j.seat ?? '');
+}
+
+/** 是否正乘坐中长途过夜客轮或远洋游轮（不含内河游轮）。 */
 export function isCruiseJourney(j?: { phase?: string; modeId?: string; seatId?: string; seat?: string }): boolean {
   if (j?.phase !== 'traveling' || j?.modeId !== 'ship') return false;
+  if (isRiverCruiseJourney(j)) return false;
   if (j.seatId && ['inside-cabin', 'ocean-balcony', 'theme-cruise'].includes(j.seatId)) return true;
   return /游轮|邮轮|客轮|阳台房|内舱/.test(j.seat ?? '');
 }
 
 /** 是否正乘坐一价全包的主题远洋游轮。 */
 export function isThemeCruiseJourney(j?: { phase?: string; modeId?: string; seatId?: string; seat?: string }): boolean {
+  if (isRiverCruiseJourney(j)) return false;
   if (!isCruiseJourney(j)) return false;
   return j?.seatId === 'theme-cruise' || /主题|远洋游轮|远洋邮轮/.test(j?.seat ?? '');
 }
+
+/** 是否正乘坐全景观光专列。 */
+export function isScenicTrainJourney(j?: { phase?: string; modeId?: string; seatId?: string; seat?: string }): boolean {
+  if (j?.phase !== 'traveling' || j?.modeId !== 'train') return false;
+  return j.seatId === 'scenic-train' || /观光专列|全景观光|冰川快车|东方快车/.test(j.seat ?? '');
+}
+
+/** 是否正开房车自驾在途。 */
+export function isCampervanJourney(j?: { phase?: string; modeId?: string; seatId?: string; seat?: string }): boolean {
+  if (j?.phase !== 'traveling' || j?.modeId !== 'car') return false;
+  return j.seatId === 'campervan' || /房车/.test(j.seat ?? '');
+}
+
+const RIVER_CRUISE_ACT_SCENES: Record<string, string> = {
+  feast: '内河游轮江景餐厅（山野菌菇煲与嫩藕小炒）',
+  eat: '内河游轮观景自助餐廊',
+  instant: '内河游轮客舱小桌旁',
+  tea: '内河游轮江景茶廊',
+  supper: '内河游轮甲板夜间茶食吧',
+  drink: '内河游轮观景吧台（看两岸江岸灯火）',
+  sleep: '内河游轮江景客舱软床',
+  nap: '内河游轮客舱软榻',
+  rest: '内河游轮顶层观景甲板',
+  wash: '内河游轮客舱浴室',
+  sunbathe: '内河游轮露天甲板（吹江风看两岸山影）',
+  study: '内河游轮安静阅览区',
+  play: '内河游轮休闲棋牌电玩室',
+  movie: '内河游轮小放映室',
+  live_show: '内河游轮江景演艺厅',
+  craft_shop: '内河游轮手作体验桌',
+  miniature: '内河游轮江景客舱书桌旁',
+  chat: '内河游轮甲板或江景茶廊',
+};
+
+const SCENIC_TRAIN_ACT_SCENES: Record<string, string> = {
+  feast: '观光专列全景餐车（窗外掠过雪山与森林）',
+  eat: '观光专列餐车靠窗餐桌',
+  instant: '观光专列包厢小桌板旁',
+  tea: '观光专列全景弧形观景窗旁',
+  supper: '观光专列餐吧夜宵位',
+  drink: '观光专列观景餐吧小酌区',
+  sleep: '观光专列独立软卧包厢',
+  nap: '观光专列软卧包厢床榻',
+  rest: '观光专列观景车厢沙发座',
+  wash: '观光专列包厢独立洗漱间',
+  study: '观光专列软卧包厢书桌旁',
+  miniature: '观光专列包厢暖灯小桌旁',
+  chat: '观光专列全景车厢或餐吧',
+};
+
+const CAMPERVAN_ACT_SCENES: Record<string, string> = {
+  cook: '房车车内便携灶台或公路营地天幕下',
+  eat: '房车折叠餐桌或沿途营地木桌旁',
+  instant: '房车车内小桌板旁',
+  tea: '房车遮阳棚下折叠茶桌旁',
+  supper: '房车车内热汤夜宵小桌旁',
+  drink: '房车营地户外折叠椅旁（抬头看夜空）',
+  sleep: '房车星空卧铺床',
+  nap: '房车车内午后卧铺',
+  rest: '房车遮阳棚下户外折叠椅',
+  study: '房车车内小书桌旁',
+  glamping: '房车沿途山脚营地天幕下',
+  miniature: '房车暖黄车厢台灯小桌旁',
+  chat: '房车车厢内或营地天幕下',
+};
 
 const CRUISE_ACT_SCENES: Record<string, string> = {
   feast: '游轮轮换主题餐厅（松露烤菌菇与炭烤牛排）',
@@ -2152,8 +2300,17 @@ export function resolveActScene(
 ): string | undefined {
   const phase = journey?.phase;
   if (phase === 'traveling') {
+    if (isRiverCruiseJourney(journey)) {
+      return RIVER_CRUISE_ACT_SCENES[actId] ?? '内河游轮观景甲板或江景茶廊';
+    }
     if (isCruiseJourney(journey)) {
       return CRUISE_ACT_SCENES[actId] ?? '游轮甲板或公共休闲区';
+    }
+    if (isScenicTrainJourney(journey)) {
+      return SCENIC_TRAIN_ACT_SCENES[actId] ?? '全景观光专列全景车厢';
+    }
+    if (isCampervanJourney(journey)) {
+      return CAMPERVAN_ACT_SCENES[actId] ?? '房车车厢或沿途营地';
     }
     const map: Record<string, string> = {
       study: '旅途车厢座位旁',
@@ -2223,6 +2380,19 @@ const CRUISE_ALLOWED_ACTS = new Set([
   'wake', 'cancel', 'chat', 'rest', 'study', 'instant', 'sleep', 'nap', 'drink',
   'eat', 'feast', 'tea', 'supper', 'wash', 'spa', 'sunbathe', 'play', 'movie',
   'karaoke', 'workout', 'swim', 'live_show', 'craft_shop',
+]);
+const RIVER_CRUISE_ALLOWED_ACTS = new Set([
+  'wake', 'cancel', 'chat', 'rest', 'study', 'instant', 'sleep', 'nap', 'drink',
+  'eat', 'feast', 'tea', 'supper', 'wash', 'sunbathe', 'play', 'movie',
+  'live_show', 'craft_shop', 'miniature',
+]);
+const SCENIC_TRAIN_ALLOWED_ACTS = new Set([
+  'wake', 'cancel', 'chat', 'rest', 'study', 'instant', 'sleep', 'nap', 'drink',
+  'eat', 'feast', 'tea', 'supper', 'wash', 'miniature',
+]);
+const CAMPERVAN_ALLOWED_ACTS = new Set([
+  'wake', 'cancel', 'chat', 'rest', 'study', 'instant', 'sleep', 'nap', 'drink',
+  'cook', 'eat', 'tea', 'supper', 'glamping', 'miniature',
 ]);
 const THEME_CRUISE_FREE_ACTS = new Set([
   'eat', 'feast', 'tea', 'supper', 'swim', 'live_show', 'play', 'movie',
@@ -2384,14 +2554,50 @@ export function applyAct(
     };
   }
 
-  /* 旅途/通勤物理约束：车上不能洗澡做饭，跨城赶路不能去做本地居家活动；过夜客轮与远洋游轮额外放行船上设施与吃喝演出。 */
+  /* 旅途/通勤物理约束：车上不能洗澡做饭，跨城赶路不能去做本地居家活动；游轮/河轮/观光专列/房车按载具条件放行。 */
   if (journey?.phase === 'traveling') {
-    if (isCruiseJourney(journey)) {
+    if (isRiverCruiseJourney(journey)) {
+      if (!RIVER_CRUISE_ALLOWED_ACTS.has(act.id)) {
+        return {
+          ok: false,
+          reason: `你这会儿正在去${journey.toName || '下一站'}的${journey.seat || '内河游轮'}上，河轮上没法「${act.label}」—— `
+            + '可以在江景餐厅吃顿好的（feast）、在茶廊喝下午茶（tea）、去露天甲板吹江风（sunbathe）或看演艺演出（live_show），到了岸再做这件。',
+          vitals: state.vitals,
+          mood: null,
+          cost: 0,
+          cash: state.money.cash,
+        };
+      }
+    } else if (isCruiseJourney(journey)) {
       if (!CRUISE_ALLOWED_ACTS.has(act.id)) {
         return {
           ok: false,
           reason: `你这会儿正在去${journey.toName || '下一站'}的游轮上，船上没法「${act.label}」—— `
             + '可以去顶层泳池游泳（swim）、海上剧院看演出（live_show）、主题餐厅吃顿好的（feast）、喝下午茶（tea）或打电玩（play），到了岸再做这件。',
+          vitals: state.vitals,
+          mood: null,
+          cost: 0,
+          cash: state.money.cash,
+        };
+      }
+    } else if (isScenicTrainJourney(journey)) {
+      if (!SCENIC_TRAIN_ALLOWED_ACTS.has(act.id)) {
+        return {
+          ok: false,
+          reason: `你这会儿正在去${journey.toName || '下一站'}的全景观光专列车厢里，车上没法「${act.label}」—— `
+            + '可以去全景餐车吃顿好的（feast）、窗边喝下午茶（tea）、餐吧小酌（drink）或回软卧包厢睡觉（sleep），下车后再做这件。',
+          vitals: state.vitals,
+          mood: null,
+          cost: 0,
+          cash: state.money.cash,
+        };
+      }
+    } else if (isCampervanJourney(journey)) {
+      if (!CAMPERVAN_ALLOWED_ACTS.has(act.id)) {
+        return {
+          ok: false,
+          reason: `你这会儿正开着房车往${journey.toName || '下一站'}赶，房车与沿途营地没法「${act.label}」—— `
+            + '可以在房车便携灶台开火做饭（cook）、驻车露营（glamping）、喝杯热茶（tea）或睡进星空卧铺（sleep/nap），进了城再做这件。',
           vitals: state.vitals,
           mood: null,
           cost: 0,
@@ -2452,7 +2658,9 @@ export function applyAct(
    * 只说「钱不够」她会愣在那儿，下次再试一次，还是不行。
    * 说「钱不够，只能将就吃一口」，她才知道路在哪儿。
    */
-  const effectiveCost = actEffectiveCost(act, journey);
+  const baseCost = actEffectiveCost(act, journey);
+  const canUsePantryForCook = act.id === 'cook' && pantryCount(state.pantry) > 0;
+  const effectiveCost = canUsePantryForCook ? Math.min(baseCost, 3) : baseCost;
   if (effectiveCost > state.money.cash) {
     const alt = Object.values(ACTS).filter((a) => actEffectiveCost(a, journey) <= state.money.cash);
     const altText = alt.length
@@ -2595,7 +2803,7 @@ export function applyAct(
     });
   }
 
-  if (isLateNightQuiet(now) && ['cook', 'instant', 'eat', 'study', 'read', 'chat', 'paint'].includes(act.id)) {
+  if (isLateNightQuiet(now) && ['cook', 'instant', 'eat', 'study', 'read', 'chat', 'paint', 'miniature'].includes(act.id)) {
     state.moodlets = state.moodlets.filter((m) => m.source !== 'late-night');
     state.moodlets.push({
       id: `m-ln-${now.getTime().toString(36)}`,
@@ -2604,6 +2812,23 @@ export function applyAct(
       kind: 'good',
       expiresAt: new Date(now.getTime() + 4 * 3_600_000).toISOString(),
     });
+  }
+
+  if (act.id === 'miniature') {
+    const late = isLateNightQuiet(now);
+    const rainy = weatherOf(state.street || '兰州', now).sky === '小雨';
+    if (late || rainy) {
+      state.moodlets = state.moodlets.filter((m) => m.source !== 'cozy-miniature');
+      state.moodlets.push({
+        id: `m-cm-${now.getTime().toString(36)}`,
+        source: 'cozy-miniature',
+        text: late
+          ? '深夜亮着暖光台灯静静拼微缩小屋，安稳踏实像有人陪在旁边'
+          : '窗外下着小雨，屋里点盏台灯专心拼好一角微缩花房，心里松软得很',
+        kind: 'good',
+        expiresAt: new Date(now.getTime() + 4 * 3_600_000).toISOString(),
+      });
+    }
   }
 
   const echoed = new Set(state.echoedWants ?? []);
@@ -2624,6 +2849,8 @@ export function applyAct(
     swim: ['游泳', '泳池', '玩水', '水上滑道'],
     live_show: ['演出', '音乐剧', '脱口秀', 'livehouse', '演唱会'],
     craft_shop: ['手作', '陶艺', '簇绒', '蜡烛'],
+    glamping: ['露营', '野餐', '天幕', '烤串'],
+    miniature: ['微缩', '模型', '拼图', '积木'],
   };
   const kws = actKeywords[act.id] ?? [];
   if (kws.length) {
@@ -2635,8 +2862,29 @@ export function applyAct(
     }
   }
 
+  let cookPantryNote = '';
+  if (act.id === 'cook' && pantryCount(state.pantry) > 0) {
+    const used = consumePantry(state.pantry, 1);
+    if (used.consumed > 0) {
+      cookPantryNote = used.sources.join('、');
+      remember(state, `下厨用了储物篮里的${cookPantryNote}，只花了点油盐火钱。`, now);
+      if (!state.moodlets.some((m) => m.source === 'fresh-veg')) {
+        state.moodlets.push({
+          id: `m-fv-${now.getTime().toString(36)}`,
+          source: 'fresh-veg',
+          text: `用${cookPantryNote}下了锅，自家菜格外清甜`,
+          kind: 'good',
+          expiresAt: new Date(now.getTime() + 4 * 3_600_000).toISOString(),
+        });
+      }
+    }
+  }
+
   const untilIso = new Date(now.getTime() + act.minutes * 60_000).toISOString();
-  const sceneOverride = resolveActScene(act.id, journey, state.street);
+  const baseScene = resolveActScene(act.id, journey, state.street);
+  const sceneOverride = cookPantryNote
+    ? `${baseScene || '家里灶台前'}（用${cookPantryNote}）`
+    : baseScene;
   state.activity = {
     kind: 'act',
     id: act.id,
@@ -3261,6 +3509,8 @@ export interface MoveQuote {
   ok: boolean;
   /** 还差多少。够了是 0。 */
   short: number;
+  /** 这一档住处自带几个种植槽。 */
+  farmSlots: number;
 }
 
 /**
@@ -3273,7 +3523,15 @@ export function quoteMove(state: LifeState, tier: HomeTier): MoveQuote {
   const monthly = HOME_TIER_COST[tier];
   const deposit = monthly * MOVING_DEPOSIT_MONTHS;
   const short = Math.max(0, deposit - state.money.cash);
-  return { tier, label: HOME_TIER_LABEL[tier], monthly, deposit, ok: short === 0, short };
+  return {
+    tier,
+    label: HOME_TIER_LABEL[tier],
+    monthly,
+    deposit,
+    ok: short === 0,
+    short,
+    farmSlots: homeFarmSlots(tier),
+  };
 }
 
 export interface MoveResult {
@@ -3452,6 +3710,21 @@ export interface Snapshot {
   streetWindow: StreetWindow | null;
   /** 是否有早市新鲜蔬果下厨加成。 */
   freshVeg: boolean;
+  /** 菜园种植槽、租地情况与各槽进度。 */
+  farm: {
+    homeSlots: number;
+    leased: boolean;
+    leasedSlots: number;
+    leasedMonthly: number;
+    totalSlots: number;
+    usedSlots: number;
+    readyCount: number;
+    plots: FarmPlotView[];
+  };
+  /** 食材储物篮囤货明细。 */
+  pantry: PantryItem[];
+  /** 本地摆摊本钱与单价台账。 */
+  stallRecords: StallRecord[];
 }
 
 export interface WeatherInfo {
@@ -3470,9 +3743,10 @@ export function weatherOf(city: string, now: Date): WeatherInfo {
   const skies: WeatherInfo['sky'][] = ['晴', '多云', '晴', '小雨', '起风', '多云'];
   const sky = skies[h % skies.length];
   const term = solarTermOf(now);
+  const termLabel = `节气·${term.name}`;
   const seasonNote = sky === '小雨'
-    ? `${term.name}小雨，${term.note}`
-    : `${term.name} · ${term.note}`;
+    ? `${termLabel}（小雨），${term.note}`
+    : `${termLabel} · ${term.note}`;
   return { sky, seasonNote, solarTerm: term.name };
 }
 
@@ -3608,6 +3882,10 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     };
   }
 
+  const plotViews = state.farm.plots.map((p) => farmPlotView(p, now));
+  const homeSlots = homeFarmSlots(state.home.tier);
+  const leasedSlots = state.farm.leased ? LEASE_PLOT_COUNT : 0;
+
   return {
     vitals: state.vitals,
     home: state.home,
@@ -3640,5 +3918,17 @@ export function snapshot(state: LifeState, now: Date): Snapshot {
     solarTerm: solarTermOf(now),
     streetWindow: streetWindowOf(now),
     freshVeg: Boolean(state.freshVegUntil && Date.parse(state.freshVegUntil) > now.getTime()),
+    farm: {
+      homeSlots,
+      leased: state.farm.leased,
+      leasedSlots,
+      leasedMonthly: state.farm.leasedMonthly,
+      totalSlots: homeSlots + leasedSlots,
+      usedSlots: plotViews.length,
+      readyCount: plotViews.filter((p) => p.ready).length,
+      plots: plotViews,
+    },
+    pantry: state.pantry,
+    stallRecords: state.stallRecords,
   };
 }

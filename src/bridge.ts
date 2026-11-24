@@ -9,6 +9,9 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { parseTownUrls } from './config.ts';
+import { STALL_CATEGORY_LABEL, type StallCategory } from './farm.ts';
+
+export { STALL_CATEGORY_LABEL, type StallCategory };
 
 /* ------------------------------------------------------------------ */
 /* journey：她在哪、那边几点                                            */
@@ -855,6 +858,7 @@ export interface TownStall {
   price: number;
   stock: number;
   freshVeg?: boolean;
+  category?: StallCategory;
   note?: string;
   effects?: StallEffects;
 }
@@ -868,6 +872,7 @@ export interface TownDeal {
   note?: string;
   seen: boolean;
   at: string;
+  unitPrice?: number;
 }
 
 /**
@@ -942,6 +947,8 @@ export async function fetchTownStalls(
       .map((x: any) => {
         const price = Math.round(Number(x.price));
         const effects = normStallEffects(x.effects, price);
+        const rawCat = typeof x.category === 'string' ? x.category : '';
+        const category = rawCat in STALL_CATEGORY_LABEL ? (rawCat as StallCategory) : undefined;
         return {
           id: String(x.id),
           seller: typeof x.seller === 'string' ? x.seller : '街坊',
@@ -950,6 +957,7 @@ export async function fetchTownStalls(
           price,
           stock: Math.round(Number(x.stock)),
           freshVeg: Boolean(x.freshVeg),
+          ...(category ? { category } : {}),
           ...(typeof x.note === 'string' && x.note ? { note: x.note } : {}),
           ...(effects ? { effects } : {}),
         };
@@ -968,7 +976,7 @@ export async function buyTownStall(
   stallId: string,
   buyer: string,
   opts: { timeoutMs?: number; buyerUid?: string; note?: string } = {},
-): Promise<{ ok: boolean; item?: string; price?: number; seller?: string; freshVeg?: boolean; effects?: StallEffects; reason?: string }> {
+): Promise<{ ok: boolean; item?: string; price?: number; seller?: string; freshVeg?: boolean; category?: StallCategory; effects?: StallEffects; reason?: string }> {
   const roots = parseTownUrls(townUrl);
   if (!roots.length) return { ok: false, reason: '没配城服务器地址' };
   const { res } = await tryTownFetch(
@@ -990,16 +998,25 @@ export async function buyTownStall(
   try {
     const j: any = await res.json().catch(() => ({}));
     if (!res.ok || !j?.ok) {
-      return { ok: false, reason: typeof j?.error === 'string' ? j.error : `市集返回 ${res.status}` };
+      const errMap: Record<string, string> = {
+        'pair limit': '今天已经在这位街坊摊上买过两单了，明天再来逛吧。',
+        'sold out': '这样货刚好被人买光了。',
+        'own stall': '不能自己买自己挂出去的摊货哦。',
+      };
+      const rawErr = typeof j?.error === 'string' ? j.error : '';
+      return { ok: false, reason: errMap[rawErr] || rawErr || `市集返回 ${res.status}` };
     }
     const price = Math.round(Number(j?.price ?? 0));
     const effects = normStallEffects(j?.effects, price || 15);
+    const rawCat = typeof j?.category === 'string' ? j.category : '';
+    const category = rawCat in STALL_CATEGORY_LABEL ? (rawCat as StallCategory) : undefined;
     return {
       ok: true,
       item: typeof j?.item === 'string' ? j.item : '一份吃食',
       price,
       seller: typeof j?.seller === 'string' ? j.seller : '街坊',
       freshVeg: Boolean(j?.freshVeg),
+      ...(category ? { category } : {}),
       ...(effects ? { effects } : {}),
     };
   } catch {
@@ -1009,9 +1026,9 @@ export async function buyTownStall(
 
 export async function postTownStall(
   townUrl: string | readonly string[],
-  payload: { uid: string; pet: string; item: string; price: number; stock?: number; freshVeg?: boolean; kind?: 'goods' | 'errand'; note?: string; effects?: StallEffects },
+  payload: { uid: string; pet: string; item: string; price: number; stock?: number; freshVeg?: boolean; category?: StallCategory; kind?: 'goods' | 'errand'; note?: string; effects?: StallEffects },
   opts: { timeoutMs?: number } = {},
-): Promise<{ ok: boolean; id?: string; seller?: string; item?: string; price?: number; stock?: number; freshVeg?: boolean; effects?: StallEffects; reason?: string }> {
+): Promise<{ ok: boolean; id?: string; seller?: string; item?: string; price?: number; stock?: number; freshVeg?: boolean; category?: StallCategory; effects?: StallEffects; reason?: string }> {
   const roots = parseTownUrls(townUrl);
   if (!roots.length) return { ok: false, reason: '没配城服务器地址' };
   if (!payload.uid) return { ok: false, reason: '缺少本机 uid，无法实名挂摊' };
@@ -1045,6 +1062,8 @@ export async function postTownStall(
     }
     const price = Math.round(Number(j?.price ?? payload.price));
     const resEffects = normStallEffects(j?.effects, price) ?? normalizedEffects;
+    const rawCat = typeof j?.category === 'string' ? j.category : (payload.category ?? '');
+    const category = rawCat in STALL_CATEGORY_LABEL ? (rawCat as StallCategory) : undefined;
     return {
       ok: true,
       id: typeof j?.id === 'string' ? j.id : '',
@@ -1053,6 +1072,7 @@ export async function postTownStall(
       price,
       stock: Math.round(Number(j?.stock ?? payload.stock ?? 1)),
       freshVeg: Boolean(j?.freshVeg),
+      ...(category ? { category } : {}),
       ...(resEffects ? { effects: resEffects } : {}),
     };
   } catch {
@@ -1093,6 +1113,9 @@ export async function fetchTownDeals(
         ...(typeof x.note === 'string' && x.note ? { note: x.note } : {}),
         seen: Boolean(x.seen),
         at: typeof x.at === 'string' ? x.at : '',
+        ...(Number.isFinite(Number(x.unitPrice)) && Number(x.unitPrice) > 0
+          ? { unitPrice: Math.round(Number(x.unitPrice)) }
+          : {}),
       }));
     return { ok: true, deals, unseen: Math.max(0, Math.round(Number(j?.unseen ?? 0) || 0)) };
   } catch {

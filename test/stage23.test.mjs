@@ -51,7 +51,7 @@ test('二期收尾：journey-public.json 四格对齐与 day/wants/relation 三�
     const world = new LifeWorld({ cfg: { ...LIFE_DEFAULTS(), enabled: true }, dataDir: dir, botName: '大肥鱼' });
     await world.start(silentHost);
     const ui = world.webUi();
-    assert.deepEqual(ui.panels.map((p) => p.id), ['now', 'day', 'wants', 'relation', 'diary', 'library']);
+    assert.deepEqual(ui.panels.map((p) => p.id), ['now', 'day', 'wants', 'relation', 'market', 'diary', 'library']);
 
     const daySnap = await ui.invoke('day', 'snapshot');
     assert.ok(Array.isArray(daySnap.todayTellable));
@@ -178,6 +178,18 @@ test('三期节气时间轴 + 梦境切片 + 深夜静谧态', () => {
   assert.equal(snapM.solarTerm.name, '立冬');
   assert.equal(snapM.streetWindow?.id, 'morning-market');
   assert.match(weatherOf('兰州', morning).seasonNote, /立冬/);
+
+  // 小雪节气须明确标出「节气·小雪」，并避免「小雪小雨」拼接造成误解
+  const xiaoxue = new Date('2026-11-24T06:00:00.000+08:00');
+  const wXiao = weatherOf('兰州', xiaoxue);
+  assert.equal(wXiao.solarTerm, '小雪');
+  assert.match(wXiao.seasonNote, /节气·小雪/);
+  assert.doesNotMatch(wXiao.seasonNote, /小雪小雨/);
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const panelSrc = readFileSync(new URL(`../${pkg.cortico.webUiClient}`, import.meta.url), 'utf8');
+  assert.match(panelSrc, /节气·\$\{d\.solarTerm\.name\}/);
+  const envPromptSrc = readFileSync(new URL('../ENV_PROMPT.md', import.meta.url), 'utf8');
+  assert.match(envPromptSrc, /天气与节气：\{\{life\.weather\}\}/);
 
   const catM = fullMarketPrices(morning);
   const catN = fullMarketPrices(nightClear);
@@ -988,5 +1000,271 @@ test('审查回归：启动首次 /town/stalls 失败不锁死 15 分钟冷却�
   } finally {
     srv.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('二期（P2）：broadcastLife 透出驾照 certs 且 statusText / envPromptVars 准确渲染三种慢旅行在途状态', async () => {
+  const dir = mkDir();
+  const nowFixed = new Date('2026-11-24T04:00:00Z');
+  try {
+    const world = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => nowFixed,
+    });
+    await world.start(silentHost);
+    world.state.job.certs = ['驾照'];
+    world.broadcastLife(nowFixed);
+    const pub = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
+    assert.deepEqual(pub.certs, ['驾照']);
+
+    for (const sample of [
+      { modeId: 'train', seatId: 'scenic-train', seat: '全景观光专列', re: /全景观光专列/ },
+      { modeId: 'car', seatId: 'campervan', seat: '房车自驾', re: /房车自驾/ },
+      { modeId: 'ship', seatId: 'river-cruise', seat: '内河峡谷游轮', re: /内河峡谷游轮/ },
+    ]) {
+      writeFileSync(join(dir, 'journey-public.json'), JSON.stringify({
+        schema: 'coopani-journey-public/v1',
+        updatedAt: nowFixed.toISOString(),
+        phase: 'traveling',
+        city: { id: 'chengdu', name: '成都', tz: 'Asia/Shanghai' },
+        leg: {
+          fromId: 'chengdu', toId: 'lasa',
+          fromName: '成都', toName: '拉萨',
+          modeId: sample.modeId,
+          seatId: sample.seatId,
+          seat: sample.seat,
+          departedAt: new Date(nowFixed.getTime() - 3_600_000).toISOString(),
+          arriveAt: new Date(nowFixed.getTime() + 10 * 3_600_000).toISOString(),
+        },
+      }), 'utf8');
+      const vars = world.envPromptVars();
+      const statusOut = await world.tools().find((t) => t.name === 'life_status').handler({});
+      assert.match(vars['life.here'], sample.re);
+      assert.match(vars['life.who'], sample.re);
+      assert.match(String(statusOut.text), sample.re);
+      assert.doesNotMatch(vars['life.here'] + String(statusOut.text), /她/);
+    }
+
+    await world.stop();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('经济闭环与 UI（P2.5）：种菜进储物篮 → 五赛道扣本摆摊 → 跨鱼买菜再加工 → 成交真入账与 market 面板', async () => {
+  const dirSeller = mkDir();
+  const dirBuyer = mkDir();
+  let curNow = new Date('2026-11-24T09:00:00+08:00');
+  const stalls = [];
+  const deals = [];
+  let seq = 1;
+
+  const srv = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const p = body ? JSON.parse(body) : {};
+      if (req.url === '/town/info') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ town: 'lanzhou', name: '兰州', origin: '黄河穿城', streets: ['南滨河路'], rules: [] }));
+        return;
+      }
+      if (req.url === '/town/join' && req.method === 'POST') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, town: 'lanzhou', name: '兰州', street: p.street || '南滨河路' }));
+        return;
+      }
+      if (req.url === '/town/stalls' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          stalls: stalls.filter((s) => s.stock > 0),
+          bulletin: ['鱼市街鲜蔬开市'],
+        }));
+        return;
+      }
+      if (req.url === '/town/stalls' && req.method === 'POST') {
+        const id = `st-e2e-${seq++}`;
+        const created = {
+          id,
+          uid: p.uid,
+          seller: p.pet,
+          kind: p.kind || 'goods',
+          item: p.item,
+          price: Number(p.price),
+          stock: Number(p.stock || 3),
+          freshVeg: Boolean(p.freshVeg),
+          ...(p.category ? { category: p.category } : {}),
+          note: p.note || '',
+          ...(p.effects ? { effects: p.effects } : {}),
+        };
+        stalls.push(created);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...created }));
+        return;
+      }
+      if (req.url === '/town/buy' && req.method === 'POST') {
+        const st = stalls.find((s) => s.id === p.stallId);
+        if (!st || st.stock <= 0) {
+          res.writeHead(409, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'sold out' }));
+          return;
+        }
+        st.stock -= 1;
+        deals.push({
+          id: `dl-e2e-${seq++}`,
+          stallId: st.id,
+          sellerUid: st.uid,
+          item: st.item,
+          qty: 1,
+          buyerPet: p.buyer || '大肥鱼',
+          note: p.note || '',
+          seen: false,
+          at: curNow.toISOString(),
+          // 刻意测试首笔传 unitPrice、次笔留 0 走本地 stallRecords 单价兜底
+          unitPrice: st.item.includes('随笔') ? 0 : st.price,
+        });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          item: st.item,
+          price: st.price,
+          seller: st.seller,
+          freshVeg: Boolean(st.freshVeg),
+          ...(st.category ? { category: st.category } : {}),
+          ...(st.effects ? { effects: st.effects } : {}),
+        }));
+        return;
+      }
+      if (req.url?.startsWith('/town/deals')) {
+        const u = new URL(req.url, 'http://127.0.0.1');
+        const uid = u.searchParams.get('uid');
+        const ack = u.searchParams.get('ack') === '1';
+        const mine = deals.filter((d) => d.sellerUid === uid);
+        const unseen = mine.filter((d) => !d.seen).length;
+        const out = mine.map((d) => ({ ...d }));
+        if (ack) for (const d of mine) d.seen = true;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, deals: out, unseen }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+  });
+
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const { port } = srv.address();
+  try {
+    writeFileSync(join(dirSeller, 'meet-uid.txt'), 'aaaaaaaaaaaaaaaaaaaaaaaa', 'utf8');
+    writeFileSync(join(dirBuyer, 'meet-uid.txt'), 'bbbbbbbbbbbbbbbbbbbbbbbb', 'utf8');
+
+    const wSeller = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true, townUrl: `http://127.0.0.1:${port}` },
+      dataDir: dirSeller,
+      botName: '菜农鱼',
+      now: () => curNow,
+    });
+    const wBuyer = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true, townUrl: `http://127.0.0.1:${port}` },
+      dataDir: dirBuyer,
+      botName: '厨师鱼',
+      now: () => curNow,
+    });
+    await wSeller.start(silentHost);
+    await wBuyer.start(silentHost);
+
+    const farmTool = wSeller.tools().find((t) => t.name === 'life_farm');
+    const sellerStall = wSeller.tools().find((t) => t.name === 'life_stall');
+    const sellerDeals = wSeller.tools().find((t) => t.name === 'life_deals');
+    const buyerBuy = wBuyer.tools().find((t) => t.name === 'life_buy');
+    const buyerStall = wBuyer.tools().find((t) => t.name === 'life_stall');
+
+    // A) 菜农未种菜直接硬挂 produce 鲜蔬摊被拦；先种香葱 → 4天后收成入储物篮
+    const blockedProduce = await sellerStall.handler({ item: '自种香葱', price: 12, stock: 2, category: 'produce' });
+    assert.match(blockedProduce.text, /自产鲜蔬储备不足/);
+
+    const planted = await farmTool.handler({ action: 'plant', seed: '香葱' });
+    assert.match(planted.text, /种进家里种植槽/);
+    curNow = new Date(curNow.getTime() + 97 * 3_600_000);
+    const harvested = await farmTool.handler({ action: 'harvest' });
+    assert.match(harvested.text, /收成了.*香葱.*放进家里储物篮/);
+
+    // B) 菜农挂 2 份鲜蔬（每份 12 元）仅扣 3 元打包费 + 精力，并耗掉储物篮
+    const sellerCashBeforeStall = wSeller.state.money.cash;
+    const postedProduce = await sellerStall.handler({
+      item: '水灵香葱一把',
+      price: 12,
+      stock: 2,
+      category: 'produce',
+      fresh_veg: true,
+    });
+    assert.match(postedProduce.text, /摊子挂上鱼市街了：水灵香葱一把.*备货本钱 3 元/);
+    assert.equal(wSeller.state.money.cash, sellerCashBeforeStall - 3);
+    assert.equal(wSeller.state.pantry.length, 0, '摆鲜蔬摊后储物篮自产香葱应已扣除');
+
+    // C) 菜农见识达标后同时写随笔挂 writing 摊（定价 30 元×2 份，扣纸笔底费 8 + 印刷 18 = 26 元）
+    wSeller.state.knowledge = 30;
+    const cashBeforeWrite = wSeller.state.money.cash;
+    const postedWrite = await sellerStall.handler({
+      item: '芦花塘随笔小册',
+      price: 30,
+      stock: 2,
+      category: 'writing',
+    });
+    assert.match(postedWrite.text, /\[写作出版\].*备货本钱 26 元/);
+    assert.equal(wSeller.state.money.cash, cashBeforeWrite - 26);
+
+    // D) 厨师鱼买走 1 份鲜蔬 + 1 本随笔，鲜蔬进入厨师储物篮（+2 份）
+    const vegStallId = stalls.find((s) => s.item === '水灵香葱一把').id;
+    const bookStallId = stalls.find((s) => s.item === '芦花塘随笔小册').id;
+    const buyVeg = await buyerBuy.handler({ stall_id: vegStallId });
+    assert.match(buyVeg.text, /已收入储物篮/);
+    assert.equal(wBuyer.state.pantry.length, 1);
+    assert.equal(wBuyer.state.pantry[0].qty, 2);
+    assert.equal(wBuyer.state.pantry[0].fromSeller, '菜农鱼');
+    await buyerBuy.handler({ stall_id: bookStallId });
+
+    // E) 厨师鱼先被无证高价料理拦下；考下厨师证后用刚买的鲜蔬摆 2 份 30 元手擀面仅扣 6 元油盐燃料费
+    const blockedFood = await buyerStall.handler({ item: '招牌葱油面', price: 30, stock: 2, category: 'food' });
+    assert.match(blockedFood.text, /厨师证/);
+    wBuyer.state.job.certs.push('厨师证');
+    const buyerCashBeforeFood = wBuyer.state.money.cash;
+    const postedFood = await buyerStall.handler({ item: '招牌葱油面', price: 30, stock: 2, category: 'food' });
+    assert.match(postedFood.text, /备货本钱 6 元.*用储物篮鲜蔬 2 份/);
+    assert.equal(wBuyer.state.money.cash, buyerCashBeforeFood - 6);
+    assert.equal(wBuyer.state.pantry.length, 0, '摆料理摊耗尽购买的 2 份鲜蔬');
+
+    // F) 菜农鱼调 life_deals 收回 12 + 30 = 42 元真入账，且再调一次严格幂等不重复加钱
+    const cashBeforeDeals = wSeller.state.money.cash;
+    const dealsRes1 = await sellerDeals.handler({});
+    assert.match(dealsRes1.text, /进账 \+12 元/);
+    assert.match(dealsRes1.text, /进账 \+30 元/);
+    assert.match(dealsRes1.text, /本次新入账 \+42 元/);
+    assert.equal(wSeller.state.money.cash, cashBeforeDeals + 42, '菜农必须真正收到 42 元货款');
+
+    const dealsRes2 = await sellerDeals.handler({});
+    assert.equal(wSeller.state.money.cash, cashBeforeDeals + 42, '重复查 life_deals 绝不能重复加钱');
+    assert.doesNotMatch(dealsRes2.text, /本次新入账/);
+
+    // G) 验证 market 面板接口与当前 panel UI 讲解内容
+    const mktSnap = await wSeller.webUi().invoke('market', 'snapshot');
+    assert.equal(mktSnap.seeds.length, 8);
+    assert.equal(mktSnap.stallRules.length, 5);
+    assert.equal(mktSnap.deals.some((d) => d.income === 30), true);
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const panelSrc = readFileSync(new URL(`../${pkg.cortico.webUiClient}`, import.meta.url), 'utf8');
+    assert.match(panelSrc, /market:\s*\{/, '面板必须包含 market 页签');
+    assert.match(panelSrc, /怎么玩转菜园、储物篮与鱼市街/);
+    assert.match(panelSrc, /五大赛道门槛、本钱明细与常用对话示范/);
+    assert.doesNotMatch(panelSrc, /\.slice\(11,\s*16\)|\.slice\(0,\s*16\)/);
+
+    await wSeller.stop();
+    await wBuyer.stop();
+  } finally {
+    srv.close();
+    rmSync(dirSeller, { recursive: true, force: true });
+    rmSync(dirBuyer, { recursive: true, force: true });
   }
 });
