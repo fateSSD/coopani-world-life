@@ -22,7 +22,7 @@ import { JOBS, certOf, jobAllowedAt } from './jobs.ts';
 import {
   BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown,
   readPendingRequests, archivePendingRequest, fetchTownStalls, buyTownStall, joinTown, readMeetUid,
-  pickTownStreet, postTownStall, fetchTownDeals, ackTownDeals, findStreetProfile, formatStreetMods, normStallEffects, formatStallEffects,
+  pickTownStreet, postTownStall, fetchTownDeals, ackTownDeals, findStreetProfile, formatStreetMods, normStallEffects, resolveStallEffects, formatStallEffects,
   type JourneyView, type TownView, type TownStall, type TownDeal, type StreetMods, type StallEffects,
 } from './bridge.ts';
 
@@ -288,9 +288,8 @@ export class LifeWorld implements World {
   private marketShowcaseLine(limit = 3): string {
     if (!this.otherStallsCache.length) return '';
     return this.otherStallsCache.slice(0, limit).map((st) => {
-      const fx = formatStallEffects(st.effects);
-      const tag = fx ? `${fx}（含邻里互动）` : '饱腹+36/娱乐+12/社交+18';
-      return `${st.seller}的「${st.item}」${st.price}元（${tag}）`;
+      const fx = formatStallEffects(resolveStallEffects(st.effects, st.price));
+      return `${st.seller}的「${st.item}」${st.price}元（${fx}）`;
     }).join('；');
   }
 
@@ -1133,7 +1132,7 @@ export class LifeWorld implements World {
           clean: Math.round(this.state.vitals.clean),
           fun: Math.round(this.state.vitals.fun),
           social: Math.round(this.state.vitals.social),
-          fitness: Math.round(this.state.fitness),
+          fitness: Math.round(this.state.fitness * 100) / 100,
         },
         settled: this.recentSettled.slice(-40),
         town: { id: this.town.id, name: this.town.name, weather: w.sky },
@@ -2384,7 +2383,7 @@ export class LifeWorld implements World {
           if (remote.ok && remote.stalls.length) {
             return {
               text: `${winTxt}鱼市街今天摆出来的摊位（买街坊摊货会额外附赠邻里社交与好心情）：${remote.stalls.map((st) => {
-                const fx = formatStallEffects(st.effects) || '饱腹+36/娱乐+12/社交+18';
+                const fx = formatStallEffects(resolveStallEffects(st.effects, st.price));
                 const noteTxt = st.note ? ` · 「${st.note}」` : '';
                 return `${st.item} ${st.price}元（${st.seller}，id:${st.id}，${fx}${noteTxt}）`;
               }).join('；')}。${boardTxt}`,
@@ -2429,20 +2428,16 @@ export class LifeWorld implements World {
             price = bought.price || match.price;
             seller = bought.seller || match.seller;
             isFreshVeg = Boolean(bought.freshVeg ?? match.freshVeg);
-            const stallEffects = normStallEffects(bought.effects ?? match.effects, price || match.price);
-            if (stallEffects) {
-              vitalDeltas = {
-                food: stallEffects.food ?? 0,
-                energy: stallEffects.energy ?? 0,
-                clean: stallEffects.clean ?? 0,
-                fun: stallEffects.fun ?? 0,
-                social: Math.min(25, (stallEffects.social ?? 0) + 8),
-              };
-              knowGain = stallEffects.knowledge ?? 0;
-              fitGain = stallEffects.fitness ?? 0;
-            } else {
-              vitalDeltas = { food: 36, fun: 12, social: 18 };
-            }
+            const stallEffects = resolveStallEffects(bought.effects ?? match.effects, price || match.price);
+            vitalDeltas = {
+              food: stallEffects.food ?? 0,
+              energy: stallEffects.energy ?? 0,
+              clean: stallEffects.clean ?? 0,
+              fun: stallEffects.fun ?? 0,
+              social: Math.min(80, (stallEffects.social ?? 0) + 4),
+            };
+            knowGain = Number((stallEffects.knowledge ?? 0).toFixed(2));
+            fitGain = Number((stallEffects.fitness ?? 0).toFixed(2));
             this.otherStallsCache = this.otherStallsCache
               .map((st) => (st.id === match.id ? { ...st, stock: st.stock - 1 } : st))
               .filter((st) => st.stock > 0);
@@ -2487,11 +2482,11 @@ export class LifeWorld implements World {
           this.state.moodlets = this.state.moodlets.filter((m) => m.source !== 'lonely');
         }
         if (knowGain > 0) {
-          this.state.knowledge = Math.min(KNOWLEDGE_MAX, this.state.knowledge + knowGain);
+          this.state.knowledge = Math.round(Math.min(KNOWLEDGE_MAX, this.state.knowledge + knowGain) * 100) / 100;
           gainParts.push(`见识+${knowGain}`);
         }
         if (fitGain > 0) {
-          this.state.fitness = Math.min(FITNESS_MAX, this.state.fitness + fitGain);
+          this.state.fitness = Math.round(Math.min(FITNESS_MAX, this.state.fitness + fitGain) * 100) / 100;
           gainParts.push(`体质+${fitGain}`);
         }
         if (isRemote) {
@@ -2536,7 +2531,7 @@ export class LifeWorld implements World {
       description:
         '去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。'
         + '价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成；'
-        + '还可传 effects 自己分配商品给买家带来的属性回复（总点数随定价给 40–90 预算，五维每项 1:1 最多 55，见识每 1 点占 6 预算最多 6，体质每 1 点占 8 预算最多 4，超出预算按比例折算）。',
+        + '还可传 effects 自己分配商品给买家带来的属性回复（东西越贵可分配点数越多，每 1 元有 2 点预算：可换五维 +2、见识 +0.1 或体质 +0.05，不填则按定价自动分配饱腹与娱乐，超出预算按比例折算）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -2548,16 +2543,16 @@ export class LifeWorld implements World {
           note: { type: 'string', description: '摊头吆喝的一句话（可选）。' },
           effects: {
             type: 'object',
-            description: '可选：自定义商品给买家回复的属性点数（总预算随定价 40–90；五维每项 1:1 上限 55，knowledge 见识 1:6 上限 6，fitness 体质 1:8 上限 4）。',
+            description: '可选：自定义商品给买家回复的属性点数（每 1 元定价 = 2 点预算：五维每 +1 占 1 点上限 80，knowledge 见识每 +0.1 占 2 点上限 10，fitness 体质每 +0.05 占 2 点上限 5）。',
             additionalProperties: false,
             properties: {
-              food: { type: 'number', description: '饱腹回复点数（0–55）' },
-              energy: { type: 'number', description: '精力回复点数（0–55）' },
-              clean: { type: 'number', description: '清洁回复点数（0–55）' },
-              fun: { type: 'number', description: '娱乐回复点数（0–55）' },
-              social: { type: 'number', description: '社交回复点数（0–55）' },
-              knowledge: { type: 'number', description: '见识回复点数（0–6，每点占 6 预算）' },
-              fitness: { type: 'number', description: '体质回复点数（0–4，每点占 8 预算）' },
+              food: { type: 'number', description: '饱腹回复点数（0–80）' },
+              energy: { type: 'number', description: '精力回复点数（0–80）' },
+              clean: { type: 'number', description: '清洁回复点数（0–80）' },
+              fun: { type: 'number', description: '娱乐回复点数（0–80）' },
+              social: { type: 'number', description: '社交回复点数（0–80）' },
+              knowledge: { type: 'number', description: '见识回复点数（0–10，每 0.1 点占 2 预算）' },
+              fitness: { type: 'number', description: '体质回复点数（0–5，每 0.05 点占 2 预算）' },
             },
           },
         },
@@ -2584,8 +2579,8 @@ export class LifeWorld implements World {
           if (!mine.length) return { text: '鱼市街上目前还没有你挂着的摊子。想摆摊就传 item 和 price（还可传 effects 自定义买家回复点数）。' };
           return {
             text: `鱼市街你现在挂着的摊子：${mine.map((s) => {
-              const fx = formatStallEffects(s.effects);
-              return `${s.item}（${s.price}元，剩${s.stock}份${s.freshVeg ? '·鲜蔬' : ''}${fx ? `，${fx}` : ''}，id:${s.id}）`;
+              const fx = formatStallEffects(resolveStallEffects(s.effects, s.price));
+              return `${s.item}（${s.price}元，剩${s.stock}份${s.freshVeg ? '·鲜蔬' : ''}，${fx}，id:${s.id}）`;
             }).join('；')}。`,
           };
         }
@@ -3701,8 +3696,8 @@ export class LifeWorld implements World {
         at: now.toISOString(),
         herNow: at.toISOString(),
         /* 见识与体质。面板那格读它 —— `snapshot()` 里也有，但面板走的是这一份。 */
-        knowledge: Math.round(this.state.knowledge),
-        fitness: Math.round(this.state.fitness),
+        knowledge: Math.round(this.state.knowledge * 10) / 10,
+        fitness: Math.round(this.state.fitness * 100) / 100,
         dayPart: DAYPART_LABEL[dayPart(at)],
         clock: `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
         clockGapHours: Math.round(clockGapHours(j, now) * 10) / 10,

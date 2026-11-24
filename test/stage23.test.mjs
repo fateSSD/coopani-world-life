@@ -632,6 +632,7 @@ test('recentVisits 连续 8 天只计数近 7 天，relation 面板修复 [objec
   assert.doesNotMatch(panelCode, /el\(\s*['"]span['"]\s*,\s*['"]lf-chip['"]\s*,\s*day\s*\)/, '禁止再把 day 对象直接传进 .lf-chip');
   assert.match(panelCode, /day\?\.date|day\.date/, '胶囊应提取 day.date');
   assert.match(panelCode, /d\.otherStalls/, 'relation 面板应展示鱼市街街坊在售摊位');
+  assert.match(panelCode, /resolveStallEffects/, '面板应按摊位价格动态推导默认属性');
 });
 
 test('鱼市街摆摊自定义 effects 与买摊叠加五维/见识/体质/邻里社交及好心情 + 状态/黑板报直接曝光摊位', async () => {
@@ -662,19 +663,28 @@ test('鱼市街摆摊自定义 effects 与买摊叠加五维/见识/体质/邻�
       seller: '阿青',
       kind: 'goods',
       item: '红豆糯米糕',
-      price: 64,
+      price: 50,
       stock: 2,
       freshVeg: false,
       note: '刚蒸好的',
-      effects: { food: 24, fun: 15, social: 20, knowledge: 2, fitness: 1 },
+      effects: { food: 20, fun: 12, social: 28, knowledge: 1, fitness: 0.5 },
     },
     {
       id: 'st-plain',
       seller: '老周',
       kind: 'goods',
       item: '手工芝麻饼',
-      price: 16,
+      price: 40,
       stock: 2,
+      freshVeg: false,
+    },
+    {
+      id: 'st-cheap',
+      seller: '小虾',
+      kind: 'goods',
+      item: '糖炒栗子',
+      price: 5,
+      stock: 3,
       freshVeg: false,
     },
   ];
@@ -761,47 +771,61 @@ test('鱼市街摆摊自定义 effects 与买摊叠加五维/见识/体质/邻�
       await new Promise((r) => setTimeout(r, 25));
     }
     const bulletin = world.envPromptVars()['life.bulletin'];
-    assert.match(bulletin, /阿青的「红豆糯米糕」64元/, 'envPrompt life.bulletin 应直曝在售摊位');
+    assert.match(bulletin, /阿青的「红豆糯米糕」50元/, 'envPrompt life.bulletin 应直曝在售摊位');
+    assert.match(bulletin, /手工芝麻饼」40元（饱腹\+56\/娱乐\+24）/, '无 effects 的高价摊位应按 2x 预算自动分配');
+    assert.match(bulletin, /糖炒栗子」5元（饱腹\+7\/娱乐\+3）/, '无 effects 的低价摊位按定价线性缩放');
 
     const statusTool = world.tools().find((t) => t.name === 'life_status');
     const stText = (await statusTool.handler({})).text;
     assert.match(stText, /鱼市街在售摊位：.*红豆糯米糕/, 'life_status 应直接展示鱼市街在售摊位');
 
     const relSnap = await world.webUi().invoke('relation', 'snapshot');
-    assert.equal(relSnap.otherStalls.length, 2);
+    assert.equal(relSnap.otherStalls.length, 3);
 
     const stallTool = world.tools().find((t) => t.name === 'life_stall');
+    const fitStallRes = await stallTool.handler({
+      item: '握力圈',
+      price: 1,
+      stock: 2,
+      effects: { fitness: 0.05 },
+    });
+    assert.match(fitStallRes.text, /体质\+0\.05/, '1 元摊位应精确支持 +0.05 体质');
+
     const stallRes = await stallTool.handler({
       item: '手擀面',
       price: 1,
       stock: 2,
-      effects: { food: 55, fun: 55, knowledge: 6, fitness: 4 },
+      effects: { food: 80, fun: 80, knowledge: 10, fitness: 5 },
     });
     assert.match(stallRes.text, /手擀面/);
-    const posted = stalls.find((s) => s.id === 'st-mine');
+    const postedList = stalls.filter((s) => s.id === 'st-mine');
+    const posted = postedList[postedList.length - 1];
     assert.ok(posted?.effects, '挂摊应透传自定义 effects');
     const postedCost = (posted.effects.food || 0) + (posted.effects.energy || 0) + (posted.effects.clean || 0)
       + (posted.effects.fun || 0) + (posted.effects.social || 0)
-      + (posted.effects.knowledge || 0) * 6 + (posted.effects.fitness || 0) * 8;
-    assert.ok(postedCost > 0 && postedCost <= 41, `1 元挂摊加权点数应在 41 预算内，实际 ${postedCost}`);
+      + (posted.effects.knowledge || 0) * 20 + (posted.effects.fitness || 0) * 40;
+    assert.ok(postedCost > 0 && postedCost <= 2.001, `1 元挂摊加权点数应在 2 预算内且不归零，实际 ${postedCost}`);
 
     const buyTool = world.tools().find((t) => t.name === 'life_buy');
     const buyFxRes = await buyTool.handler({ stall_id: 'st-fx' });
     assert.match(buyFxRes.text, /好心情/);
+    assert.match(buyFxRes.text, /体质\+0\.5/);
     const s1 = store.load(nowFixed).state;
-    assert.equal(Math.round(s1.vitals.food), 42, '自定义 food +24');
-    assert.equal(Math.round(s1.vitals.fun), 35, '自定义 fun +15');
-    assert.equal(Math.round(s1.vitals.social), 35, 'social 20 叠邻里 +8 应封顶到 +25（10 -> 35）');
-    assert.equal(Math.round(s1.knowledge), 7, '自定义 knowledge +2');
-    assert.equal(Math.round(s1.fitness), 26, '自定义 fitness +1');
+    assert.equal(Math.round(s1.vitals.food), 38, '自定义 food +20');
+    assert.equal(Math.round(s1.vitals.fun), 32, '自定义 fun +12');
+    assert.equal(Math.round(s1.vitals.social), 42, 'social 28 叠邻里寒暄 +4 => +32（10 -> 42）');
+    assert.equal(s1.knowledge, 6, '自定义 knowledge +1');
+    assert.equal(s1.fitness, 25.5, '自定义 fitness +0.5 精确保存为小数');
+    const nowSnap1 = await world.webUi().invoke('now', 'snapshot');
+    assert.equal(nowSnap1.fitness, 25.5, '面板快照应保留小数体质 25.5');
     assert.equal(s1.moodlets.some((m) => m.source === 'lonely'), false, '社交回到 >= 30 应清除 lonely');
     assert.equal(s1.moodlets.some((m) => m.source === 'town-buy' && m.kind === 'good'), true, '买摊应挂正向心情条');
 
     await buyTool.handler({ stall_id: 'st-plain' });
     const s2 = store.load(nowFixed).state;
-    assert.equal(Math.round(s2.vitals.food), 78, '无 effects 摊位默认 food +36');
-    assert.equal(Math.round(s2.vitals.fun), 47, '无 effects 摊位默认 fun +12');
-    assert.equal(Math.round(s2.vitals.social), 53, '无 effects 摊位默认 social +10 再叠 +8 = +18');
+    assert.equal(Math.round(s2.vitals.food), 94, '40 元无 effects 摊位按价默认 food +56（38 -> 94）');
+    assert.equal(Math.round(s2.vitals.fun), 56, '40 元无 effects 摊位按价默认 fun +24（32 -> 56）');
+    assert.equal(Math.round(s2.vitals.social), 46, '另叠邻里寒暄 +4（42 -> 46）');
     assert.ok(s2.vitals.food >= LOW + 15 && !s2.nagged.food, '回 >= LOW+15 应清 food 的 nagged');
     assert.ok(s2.vitals.fun >= LOW + 15 && !s2.nagged.fun, '回 >= LOW+15 应清 fun 的 nagged');
     assert.ok(s2.vitals.social >= LOW + 15 && !s2.nagged.social, '回 >= LOW+15 应清 social 的 nagged');

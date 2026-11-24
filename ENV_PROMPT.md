@@ -36,7 +36,7 @@
 | `life_move` | 换住处档位（城中村/老小区/新小区/别墅区，押二）或换到同城其他街道（不同街道有介绍与属性增益/减益） |
 | `life_out` | 出门去某条街走走 |
 | `life_buy` | 去早市、张掖路尾货或鱼市街摊位买货并看街口黑板报（买街坊摊位还叠邻里社交与好心情） |
-| `life_stall` / `life_deals` | 在鱼市街摆摊挂货（可自配 `effects` 给买家回属性），以及看谁买走了自己的摊货（成交回执） |
+| `life_stall` / `life_deals` | 在鱼市街摆摊挂货（定价越高可自配 `effects` 给买家回属性点数越多），以及看谁买走了自己的摊货（成交回执） |
 | `life_habit` / `life_watch` / `life_want` / `life_ask` / `life_pledge` | 记常态、留意的事、想要的东西、悬着的事、对他的承诺 |
 | `life_gift` | 收下他留给你的小礼物（每天最多一件） |
 | `life_diary_write` / `life_diary_read` | 写/读第一人称生活日记（若开着旅行扩展且人在外地，写 `journey_diary_write`） |

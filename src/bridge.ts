@@ -729,63 +729,122 @@ export const STALL_EFFECT_LABEL: Record<StallEffectKey, string> = {
   fitness: '体质',
 };
 
-export const STALL_EFFECT_LIMITS: Record<StallEffectKey, { max: number; weight: number }> = {
-  food: { max: 55, weight: 1 },
-  energy: { max: 55, weight: 1 },
-  clean: { max: 55, weight: 1 },
-  fun: { max: 55, weight: 1 },
-  social: { max: 55, weight: 1 },
-  knowledge: { max: 6, weight: 6 },
-  fitness: { max: 4, weight: 8 },
+export const STALL_EFFECT_SHORT: Record<StallEffectKey, string> = {
+  food: '饱',
+  energy: '精',
+  clean: '洁',
+  fun: '娱',
+  social: '社',
+  knowledge: '识',
+  fitness: '体',
+};
+
+export const STALL_EFFECT_LIMITS: Record<StallEffectKey, { max: number; weight: number; step: number }> = {
+  food: { max: 80, weight: 1, step: 1 },
+  energy: { max: 80, weight: 1, step: 1 },
+  clean: { max: 80, weight: 1, step: 1 },
+  fun: { max: 80, weight: 1, step: 1 },
+  social: { max: 80, weight: 1, step: 1 },
+  knowledge: { max: 10, weight: 20, step: 0.1 },
+  fitness: { max: 5, weight: 40, step: 0.05 },
 };
 
 export function stallEffectBudget(price: number): number {
   const p = Math.max(1, Math.min(999, Math.round(Number(price) || 1)));
-  return Math.max(40, Math.min(90, Math.round(35 + Math.sqrt(p) * 6)));
+  if (p <= 150) return p * 2;
+  return Math.min(450, 300 + Math.round(Math.sqrt(p - 150) * 10));
+}
+
+function quantizeEffect(val: number, step: number, mode: 'round' | 'floor' = 'round'): number {
+  if (!Number.isFinite(val) || val <= 0) return 0;
+  const units = mode === 'floor'
+    ? Math.floor((val + 1e-9) / step)
+    : Math.round(val / step);
+  return Math.round(units * step * 100) / 100;
 }
 
 export function normStallEffects(raw: unknown, price = 15): StallEffects | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const src = raw as Record<string, unknown>;
   const picked: StallEffects = {};
+  const origCost: Partial<Record<StallEffectKey, number>> = {};
   let totalCost = 0;
-  for (const [k, rule] of Object.entries(STALL_EFFECT_LIMITS) as [StallEffectKey, { max: number; weight: number }][]) {
-    const v = Math.round(Number(src[k] ?? 0));
-    if (!Number.isFinite(v) || v <= 0) continue;
+  for (const [k, rule] of Object.entries(STALL_EFFECT_LIMITS) as [StallEffectKey, { max: number; weight: number; step: number }][]) {
+    const v = quantizeEffect(Number(src[k] ?? 0), rule.step, 'round');
+    if (v <= 0) continue;
     const clamped = Math.min(rule.max, v);
     picked[k] = clamped;
-    totalCost += clamped * rule.weight;
+    const c = clamped * rule.weight;
+    origCost[k] = c;
+    totalCost += c;
   }
   const keys = Object.keys(picked) as StallEffectKey[];
   if (!keys.length) return undefined;
   const budget = stallEffectBudget(price);
-  if (totalCost > budget) {
+  if (totalCost > budget + 1e-6) {
     const ratio = budget / totalCost;
     let remain = budget;
     for (const k of keys) {
       const rule = STALL_EFFECT_LIMITS[k];
-      const scaled = Math.min(rule.max, Math.floor((picked[k] ?? 0) * ratio));
-      const maxAfford = Math.floor(remain / rule.weight);
+      const scaled = Math.min(rule.max, quantizeEffect((picked[k] ?? 0) * ratio, rule.step, 'floor'));
+      const maxAfford = quantizeEffect((remain + 1e-9) / rule.weight, rule.step, 'floor');
       const finalVal = Math.max(0, Math.min(scaled, maxAfford));
       if (finalVal > 0) {
         picked[k] = finalVal;
-        remain -= finalVal * rule.weight;
+        remain = Math.max(0, Math.round((remain - finalVal * rule.weight) * 100) / 100);
       } else {
         delete picked[k];
+      }
+    }
+    if (!Object.keys(picked).length && remain > 0) {
+      const byPriority = [...keys].sort((a, b) => (origCost[b] ?? 0) - (origCost[a] ?? 0));
+      for (const k of byPriority) {
+        const rule = STALL_EFFECT_LIMITS[k];
+        if (remain + 1e-9 >= rule.step * rule.weight) {
+          const finalVal = Math.min(rule.max, quantizeEffect((remain + 1e-9) / rule.weight, rule.step, 'floor'));
+          if (finalVal > 0) {
+            picked[k] = finalVal;
+            break;
+          }
+        }
       }
     }
   }
   return Object.keys(picked).length ? picked : undefined;
 }
 
-export function formatStallEffects(effects?: StallEffects | null): string {
+export function defaultStallEffects(price: number): StallEffects {
+  const b = stallEffectBudget(price);
+  const food = Math.min(80, Math.max(1, Math.round(b * 0.7)));
+  const r1 = Math.max(0, b - food);
+  const fun = Math.min(60, r1);
+  const r2 = Math.max(0, r1 - fun);
+  const energy = Math.min(60, r2);
+  const r3 = Math.max(0, r2 - energy);
+  const social = Math.min(60, r3);
+  const out: StallEffects = { food };
+  if (fun > 0) out.fun = fun;
+  if (energy > 0) out.energy = energy;
+  if (social > 0) out.social = social;
+  return out;
+}
+
+export function resolveStallEffects(effects: StallEffects | undefined | null, price: number): StallEffects {
+  return normStallEffects(effects, price) ?? defaultStallEffects(price);
+}
+
+export function formatStallEffects(effects?: StallEffects | null, opts: { compact?: boolean } = {}): string {
   if (!effects) return '';
+  const labels = opts.compact ? STALL_EFFECT_SHORT : STALL_EFFECT_LABEL;
+  const sep = opts.compact ? ' ' : '/';
   const parts: string[] = [];
   for (const k of Object.keys(STALL_EFFECT_LIMITS) as StallEffectKey[]) {
-    const v = Math.round(Number(effects[k] ?? 0));
-    if (v > 0) parts.push(`${STALL_EFFECT_LABEL[k]}+${v}`);
+    const raw = Number(effects[k] ?? 0);
+    if (!Number.isFinite(raw) || raw <= 0) continue;
+    const v = Number(raw.toFixed(2));
+    if (v > 0) parts.push(`${labels[k]}+${v}`);
   }
-  return parts.join('/');
+  return parts.join(sep);
 }
 
 export interface TownStall {

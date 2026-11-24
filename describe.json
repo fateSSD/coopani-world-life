@@ -431,7 +431,7 @@
     },
     {
       "name": "life_stall",
-      "description": "去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成；还可传 effects 自己分配商品给买家带来的属性回复（总点数随定价给 40–90 预算，五维每项 1:1 最多 55，见识每 1 点占 6 预算最多 6，体质每 1 点占 8 预算最多 4，超出预算按比例折算）。",
+      "description": "去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位）。价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效）；做的是新鲜蔬果时可标 fresh_veg: true 让买回家下厨的人有香气加成；还可传 effects 自己分配商品给买家带来的属性回复（东西越贵可分配点数越多，每 1 元有 2 点预算：可换五维 +2、见识 +0.1 或体质 +0.05，不填则按定价自动分配饱腹与娱乐，超出预算按比例折算）。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -458,36 +458,36 @@
           },
           "effects": {
             "type": "object",
-            "description": "可选：自定义商品给买家回复的属性点数（总预算随定价 40–90；五维每项 1:1 上限 55，knowledge 见识 1:6 上限 6，fitness 体质 1:8 上限 4）。",
+            "description": "可选：自定义商品给买家回复的属性点数（每 1 元定价 = 2 点预算：五维每 +1 占 1 点上限 80，knowledge 见识每 +0.1 占 2 点上限 10，fitness 体质每 +0.05 占 2 点上限 5）。",
             "additionalProperties": false,
             "properties": {
               "food": {
                 "type": "number",
-                "description": "饱腹回复点数（0–55）"
+                "description": "饱腹回复点数（0–80）"
               },
               "energy": {
                 "type": "number",
-                "description": "精力回复点数（0–55）"
+                "description": "精力回复点数（0–80）"
               },
               "clean": {
                 "type": "number",
-                "description": "清洁回复点数（0–55）"
+                "description": "清洁回复点数（0–80）"
               },
               "fun": {
                 "type": "number",
-                "description": "娱乐回复点数（0–55）"
+                "description": "娱乐回复点数（0–80）"
               },
               "social": {
                 "type": "number",
-                "description": "社交回复点数（0–55）"
+                "description": "社交回复点数（0–80）"
               },
               "knowledge": {
                 "type": "number",
-                "description": "见识回复点数（0–6，每点占 6 预算）"
+                "description": "见识回复点数（0–10，每 0.1 点占 2 预算）"
               },
               "fitness": {
                 "type": "number",
-                "description": "体质回复点数（0–4，每点占 8 预算）"
+                "description": "体质回复点数（0–5，每 0.05 点占 2 预算）"
               }
             }
           }

@@ -1,5 +1,16 @@
 # 变更记录
 
+## 1.2.1 — 2026-11-24（鱼市街按价线性兑换与小数加成 + 全盘 UI 精简）
+
+- **鱼市街商品按定价线性分配属性预算（+1 元 = 2 点预算）**：
+  - `src/bridge.ts` 同步 `sight-cf` 线性预算与小数步进规则：`1–150 元` 给 `price * 2` 点预算（超过 `150 元` 渐进至 `450` 上限），五维 `1:1` 上限 `80`、`knowledge` 见识 `0.1` 占 `2` 预算（上限 `10`）、`fitness` 体质 `0.05` 占 `2` 预算（上限 `5`），超预算自动量化折算并保底防归零；
+  - 新增 `defaultStallEffects(price)` / `resolveStallEffects()`，未传 `effects` 的在售摊位按实际售价自动分配（如 `5 元 → 饱腹+7/娱乐+3`、`50 元 → 饱腹+70/娱乐+30`），买摊固定附赠邻里寒暄 `+4` 社交与 3 小时正向好心情；
+  - `src/state.ts`（`snapshot()`）与 `src/world.ts`（`panelSnapshot()`、`broadcastLife()`）保留 `knowledge` 1 位、`fitness` 2 位小数精度，同步更新 `describe.json`、`life_stall` 与 `ENV_PROMPT.md`。
+- **面板 UI 全盘精简（`web/panel-1.2.1.js`，零功能丢失）**：
+  - `relation` 页签合并「鱼市街」主卡并改为单行紧凑摊位清单（左侧商品名/卖家/鲜蔬/短词效果标签，右侧价格与库存，悬停看吆喝与完整说明），陪伴胶囊改为 `MM-DD` 短日期；
+  - `now` 页签将 `jobCard` 合入四格概览下方胶囊、`bodyCard`/`moodCard` 合并为「身心与挂念」、住处与街道收进 `<details>` 折叠卡、移除底部与 `wants`/`relation` 重复的 7 张卡片、底部状态灯说明与问题反馈收进轻量折叠栏；`day`/`wants`/`diary`/`library` 同步减噪。
+- **测试**：`node --check web/panel-1.2.1.js` 通过、`test/smoke.mjs` **355/355** 通过、`test/*.test.mjs` **69/69** 通过。
+
 ## 1.2.0 — 2026-11-23（游轮双栖与街道风貌 + 最近陪伴双修 + 鱼市街自主配点与曝光）
 
 - **游轮双栖活动与三项新活动**：
