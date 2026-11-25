@@ -975,10 +975,12 @@ export async function buyTownStall(
   townUrl: string | readonly string[],
   stallId: string,
   buyer: string,
-  opts: { timeoutMs?: number; buyerUid?: string; note?: string } = {},
+  opts: { timeoutMs?: number; buyerUid?: string; note?: string; isErrand?: boolean } = {},
 ): Promise<{ ok: boolean; kind?: 'goods' | 'errand'; item?: string; price?: number; seller?: string; freshVeg?: boolean; category?: StallCategory; effects?: StallEffects; reason?: string }> {
   const roots = parseTownUrls(townUrl);
   if (!roots.length) return { ok: false, reason: '没配城服务器地址' };
+  const isErrand = Boolean(opts.isErrand);
+  const netFailReason = isErrand ? '鱼市街委托板暂时连不上，稍后再试（没有误买任何摊货）。' : '市集连不上';
   const { res } = await tryTownFetch(
     roots,
     '/town/buy',
@@ -994,15 +996,23 @@ export async function buyTownStall(
     },
     opts.timeoutMs ?? 2500,
   );
-  if (!res) return { ok: false, reason: '市集连不上' };
+  if (!res) return { ok: false, reason: netFailReason };
   try {
     const j: any = await res.json().catch(() => ({}));
     if (!res.ok || !j?.ok) {
-      const errMap: Record<string, string> = {
-        'pair limit': '今天已经在这位街坊摊上买过两单了，明天再来逛吧。',
-        'sold out': '这样货刚好被人买光了。',
-        'own stall': '不能自己买自己挂出去的摊货哦。',
-      };
+      const errMap: Record<string, string> = isErrand
+        ? {
+            'pair limit': '今天和这位街坊在鱼市街的往来（买摊货与接委托合计）已达每日 2 单上限，明天再来帮忙吧。',
+            'sold out': '这单农牧代管委托刚好被别的街坊抢先接走了。',
+            'own stall': '这是你自己发出去的农牧代管委托，不能自己接自己的单哦。',
+            'not found': '没在鱼市街找到这单委托（可能已过期或刚被接走）。',
+          }
+        : {
+            'pair limit': '今天已经在这位街坊摊上买过两单了，明天再来逛吧。',
+            'sold out': '这样货刚好被人买光了。',
+            'own stall': '不能自己买自己挂出去的摊货哦。',
+            'not found': '鱼市街上没找着这个摊位（可能已卖光或过期下架）。',
+          };
       const rawErr = typeof j?.error === 'string' ? j.error : '';
       return { ok: false, reason: errMap[rawErr] || rawErr || `市集返回 ${res.status}` };
     }
@@ -1022,7 +1032,7 @@ export async function buyTownStall(
       ...(effects ? { effects } : {}),
     };
   } catch {
-    return { ok: false, reason: '市集连不上' };
+    return { ok: false, reason: netFailReason };
   }
 }
 

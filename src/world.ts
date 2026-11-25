@@ -134,6 +134,127 @@ function throwRollback(original: unknown, rollbackErrors: readonly unknown[]): n
   throw original;
 }
 
+/** 统一全角括号、冒号、空格与外层引号/书名号，避免大模型或手输标点差异导致鱼市街匹配失效。 */
+function normalizeTownText(raw: string): string {
+  let s = String(raw || '').trim()
+    .replace(/\u3000/g, ' ')
+    .replace(/（/g, '(')
+    .replace(/）/g, ')')
+    .replace(/：/g, ':')
+    .replace(/\s+/g, ' ')
+    .trim();
+  for (let i = 0; i < 3; i += 1) {
+    const stripped = s.replace(/^[`"'「『【《]+/, '').replace(/[`"'」』】》]+$/, '').trim();
+    if (stripped === s) break;
+    s = stripped;
+  }
+  return s;
+}
+
+/** 剥除 `id:` / `编号:` 等展示前缀与外层包裹括号，还原裸编号或裸名称。 */
+function stripStallIdPrefix(raw: string): string {
+  let s = normalizeTownText(raw);
+  if ((s.startsWith('(') && s.endsWith(')')) || (s.startsWith('[') && s.endsWith(']'))) {
+    const inner = s.slice(1, -1).trim();
+    if (/^(?:邻里)?(?:委托|摊位|单号|编号)?\s*(?:stall_?id|errand_?id|id|编号)\s*[:=#]?/i.test(inner) || /^[a-f0-9]{6,}$/i.test(inner)) {
+      s = inner;
+    }
+  }
+  s = s.replace(/^(?:邻里)?(?:委托|摊位|单号|编号)?\s*(?:stall_?id|errand_?id|id|编号)\s*[:=#]?\s*/i, '').trim();
+  return normalizeTownText(s);
+}
+
+/** 判断入参是否明显指向远程鱼市街编号或邻里委托（此类输入未命中绝不可落回本地早市）。 */
+function looksLikeRemoteOrErrandPick(raw: string): boolean {
+  const s = normalizeTownText(raw);
+  if (!s) return false;
+  if (/[a-f0-9]{8,}/i.test(s)) return true;
+  if (/^[a-f0-9]{6,}$/i.test(stripStallIdPrefix(s))) return true;
+  if (/^\s*(?:邻里)?(?:委托|摊位|单号|编号)?\s*(?:stall_?id|errand_?id|id|编号)\s*[:=#]/i.test(s)) return true;
+  if (/农牧代管|邻里委托|代管委托|委托单|接单|委托编号|最短|最快/.test(s)) return true;
+  return false;
+}
+
+/** 按裸 ID、内嵌 16 位 hex ID、短前缀、归一化标题与委托快捷意图匹配鱼市街在架条目。 */
+function matchTownStall(
+  stalls: readonly TownStall[],
+  rawPick: string,
+  opts: { errandsOnly?: boolean; isMyErrand?: (id: string) => boolean } = {},
+): { match: TownStall | null; ambiguous?: TownStall[] } {
+  const pool = opts.errandsOnly ? stalls.filter((s) => s.kind === 'errand') : [...stalls];
+  if (!pool.length) return { match: null };
+  const isMine = opts.isMyErrand ?? (() => false);
+  const preferNonMine = (list: readonly TownStall[]): TownStall[] => {
+    const nonMine = list.filter((s) => s.kind !== 'errand' || !isMine(s.id));
+    return nonMine.length ? nonMine : [...list];
+  };
+
+  const cleaned = stripStallIdPrefix(rawPick);
+  const lower = cleaned.toLowerCase();
+
+  // P1：精确匹配 id（忽略大小写）
+  if (lower) {
+    const p1 = pool.filter((s) => s.id.toLowerCase() === lower);
+    if (p1.length === 1) return { match: p1[0] };
+    if (p1.length > 1) return { match: preferNonMine(p1)[0] };
+  }
+
+  // P2：从入参任意位置提取 16 位 hex ID
+  const hexIds = normalizeTownText(rawPick).match(/(?<![a-f0-9])[a-f0-9]{16}(?![a-f0-9])/gi) ?? [];
+  if (hexIds.length) {
+    const p2: TownStall[] = [];
+    for (const h of hexIds) {
+      const hl = h.toLowerCase();
+      for (const st of pool) {
+        if (st.id.toLowerCase() === hl && !p2.some((x) => x.id === st.id)) p2.push(st);
+      }
+    }
+    if (p2.length === 1) return { match: p2[0] };
+    if (p2.length > 1) return { match: null, ambiguous: p2 };
+  }
+
+  // P3：6–15 位 hex 前缀唯一匹配
+  if (/^[a-f0-9]{6,15}$/i.test(cleaned)) {
+    const p3 = pool.filter((s) => s.id.toLowerCase().startsWith(lower));
+    if (p3.length === 1) return { match: p3[0] };
+    if (p3.length > 1) return { match: null, ambiguous: p3 };
+  }
+
+  // P4：归一化名称匹配（兼容全半角括号与空格差异）
+  const normClean = normalizeTownText(cleaned);
+  if (normClean) {
+    const p4 = pool.filter((s) => normalizeTownText(s.item) === normClean);
+    if (p4.length) return { match: preferNonMine(p4)[0] };
+  }
+
+  // P5：委托快捷匹配（最短/最快，或雇主名/标题片段唯一命中）
+  const errands = pool.filter((s) => s.kind === 'errand');
+  if (errands.length && (opts.errandsOnly || looksLikeRemoteOrErrandPick(rawPick))) {
+    const nonMineErrands = preferNonMine(errands);
+    if (/最短|最快/.test(normClean)) {
+      const sorted = [...nonMineErrands].sort(
+        (a, b) => parseErrandMinutes(a.item) - parseErrandMinutes(b.item),
+      );
+      return { match: sorted[0] ?? null };
+    }
+    if (normClean.length >= 2) {
+      const byHint = nonMineErrands.filter((s) => {
+        const normItem = normalizeTownText(s.item);
+        const normSeller = normalizeTownText(s.seller);
+        return (
+          normItem.includes(normClean)
+          || normClean.includes(normItem)
+          || (normSeller.length >= 2 && (normSeller === normClean || normClean.includes(normSeller)))
+        );
+      });
+      if (byHint.length === 1) return { match: byHint[0] };
+      if (byHint.length > 1) return { match: null, ambiguous: byHint };
+    }
+  }
+
+  return { match: null };
+}
+
 export class LifeWorld implements World {
   readonly id = LIFE_ID;
   private host: WorldHost | null = null;
@@ -533,6 +654,25 @@ export class LifeWorld implements World {
     return run;
   }
 
+  /** 判断给定摊位 ID 是否为本机发出的农牧邻里代管委托（防同名鱼相互屏蔽或自己接自己）。 */
+  private isMyPostedErrandId(stallId: string): boolean {
+    if (!stallId) return false;
+    if (this.state.farmHelper.pendingErrand?.stallId === stallId) return true;
+    return (this.state.farmHelper.errandStallIds ?? []).includes(stallId);
+  }
+
+  /** 统一切分我的/街坊摊位缓存：委托仅凭本机发单 ID 归属我的、置顶展示且不被普通摊货 12 条上限截丢。 */
+  private updateTownStallsCache(stalls: readonly TownStall[], myName: string): void {
+    const isMyStall = (st: TownStall): boolean => (
+      st.kind === 'errand' ? this.isMyPostedErrandId(st.id) : st.seller === myName
+    );
+    this.myStallsCache = stalls.filter(isMyStall);
+    const others = stalls.filter((st) => !isMyStall(st));
+    const otherErrands = others.filter((st) => st.kind === 'errand');
+    const otherGoods = others.filter((st) => st.kind !== 'errand');
+    this.otherStallsCache = [...otherErrands, ...otherGoods.slice(0, 12)];
+  }
+
   /** 拉取鱼市街黑板报、摊位与成交回执；仅成功时置满 15 分钟冷却，失败则 1 分钟后允许重试。 */
   private async refreshTownMarket(generation: number): Promise<void> {
     if (!parseTownUrls(this.cfg.townUrl).length) return;
@@ -545,8 +685,7 @@ export class LifeWorld implements World {
         ok = true;
         this.townBulletin = remote.bulletin;
         const myName = this.opts.botName || 'fish';
-        this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
-        this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 12);
+        this.updateTownStallsCache(remote.stalls, myName);
       }
     } catch { /* 静默保留上次黑板 */ }
     if (uid) {
@@ -565,9 +704,142 @@ export class LifeWorld implements World {
 
   /** 判断一条成交回执是否对应自己发出的农牧邻里代管委托（绝不误按卖货给雇主加钱）。 */
   private isMyFarmErrandDeal(d: Pick<TownDeal, 'stallId' | 'item'>): boolean {
-    if (!d.stallId) return false;
-    if (this.state.farmHelper.pendingErrand?.stallId === d.stallId) return true;
-    return (this.state.farmHelper.errandStallIds ?? []).includes(d.stallId);
+    return this.isMyPostedErrandId(d.stallId);
+  }
+
+  /** 认领一条鱼市街邻里农牧代管委托（共用执行器：供 `life_buy` 与 `life_farm/life_ranch accept_errand` 共用）。 */
+  private async acceptTownErrandMatch(
+    match: TownStall,
+    now: Date,
+    generation: number,
+  ): Promise<{ text: string }> {
+    if (this.isMyPostedErrandId(match.id)) {
+      return { text: '这是你自己发出去的农牧代管委托，不能自己接自己的单哦。' };
+    }
+    if (this.state.vitals.energy < 10) {
+      return { text: `精力只剩 ${Math.round(this.state.vitals.energy)} 点了，先歇会儿或睡一觉再去帮街坊照料农牧场吧。` };
+    }
+    const buyerUid = readMeetUid(this.opts.dataDir);
+    if (!buyerUid) {
+      return { text: '缺少本机 uid（先跟城里连一次碰面生成 uid 后再接鱼市街邻里委托）。' };
+    }
+    const myName = this.opts.botName || 'fish';
+    const accepted = await buyTownStall(this.cfg.townUrl, match.id, myName, {
+      buyerUid,
+      note: '我来帮你照料农牧场啦',
+      isErrand: true,
+    });
+    if (generation !== this.stateGeneration) {
+      return { text: '生活档案刚刚被清理，这次接单操作已停止，未写入新档案。' };
+    }
+    if (!accepted.ok) return { text: accepted.reason ?? '没抢到这单农牧代管委托。' };
+
+    const errandItem = accepted.item || match.item;
+    const pay = accepted.price || match.price;
+    const employer = accepted.seller || match.seller;
+    const mins = parseErrandMinutes(errandItem);
+    const energyCost = Math.min(24, Math.max(8, Math.round(mins * 0.25)));
+    const foodCost = 6;
+    const until = new Date(now.getTime() + mins * 60_000).toISOString();
+    this.state.activity = {
+      kind: 'act',
+      id: 'neighbor_errand',
+      label: `帮${employer}照料农牧场`,
+      from: now.toISOString(),
+      until,
+      minutes: mins,
+      perMin: {
+        energy: -energyCost / mins,
+        food: -foodCost / mins,
+        social: 10 / mins,
+      },
+      errandPay: pay,
+      errandEmployer: employer,
+      mood: {
+        text: `帮街坊${employer}照料好了农牧场，挣到 +${pay} 元零花钱`,
+        kind: 'good',
+        hours: 4,
+      },
+      scene: `${employer}家的农牧场`,
+    };
+    this.otherStallsCache = this.otherStallsCache
+      .map((st) => (st.id === match.id ? { ...st, stock: st.stock - 1 } : st))
+      .filter((st) => st.stock > 0);
+    remember(this.state, `在鱼市街接下街坊${employer}的委托「${errandItem}」，过去帮忙照料（约 ${mins} 分钟，完工挣 +${pay} 元）。`, now);
+    this.state.updatedAt = now.toISOString();
+    this.saveDeliveredState();
+    this.broadcastLife(now);
+    return {
+      text: `接下了街坊 ${employer} 的农牧代管委托「${errandItem}」！（不用自己花钱）预计去忙活 ${mins} 分钟（耗精力约 ${energyCost}、涨社交 +10），干完自动领全额工钱 +${pay} 元，不占今天正式打工额度。`,
+    };
+  }
+
+  /** 查看或接取鱼市街邻里农牧代管委托（供 `life_farm` 与 `life_ranch` 的 `accept_errand` 共用）。 */
+  private async handleAcceptErrandAction(
+    rawPick: string,
+    now: Date,
+    generation: number,
+  ): Promise<{ text: string }> {
+    const hasTownUrl = parseTownUrls(this.cfg.townUrl).length > 0;
+    if (!hasTownUrl) {
+      return { text: '还没配置城服务器地址，暂时看不到也接不了鱼市街邻里代管委托。' };
+    }
+    const trimmed = String(rawPick ?? '').trim();
+    if (trimmed && isBusy(this.state, now)) {
+      return { text: busyRefusal(this.state, now, '去接邻里代管委托') };
+    }
+    const remote = await fetchTownStalls(this.cfg.townUrl);
+    if (generation !== this.stateGeneration) {
+      return { text: '生活档案刚刚被清理，这次查询委托操作已停止。' };
+    }
+    if (!remote.ok) {
+      return { text: '鱼市街这会儿连不上，暂时看不到/接不了邻里代管委托，请稍后再试（没有误买任何摊货）。' };
+    }
+    this.townBulletin = remote.bulletin;
+    const myName = this.opts.botName || 'fish';
+    this.updateTownStallsCache(remote.stalls, myName);
+
+    const errands = remote.stalls.filter((st) => st.kind === 'errand');
+    const formatErrandList = (list: readonly TownStall[]) => [...list]
+      .sort((a, b) => parseErrandMinutes(a.item) - parseErrandMinutes(b.item))
+      .map((st) => {
+        const mins = parseErrandMinutes(st.item);
+        const selfTag = this.isMyPostedErrandId(st.id) ? ' [你发的·不可自接]' : '';
+        return `编号 ${st.id}｜${st.item}｜雇主：${st.seller}｜工钱+${st.price}元/约${mins}分${selfTag}`;
+      })
+      .join('；');
+
+    if (!trimmed) {
+      if (!errands.length) {
+        return { text: '此刻鱼市街上没有在架的邻里农牧代管委托。' };
+      }
+      return {
+        text: `鱼市街此刻挂着的邻里农牧代管委托（按耗时从短到长）：${formatErrandList(errands)}。传入 16 位委托编号（或传「最短」自动接耗时最短的那份）到 errand_id 即可接单，不扣钱、干完领工钱且不占今天正式打工额度。`,
+      };
+    }
+
+    const matched = matchTownStall(remote.stalls, trimmed, {
+      errandsOnly: true,
+      isMyErrand: (id) => this.isMyPostedErrandId(id),
+    });
+    if (matched.ambiguous?.length) {
+      return {
+        text: `「${trimmed}」同时对上了多条邻里委托，请传入其中一条的 16 位纯编号：${formatErrandList(matched.ambiguous)}（没有误买任何摊货）。`,
+      };
+    }
+    if (matched.match) {
+      return this.acceptTownErrandMatch(matched.match, now, generation);
+    }
+
+    const avail = errands.filter((st) => !this.isMyPostedErrandId(st.id));
+    const listHint = avail.length
+      ? `当前可接委托：${formatErrandList(avail)}。请传入其中一条的 16 位纯编号或传「最短」。`
+      : (errands.length
+        ? '目前鱼市街上只有你自己挂出的委托，暂时没有街坊委托可接。'
+        : '此刻鱼市街上没有在架的邻里代管委托（可能刚被接走或过期）。');
+    return {
+      text: `没找着编号或标题对应的邻里农牧代管委托「${trimmed}」（没有误买任何普通摊货）。${listHint}`,
+    };
   }
 
   /** 按本地摊位单价与服务端单价给卖家真实入账，严格按 deal.id 幂等防重。 */
@@ -2786,12 +3058,12 @@ export class LifeWorld implements World {
     return {
       name: 'life_buy',
       description:
-        '去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的，也可接下街坊发出的农牧代管委托帮忙干活挣零花钱（不传参数看摊位、邻里委托与街口黑板报，传 stall_id 或菜名就购买或接单；接邻里代管委托不扣钱、按动植物数量忙活对应分钟后领全额工钱且不占今天正式打工额度；买鲜蔬果品还会收入储物篮供下厨与摆摊）。',
+        '去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的，也可接下街坊发出的农牧代管委托帮忙干活挣零花钱（不传参数看摊位、邻里委托与街口黑板报，传 16 位委托编号或摊位/菜名到 stall_id 就购买或接单；接邻里代管委托不扣钱、按动植物数量忙活对应分钟后领全额工钱且不占今天正式打工额度；买鲜蔬果品还会收入储物篮供下厨与摆摊）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          stall_id: { type: 'string', description: '摊位 id、邻里代管委托 id 或早市/尾货/节气菜名；不填则先逛逛看看价。' },
+          stall_id: { type: 'string', description: '摊位 16 位编号、邻里代管委托 16 位编号（支持写「最短」直接接耗时最短的那份）或早市/尾货/节气菜名；不填则先逛逛看看价。' },
         },
       },
       tags: ['write'],
@@ -2809,25 +3081,29 @@ export class LifeWorld implements World {
           if (generation !== this.stateGeneration) return cleared();
           if (remote.ok) {
             this.townBulletin = remote.bulletin;
-            this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
-            this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 12);
+            this.updateTownStallsCache(remote.stalls, myName);
           }
           const local = fullMarketPrices(now);
           const s = snapshot(this.state, now);
           const winTxt = s.streetWindow ? `此刻「${s.streetWindow.place}${s.streetWindow.label}」开着（${s.streetWindow.hint}）。` : '';
           const boardTxt = this.townBulletin.length ? `\n街口黑板报：${this.townBulletin.slice(0, 3).join('；')}` : '';
           if (remote.ok && remote.stalls.length) {
+            const hasErrands = remote.stalls.some((st) => st.kind === 'errand');
+            const errandGuide = hasErrands
+              ? '\n（接邻里代管委托可把 16 位纯委托编号传给 life_farm/life_ranch 的 action="accept_errand"，或直接传给 life_buy 的 stall_id，不扣钱、干完领工钱。）'
+              : '';
             return {
               text: `${winTxt}鱼市街今天摆出来的摊位与邻里委托（买摊货涨社交与好心情；接农牧代管委托可帮街坊浇水喂食挣零花钱）：${remote.stalls.map((st) => {
                 if (st.kind === 'errand') {
                   const mins = parseErrandMinutes(st.item);
+                  const selfTag = this.isMyPostedErrandId(st.id) ? '，你发的·不可自接' : '';
                   const noteTxt = st.note ? ` · 「${st.note}」` : '';
-                  return `[邻里代管委托·挣钱] ${st.item} 工钱+${st.price}元/约${mins}分（雇主:${st.seller}，id:${st.id}${noteTxt}）`;
+                  return `[邻里代管委托·挣钱] ${st.item} 工钱+${st.price}元/约${mins}分（雇主：${st.seller}，委托编号 ${st.id}${selfTag}${noteTxt}）`;
                 }
                 const fx = formatStallEffects(resolveStallEffects(st.effects, st.price));
                 const noteTxt = st.note ? ` · 「${st.note}」` : '';
                 return `${st.item} ${st.price}元（${st.seller}，id:${st.id}，${fx}${noteTxt}）`;
-              }).join('；')}。${boardTxt}`,
+              }).join('；')}。${errandGuide}${boardTxt}`,
             };
           }
           return {
@@ -2844,68 +3120,28 @@ export class LifeWorld implements World {
         let vitalDeltas: Partial<Record<VitalKey, number>> = { food: 28, fun: 6 };
         let knowGain = 0;
         let fitGain = 0;
+        let remote: { ok: boolean; stalls: TownStall[]; bulletin: string[] } = { ok: false, stalls: [], bulletin: [] };
         if (hasTownUrl) {
-          const remote = await fetchTownStalls(this.cfg.townUrl);
+          remote = await fetchTownStalls(this.cfg.townUrl);
           if (generation !== this.stateGeneration) return cleared();
           if (remote.ok) {
             this.townBulletin = remote.bulletin;
-            this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
-            this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 12);
+            this.updateTownStallsCache(remote.stalls, myName);
           }
-          const match = remote.ok ? remote.stalls.find((st) => st.id === pick || st.item === pick) : null;
+          const matched = remote.ok
+            ? matchTownStall(remote.stalls, pick, { isMyErrand: (id) => this.isMyPostedErrandId(id) })
+            : { match: null };
+          if (matched.ambiguous?.length) {
+            const optsTxt = matched.ambiguous.map((st) => (
+              st.kind === 'errand'
+                ? `[委托] 编号 ${st.id}（${st.item}，工钱+${st.price}元，雇主：${st.seller}）`
+                : `[摊货] 编号 ${st.id}（${st.item}，${st.price}元，卖家：${st.seller}）`
+            )).join('；');
+            return { text: `「${pick}」同时对上了多条鱼市街条目，请直接传其中一条的 16 位纯编号：${optsTxt}（没有误买任何东西）。` };
+          }
+          const match = matched.match;
           if (match && match.kind === 'errand') {
-            if (this.state.vitals.energy < 10) {
-              return { text: `精力只剩 ${Math.round(this.state.vitals.energy)} 点了，先歇会儿或睡一觉再去帮街坊照料农牧场吧。` };
-            }
-            const buyerUid = readMeetUid(this.opts.dataDir);
-            if (!buyerUid) {
-              return { text: '缺少本机 uid（先跟城里连一次碰面生成 uid 后再接鱼市街邻里委托）。' };
-            }
-            const accepted = await buyTownStall(this.cfg.townUrl, match.id, myName, {
-              buyerUid,
-              note: '我来帮你照料农牧场啦',
-            });
-            if (generation !== this.stateGeneration) return cleared();
-            if (!accepted.ok) return { text: accepted.reason ?? '没抢到这单委托。' };
-
-            const errandItem = accepted.item || match.item;
-            const pay = accepted.price || match.price;
-            const employer = accepted.seller || match.seller;
-            const mins = parseErrandMinutes(errandItem);
-            const energyCost = Math.min(24, Math.max(8, Math.round(mins * 0.25)));
-            const foodCost = 6;
-            const until = new Date(now.getTime() + mins * 60_000).toISOString();
-            this.state.activity = {
-              kind: 'act',
-              id: 'neighbor_errand',
-              label: `帮${employer}照料农牧场`,
-              from: now.toISOString(),
-              until,
-              minutes: mins,
-              perMin: {
-                energy: -energyCost / mins,
-                food: -foodCost / mins,
-                social: 10 / mins,
-              },
-              errandPay: pay,
-              errandEmployer: employer,
-              mood: {
-                text: `帮街坊${employer}照料好了农牧场，挣到 +${pay} 元零花钱`,
-                kind: 'good',
-                hours: 4,
-              },
-              scene: `${employer}家的农牧场`,
-            };
-            this.otherStallsCache = this.otherStallsCache
-              .map((st) => (st.id === match.id ? { ...st, stock: st.stock - 1 } : st))
-              .filter((st) => st.stock > 0);
-            remember(this.state, `在鱼市街接下街坊${employer}的委托「${errandItem}」，过去帮忙照料（约 ${mins} 分钟，完工挣 +${pay} 元）。`, now);
-            this.state.updatedAt = now.toISOString();
-            try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
-            this.broadcastLife(now);
-            return {
-              text: `接下了街坊 ${employer} 的农牧代管委托「${errandItem}」！（不用自己花钱）预计去忙活 ${mins} 分钟（耗精力约 ${energyCost}、涨社交 +10），干完自动领全额工钱 +${pay} 元，不占今天正式打工额度。`,
-            };
+            return this.acceptTownErrandMatch(match, now, generation);
           }
           if (match) {
             if (this.state.money.cash < match.price) {
@@ -2937,6 +3173,22 @@ export class LifeWorld implements World {
               .map((st) => (st.id === match.id ? { ...st, stock: st.stock - 1 } : st))
               .filter((st) => st.stock > 0);
           }
+        }
+        if (!item && looksLikeRemoteOrErrandPick(pick)) {
+          if (!hasTownUrl) {
+            return { text: '还没配置城服务器地址，暂时没法去鱼市街接邻里代管委托或按编号买街坊摊货（没有误买任何东西）。' };
+          }
+          if (!remote.ok) {
+            return { text: `鱼市街这会儿连不上，暂时没法核对或下单「${pick}」，请稍后再试（没有误买任何摊货）。` };
+          }
+          const errands = remote.stalls.filter((st) => st.kind === 'errand');
+          const avail = errands.filter((st) => !this.isMyPostedErrandId(st.id));
+          const errandListHint = avail.length
+            ? `当前鱼市街可接的邻里委托：${avail.map((st) => `编号 ${st.id}（${st.item}，工钱+${st.price}元，雇主：${st.seller}）`).join('；')}。请直接传入上面的 16 位纯编号接单。`
+            : (errands.length
+              ? '目前鱼市街上只有你自己挂出的委托，暂时没有街坊委托可接。'
+              : '此刻鱼市街上没有在架的邻里代管委托（可能已被抢接或过期）。');
+          return { text: `鱼市街上没找着编号或委托「${pick}」，没有误买任何普通摊货。${errandListHint}` };
         }
         if (!item) {
           const local = fullMarketPrices(now);
@@ -3089,9 +3341,8 @@ export class LifeWorld implements World {
           if (generation !== this.stateGeneration) return cleared();
           if (!remote.ok) return { text: '鱼市街这会儿连不上，稍后再看看。' };
           this.townBulletin = remote.bulletin;
-          const mine = remote.stalls.filter((s) => s.seller === myName);
-          this.myStallsCache = mine;
-          this.otherStallsCache = remote.stalls.filter((s) => s.seller !== myName).slice(0, 12);
+          this.updateTownStallsCache(remote.stalls, myName);
+          const mine = this.myStallsCache;
           const panLine = this.state.pantry.length
             ? `储物篮备料：${this.state.pantry.map((p) => `${p.name}×${p.qty}(${p.origin === 'home-grown' ? '自种' : p.origin === 'town-buy' ? `购自${p.fromSeller || '街坊'}` : '早市'})`).join('、')}。`
             : '储物篮眼下空着（可用 life_farm 种菜收成或去鱼市街买菜囤鲜蔬）。';
@@ -3209,8 +3460,7 @@ export class LifeWorld implements World {
         if (generation !== this.stateGeneration) return cleared();
         if (remote.ok) {
           this.townBulletin = remote.bulletin;
-          this.myStallsCache = remote.stalls.filter((s) => s.seller === myName);
-          this.otherStallsCache = remote.stalls.filter((s) => s.seller !== myName).slice(0, 12);
+          this.updateTownStallsCache(remote.stalls, myName);
         }
         const finalEffects = res.effects ?? effects;
         const fxTxt = formatStallEffects(finalEffects);
@@ -3417,15 +3667,16 @@ export class LifeWorld implements World {
         + 'water 浇水（每块地每天限 1 次，耗 3 精力，累计浇满 2 次收成 +1 份）；'
         + 'harvest 采摘成熟作物入储物篮（供下厨按菜谱做菜或上鱼市街卖鲜蔬，顺手涨体质）；'
         + `rent 签约 ${LEASE_PLOT_COUNT} 槽城郊菜地（签约费 ${LEASE_SIGNUP_FEE} 元 + 月租 ${LEASE_MONTHLY_RENT} 元按天扣）；unrent 退租；`
-        + 'hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天浇水喂食收蛋奶，或 full 农牧全托管20元/天并自动收菜起塘；prefer_neighbor 默认 true 优先发鱼市街邻里真鱼代管单¥6–15按量计价且6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手。',
+        + 'hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天浇水喂食收蛋奶，或 full 农牧全托管20元/天并自动收菜起塘；prefer_neighbor 默认 true 优先发鱼市街邻里真鱼代管单¥6–15按量计价且6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手；'
+        + 'accept_errand 查看或接取鱼市街街坊发出的邻里代管委托挣钱（不填 errand_id 列出在架委托，传入 16 位纯编号或「最短」即可接单，不扣钱、不占今天正式打工额度）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
           action: {
             type: 'string',
-            enum: ['status', 'plant', 'water', 'harvest', 'rent', 'unrent', 'hire', 'post_errand', 'unhire'],
-            description: '操作类型：status(看菜园与种子，默认)/plant(播种)/water(浇水)/harvest(收割)/rent(租城郊菜地)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)。',
+            enum: ['status', 'plant', 'water', 'harvest', 'rent', 'unrent', 'hire', 'post_errand', 'unhire', 'accept_errand'],
+            description: '操作类型：status(看菜园与种子，默认)/plant(播种)/water(浇水)/harvest(收割)/rent(租城郊菜地)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)/accept_errand(查看或接取鱼市街邻里委托挣钱)。',
           },
           seed: {
             type: 'string',
@@ -3444,6 +3695,10 @@ export class LifeWorld implements World {
             type: 'boolean',
             description: 'hire 时是否优先找鱼市街其他真鱼接邻里代管（默认 true，找不到再退预扣并回落自动照料）。',
           },
+          errand_id: {
+            type: 'string',
+            description: 'accept_errand 时传 16 位邻里委托编号（或填「最短」自动接耗时最短的那份）；不填则先列出当前鱼市街所有可接邻里委托。',
+          },
         },
       },
       tags: ['write'],
@@ -3456,6 +3711,10 @@ export class LifeWorld implements World {
         const j = readJourney(this.opts.dataDir, now);
         this.journey = j;
         const term = solarTermOf(now);
+
+        if (action === 'accept_errand') {
+          return this.handleAcceptErrandAction(String(args?.errand_id ?? '').trim(), now, generation);
+        }
 
         if (action === 'status') {
           const s = snapshot(this.state, now);
@@ -3584,7 +3843,7 @@ export class LifeWorld implements World {
           };
         }
 
-        return { text: `不认识操作「${action}」，可用 status / plant / water / harvest / rent / unrent。` };
+        return { text: `不认识操作「${action}」，可用 status / plant / water / harvest / rent / unrent / hire / post_errand / unhire / accept_errand。` };
       },
     };
   }
@@ -3600,15 +3859,16 @@ export class LifeWorld implements World {
         + 'collect 收取鲜鸡蛋与鲜牛奶进储物篮；'
         + 'harvest 起塘收鲜鱼（不传 pen_id 自动收熟鱼塘）或指定鸡/牛 pen_id 出栏收土鸡肉/精选牛肉；'
         + `rent 签约城郊农牧场（签约费 ${RANCH_SIGNUP_FEE} 元 + 月租 ${RANCH_MONTHLY_RENT} 元按天扣 8 元）；unrent 退租；`
-        + 'hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天，或 full 农牧全托管20元/天；prefer_neighbor 默认 true 优先找鱼市街真鱼代管¥6–15，6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手。',
+        + 'hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天，或 full 农牧全托管20元/天；prefer_neighbor 默认 true 优先找鱼市街真鱼代管¥6–15，6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手；'
+        + 'accept_errand 查看或接取鱼市街街坊发出的邻里代管委托挣钱（不填 errand_id 列出在架委托，传入 16 位纯编号或「最短」即可接单，不扣钱、不占今天正式打工额度）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
           action: {
             type: 'string',
-            enum: ['status', 'buy', 'feed', 'collect', 'harvest', 'rent', 'unrent', 'hire', 'post_errand', 'unhire'],
-            description: '操作类型：status(查看牧场，默认)/buy(放养)/feed(投喂)/collect(收蛋奶)/harvest(起塘或出栏)/rent(租城郊农牧场)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)。',
+            enum: ['status', 'buy', 'feed', 'collect', 'harvest', 'rent', 'unrent', 'hire', 'post_errand', 'unhire', 'accept_errand'],
+            description: '操作类型：status(查看牧场，默认)/buy(放养)/feed(投喂)/collect(收蛋奶)/harvest(起塘或出栏)/rent(租城郊农牧场)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)/accept_errand(查看或接取鱼市街邻里委托挣钱)。',
           },
           animal: {
             type: 'string',
@@ -3627,6 +3887,10 @@ export class LifeWorld implements World {
             type: 'boolean',
             description: 'hire 时是否优先找鱼市街其他真鱼接邻里代管（默认 true，找不到再退预扣并回落自动照料）。',
           },
+          errand_id: {
+            type: 'string',
+            description: 'accept_errand 时传 16 位邻里委托编号（或填「最短」自动接耗时最短的那份）；不填则先列出当前鱼市街所有可接邻里委托。',
+          },
         },
       },
       tags: ['write'],
@@ -3638,6 +3902,10 @@ export class LifeWorld implements World {
         const action = String(args?.action ?? 'status').trim() || 'status';
         const j = readJourney(this.opts.dataDir, now);
         this.journey = j;
+
+        if (action === 'accept_errand') {
+          return this.handleAcceptErrandAction(String(args?.errand_id ?? '').trim(), now, generation);
+        }
 
         if (action === 'status') {
           const s = snapshot(this.state, now);
@@ -3776,7 +4044,7 @@ export class LifeWorld implements World {
           return { text: `农牧场收获了 ${gotTxt}（共 ${r.totalQty} 份），全数存进储物篮（共 ${pantryCount(this.state.pantry)} 份）！` };
         }
 
-        return { text: `不认识操作「${action}」，可用 status / buy / feed / collect / harvest / rent / unrent。` };
+        return { text: `不认识操作「${action}」，可用 status / buy / feed / collect / harvest / rent / unrent / hire / post_errand / unhire / accept_errand。` };
       },
     };
   }

@@ -412,14 +412,14 @@
     },
     {
       "name": "life_buy",
-      "description": "去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的，也可接下街坊发出的农牧代管委托帮忙干活挣零花钱（不传参数看摊位、邻里委托与街口黑板报，传 stall_id 或菜名就购买或接单；接邻里代管委托不扣钱、按动植物数量忙活对应分钟后领全额工钱且不占今天正式打工额度；买鲜蔬果品还会收入储物篮供下厨与摆摊）。",
+      "description": "去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的，也可接下街坊发出的农牧代管委托帮忙干活挣零花钱（不传参数看摊位、邻里委托与街口黑板报，传 16 位委托编号或摊位/菜名到 stall_id 就购买或接单；接邻里代管委托不扣钱、按动植物数量忙活对应分钟后领全额工钱且不占今天正式打工额度；买鲜蔬果品还会收入储物篮供下厨与摆摊）。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
           "stall_id": {
             "type": "string",
-            "description": "摊位 id、邻里代管委托 id 或早市/尾货/节气菜名；不填则先逛逛看看价。"
+            "description": "摊位 16 位编号、邻里代管委托 16 位编号（支持写「最短」直接接耗时最短的那份）或早市/尾货/节气菜名；不填则先逛逛看看价。"
           }
         }
       },
@@ -541,7 +541,7 @@
     },
     {
       "name": "life_farm",
-      "description": "打理家里阳台/院子的种植槽，或签约城郊菜地种慢熟果蔬（18 种节气作物，4–9 天成熟）：action=status 看槽位、作物进度、储物篮与农牧代管状态；plant 选种子播种（需空槽与种子费，莲藕/冬瓜/稻谷需 ≥2 槽）；water 浇水（每块地每天限 1 次，耗 3 精力，累计浇满 2 次收成 +1 份）；harvest 采摘成熟作物入储物篮（供下厨按菜谱做菜或上鱼市街卖鲜蔬，顺手涨体质）；rent 签约 4 槽城郊菜地（签约费 100 元 + 月租 150 元按天扣）；unrent 退租；hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天浇水喂食收蛋奶，或 full 农牧全托管20元/天并自动收菜起塘；prefer_neighbor 默认 true 优先发鱼市街邻里真鱼代管单¥6–15按量计价且6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手。",
+      "description": "打理家里阳台/院子的种植槽，或签约城郊菜地种慢熟果蔬（18 种节气作物，4–9 天成熟）：action=status 看槽位、作物进度、储物篮与农牧代管状态；plant 选种子播种（需空槽与种子费，莲藕/冬瓜/稻谷需 ≥2 槽）；water 浇水（每块地每天限 1 次，耗 3 精力，累计浇满 2 次收成 +1 份）；harvest 采摘成熟作物入储物篮（供下厨按菜谱做菜或上鱼市街卖鲜蔬，顺手涨体质）；rent 签约 4 槽城郊菜地（签约费 100 元 + 月租 150 元按天扣）；unrent 退租；hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天浇水喂食收蛋奶，或 full 农牧全托管20元/天并自动收菜起塘；prefer_neighbor 默认 true 优先发鱼市街邻里真鱼代管单¥6–15按量计价且6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手；accept_errand 查看或接取鱼市街街坊发出的邻里代管委托挣钱（不填 errand_id 列出在架委托，传入 16 位纯编号或「最短」即可接单，不扣钱、不占今天正式打工额度）。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -557,9 +557,10 @@
               "unrent",
               "hire",
               "post_errand",
-              "unhire"
+              "unhire",
+              "accept_errand"
             ],
-            "description": "操作类型：status(看菜园与种子，默认)/plant(播种)/water(浇水)/harvest(收割)/rent(租城郊菜地)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)。"
+            "description": "操作类型：status(看菜园与种子，默认)/plant(播种)/water(浇水)/harvest(收割)/rent(租城郊菜地)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)/accept_errand(查看或接取鱼市街邻里委托挣钱)。"
           },
           "seed": {
             "type": "string",
@@ -580,6 +581,10 @@
           "prefer_neighbor": {
             "type": "boolean",
             "description": "hire 时是否优先找鱼市街其他真鱼接邻里代管（默认 true，找不到再退预扣并回落自动照料）。"
+          },
+          "errand_id": {
+            "type": "string",
+            "description": "accept_errand 时传 16 位邻里委托编号（或填「最短」自动接耗时最短的那份）；不填则先列出当前鱼市街所有可接邻里委托。"
           }
         }
       },
@@ -593,7 +598,7 @@
     },
     {
       "name": "life_ranch",
-      "description": "打理自家小院与城郊农牧场的鸡舍、牛棚、鱼塘（大肥鱼本体是鲸鱼不算鱼，可放心养草鱼/鲈鱼收鲜鱼，另可养鸡收蛋收鸡肉、养牛挤奶收牛肉）：action=status 查看鸡/牛/鱼栏位、产蛋产奶倒计时、养成进度与代管状态；buy 放养幼苗（需对应栏位空位，城中村无栏位、老小区自带1鸡位、新小区1鸡+1鱼、别墅区2鸡+2鱼，签约城郊农牧场再加 +2鸡/+2牛/+2鱼）；feed 喂饲料（每天每栏限 1 次，扣精力 3 点与少量饲料费，增产 +1）；collect 收取鲜鸡蛋与鲜牛奶进储物篮；harvest 起塘收鲜鱼（不传 pen_id 自动收熟鱼塘）或指定鸡/牛 pen_id 出栏收土鸡肉/精选牛肉；rent 签约城郊农牧场（签约费 180 元 + 月租 240 元按天扣 8 元）；unrent 退租；hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天，或 full 农牧全托管20元/天；prefer_neighbor 默认 true 优先找鱼市街真鱼代管¥6–15，6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手。",
+      "description": "打理自家小院与城郊农牧场的鸡舍、牛棚、鱼塘（大肥鱼本体是鲸鱼不算鱼，可放心养草鱼/鲈鱼收鲜鱼，另可养鸡收蛋收鸡肉、养牛挤奶收牛肉）：action=status 查看鸡/牛/鱼栏位、产蛋产奶倒计时、养成进度与代管状态；buy 放养幼苗（需对应栏位空位，城中村无栏位、老小区自带1鸡位、新小区1鸡+1鱼、别墅区2鸡+2鱼，签约城郊农牧场再加 +2鸡/+2牛/+2鱼）；feed 喂饲料（每天每栏限 1 次，扣精力 3 点与少量饲料费，增产 +1）；collect 收取鲜鸡蛋与鲜牛奶进储物篮；harvest 起塘收鲜鱼（不传 pen_id 自动收熟鱼塘）或指定鸡/牛 pen_id 出栏收土鸡肉/精选牛肉；rent 签约城郊农牧场（签约费 180 元 + 月租 240 元按天扣 8 元）；unrent 退租；hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天，或 full 农牧全托管20元/天；prefer_neighbor 默认 true 优先找鱼市街真鱼代管¥6–15，6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手；accept_errand 查看或接取鱼市街街坊发出的邻里代管委托挣钱（不填 errand_id 列出在架委托，传入 16 位纯编号或「最短」即可接单，不扣钱、不占今天正式打工额度）。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -610,9 +615,10 @@
               "unrent",
               "hire",
               "post_errand",
-              "unhire"
+              "unhire",
+              "accept_errand"
             ],
-            "description": "操作类型：status(查看牧场，默认)/buy(放养)/feed(投喂)/collect(收蛋奶)/harvest(起塘或出栏)/rent(租城郊农牧场)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)。"
+            "description": "操作类型：status(查看牧场，默认)/buy(放养)/feed(投喂)/collect(收蛋奶)/harvest(起塘或出栏)/rent(租城郊农牧场)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)/accept_errand(查看或接取鱼市街邻里委托挣钱)。"
           },
           "animal": {
             "type": "string",
@@ -633,6 +639,10 @@
           "prefer_neighbor": {
             "type": "boolean",
             "description": "hire 时是否优先找鱼市街其他真鱼接邻里代管（默认 true，找不到再退预扣并回落自动照料）。"
+          },
+          "errand_id": {
+            "type": "string",
+            "description": "accept_errand 时传 16 位邻里委托编号（或填「最短」自动接耗时最短的那份）；不填则先列出当前鱼市街所有可接邻里委托。"
           }
         }
       },

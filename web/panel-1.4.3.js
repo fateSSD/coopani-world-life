@@ -1,5 +1,5 @@
 /*
- * 模拟鱼生面板（1.4.2，原生 ES module，零打包直跑）。
+ * 模拟鱼生面板（1.4.3，原生 ES module，零打包直跑）。
  */
 
 /** 作者的 QQ 群。反馈栏那一行和简介里写的是同一个号，改这里一处就够。 */
@@ -592,6 +592,7 @@ function renderStallRow(st, showSeller, recordMap) {
     const mMatch = /(\d+)\s*分/.exec(String(st.item || ''));
     const mins = mMatch ? Number(mMatch[1]) : 25;
     left.append(el('span', 'lf-fx-pill', `忙活约 ${mins} 分 · 社交+10 · 不占正式出工`));
+    if (st.id) left.append(el('span', 'lf-fx-pill', `编号 ${st.id}`));
     const right = el('div', 'lf-stall-r');
     right.append(el('b', null, `挣+¥${st.price}`), document.createTextNode(`×${st.stock}`));
     row.append(left, right);
@@ -2007,7 +2008,7 @@ export default {
           if (otherErrands.length) {
             stallCard.append(el('div', 'lf-subh', `街坊农牧委托 · 让大肥鱼帮忙干活挣零花钱（${otherErrands.length}）`));
             for (const st of otherErrands) stallCard.append(renderStallRow(st, true, recordMap));
-            stallCard.append(el('p', 'lf-note-line', '在对话里对它说「去鱼市街看看有没有街坊要帮忙照料菜地牧场的委托，接一单挣点零花钱」即可认领（不占今天正式打工额度）。'));
+            stallCard.append(el('p', 'lf-note-line', '在对话里对它说「接鱼市街最短的那份农牧委托」或报出上面的 16 位委托编号即可认领（不扣钱、不占今天正式打工额度）。'));
           }
           if (!otherGoods.length) {
             if (!otherErrands.length) {

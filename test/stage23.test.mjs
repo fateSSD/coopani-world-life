@@ -1687,3 +1687,207 @@ test('1.4.2 面板自动化回归：无头 DOM 桩挂载全部 7 个页签无异
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('1.4.3 鱼市街邻里代管接单修复：带 id: 前缀/全角括号/短前缀/最短单/双入口/防落早市/专用报错/同名鱼可见性', async () => {
+  const dir = mkDir();
+  const fakeUid = '0123456789abcdef0123456789abcdef';
+  writeFileSync(join(dir, 'meet-uid.txt'), `${fakeUid}\n`, 'utf8');
+
+  let buyErrorMode = '';
+  const buyRequests = [];
+  const goodsList = Array.from({ length: 13 }, (_, i) => ({
+    id: `aa000000000000${i.toString(16).padStart(2, '0')}`,
+    seller: `街坊${i + 1}`,
+    kind: 'goods',
+    item: `街坊吃食${i + 1}`,
+    price: 10 + i,
+    stock: 3,
+    freshVeg: false,
+  }));
+  const stallsPayload = [
+    {
+      id: 'cb396a9c824504f5',
+      seller: '大肥鱼',
+      kind: 'errand',
+      item: '农牧代管·全托(5菜0牧/46分)',
+      price: 12,
+      stock: 1,
+      freshVeg: false,
+      note: '请街坊帮忙浇水喂食收蛋奶，6h无人接自动退回',
+    },
+    {
+      id: '9f25155523f49159',
+      seller: 'zip132si',
+      kind: 'errand',
+      item: '农牧代管·全托(12菜0牧/88分)',
+      price: 15,
+      stock: 1,
+      freshVeg: false,
+      note: '请街坊帮忙浇水喂食收蛋奶，6h无人接自动退回',
+    },
+    ...goodsList,
+  ];
+
+  const srv = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const p = body ? JSON.parse(body) : {};
+      if (req.url === '/town/info' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, town: 'lanzhou', name: '兰州', streets: ['南滨河路', '张掖路', '皋兰路', '雁滩路'] }));
+        return;
+      }
+      if (req.url === '/town/join' && req.method === 'POST') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, town: 'lanzhou', street: '南滨河路' }));
+        return;
+      }
+      if (req.url?.startsWith('/town/deals') && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, unseen: 0, deals: [] }));
+        return;
+      }
+      if (req.url?.startsWith('/town/stalls') && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          town: 'lanzhou',
+          name: '兰州',
+          stalls: stallsPayload,
+          bulletin: ['测试黑板报'],
+        }));
+        return;
+      }
+      if (req.url === '/town/buy' && req.method === 'POST') {
+        buyRequests.push(p);
+        if (buyErrorMode === 'own stall') {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'own stall' }));
+          return;
+        }
+        if (buyErrorMode === 'sold out') {
+          res.writeHead(409, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'sold out' }));
+          return;
+        }
+        if (buyErrorMode === 'pair limit') {
+          res.writeHead(429, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'pair limit' }));
+          return;
+        }
+        const st = stallsPayload.find((x) => x.id === p.stallId);
+        if (!st) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'not found' }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          id: 'deal-test',
+          kind: st.kind,
+          item: st.item,
+          price: st.price,
+          seller: st.seller,
+          freshVeg: false,
+          qty: 1,
+          stockLeft: 0,
+        }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+  });
+
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const { port } = srv.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  let stopped = false;
+
+  try {
+    const curNow = new Date('2026-11-25T10:00:00.000+08:00');
+    const world = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true, townUrl: baseUrl },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => curNow,
+    });
+    await world.start(silentHost);
+    const buyTool = world.tools().find((t) => t.name === 'life_buy');
+    const farmTool = world.tools().find((t) => t.name === 'life_farm');
+    const ranchTool = world.tools().find((t) => t.name === 'life_ranch');
+
+    // 1) 同名「大肥鱼」非本机委托必须出现在 market 面板与 life_buy 列表中，且不被 13 条普通摊货截丢
+    const browse = await buyTool.handler({});
+    assert.match(browse.text, /委托编号 cb396a9c824504f5/);
+    assert.match(browse.text, /委托编号 9f25155523f49159/);
+    const mkt = await world.webUi().invoke('market', 'snapshot');
+    assert.equal(mkt.otherStalls.some((s) => s.id === 'cb396a9c824504f5' && s.seller === '大肥鱼'), true);
+    assert.equal(mkt.otherStalls.some((s) => s.id === '9f25155523f49159'), true);
+
+    // 2) 带 id: 前缀接单：必须成功接下 46 分委托，且不扣现金
+    const cashBefore = world.state.money.cash;
+    const rIdPrefix = await buyTool.handler({ stall_id: 'id:cb396a9c824504f5' });
+    assert.match(rIdPrefix.text, /接下了街坊 大肥鱼 的农牧代管委托.*46 分钟/);
+    assert.equal(world.state.money.cash, cashBefore);
+    assert.equal(world.state.activity?.id, 'neighbor_errand');
+    assert.equal(world.state.activity?.minutes, 46);
+    assert.equal(buyRequests.at(-1)?.stallId, 'cb396a9c824504f5');
+
+    // 3) 中文全角括号标题接单：必须命中 88 分委托
+    world.state.activity = null;
+    const rFullWidth = await buyTool.handler({ stall_id: '农牧代管·全托（12菜0牧/88分）' });
+    assert.match(rFullWidth.text, /接下了街坊 zip132si 的农牧代管委托.*88 分钟/);
+    assert.equal(world.state.activity?.minutes, 88);
+    assert.equal(buyRequests.at(-1)?.stallId, '9f25155523f49159');
+
+    // 4) life_farm({ action: 'accept_errand' }) 列表、复合字符串、短前缀与 life_ranch 最短单
+    world.state.activity = null;
+    const listErrands = await farmTool.handler({ action: 'accept_errand' });
+    assert.match(listErrands.text, /编号 cb396a9c824504f5.*约46分/);
+
+    const rCompound = await farmTool.handler({ action: 'accept_errand', errand_id: '委托编号 cb396a9c824504f5（46分）' });
+    assert.match(rCompound.text, /接下了街坊 大肥鱼 的农牧代管委托.*46 分钟/);
+    assert.equal(world.state.activity?.minutes, 46);
+
+    world.state.activity = null;
+    const rShortPrefix = await farmTool.handler({ action: 'accept_errand', errand_id: 'cb396a9c' });
+    assert.match(rShortPrefix.text, /接下了街坊 大肥鱼 的农牧代管委托.*46 分钟/);
+
+    world.state.activity = null;
+    const rShortest = await ranchTool.handler({ action: 'accept_errand', errand_id: '最短' });
+    assert.match(rShortest.text, /接下了街坊 大肥鱼 的农牧代管委托.*46 分钟/);
+
+    // 5) 不存在的委托编号绝对不能掉进早市菜单
+    world.state.activity = null;
+    const rMissing = await buyTool.handler({ stall_id: 'id:deadbeef12345678' });
+    assert.match(rMissing.text, /没有误买任何普通摊货/);
+    assert.equal(/牛肉面|今天摊上有/.test(rMissing.text), false);
+
+    // 6) 委托专属错误映射不得说成「买摊货」
+    for (const [mode, expectRe, forbidRe] of [
+      ['own stall', /不能自己接自己的单哦/, /摊货/],
+      ['sold out', /抢先接走了/, /买光/],
+      ['pair limit', /买摊货与接委托合计/, /买过两单/],
+    ]) {
+      buyErrorMode = mode;
+      const errRes = await buyTool.handler({ stall_id: 'cb396a9c824504f5' });
+      assert.match(errRes.text, expectRe);
+      assert.equal(forbidRe.test(errRes.text), false);
+    }
+    buyErrorMode = '';
+
+    // 7) 断网时传委托编号绝不落进本地早市
+    await new Promise((resolve) => srv.close(resolve));
+    stopped = true;
+    const rOffline = await buyTool.handler({ stall_id: 'cb396a9c824504f5' });
+    assert.match(rOffline.text, /连不上.*没有误买任何摊货/);
+    assert.equal(/牛肉面|今天摊上有/.test(rOffline.text), false);
+
+    await world.stop();
+  } finally {
+    if (!stopped) await new Promise((resolve) => srv.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
