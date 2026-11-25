@@ -17,7 +17,12 @@ import {
   advance, applyAct, applyGift, applyMove, applyWork, freshState, localDateKey, noteVisit, normalize,
   quoteMove, recentVisits, snapshot, applyCert, applySpend, appendLedger, readLedger, marketPrices, weatherOf,
   certChance, SEEDS, applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm,
-  evaluateStallPlan, pantryCount,
+  evaluateStallPlan, pantryCount, cookedDishCount,
+  ANIMALS, applyRentRanch, applyUnrentRanch, applyBuyAnimal, applyFeedAnimal, applyCollectRanch, applyHarvestRanch,
+  HELPER_PLANS, countPendingFarmWork, calcNeighborErrandQuote, parseErrandMinutes,
+  recordPostedNeighborErrand, applyNeighborErrandCompleted, refundExpiredErrand,
+  runFarmHelperCatchup, applyHireHelper, applyUnhireHelper,
+  RECIPES, evaluateRecipe, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
 } from '../src/state.ts';
 import { readTown, fetchTownStalls, buyTownStall } from '../src/bridge.ts';
 import { LifeWorld } from '../src/world.ts';
@@ -983,7 +988,7 @@ console.log('\n[40] 三期：职业 place 过滤 + 材料成本 + L2 市集买�
   ok(prices.length === 3 && prices.every((p) => p.price > 0), '本地早市物价表正常');
 
   const srv = createServer((req, res) => {
-    if (req.url === '/town/stalls' && req.method === 'GET') {
+    if (req.url?.startsWith('/town/stalls') && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ stalls: [{ id: 'st-1', seller: '阿青', item: '葱油面', price: 14, stock: 2 }] }));
       return;
@@ -1649,7 +1654,266 @@ console.log('\n[55] 种菜（4–9 天慢节奏）、城郊租地、储物篮减
   ok(pWriteOk.ok && pWriteOk.cashCost > 10 && pWriteOk.energyCost >= 10, '见识达标后写作摆摊扣纸笔印刷费与精力', `${pWriteOk.cashCost}元/${pWriteOk.energyCost}精`);
   const rUnrentBlock = applyUnrentFarm(s, false, d4);
   ok(!rUnrentBlock.ok && rUnrentBlock.reason?.includes('莲藕'), '租地里还有未收莲藕时默认拦截退租');
-  ok(applyUnrentFarm(s, true, d4).ok && !s.farm.leased, '传 force=true 可放弃作物退租');
+  ok(!applyUnrentFarm(s, true, d4).ok && s.farm.leased, '非面板用户侧哪怕传 force=true 也不允许抹掉未收作物退租');
+  ok(applyUnrentFarm(s, true, d4, { byUser: true }).ok && !s.farm.leased, '面板用户二次确认(byUser+force)可放弃作物止损退租');
+}
+
+console.log('\n[56] 18 种种子、养殖场（鸡舍/牛棚/鱼塘）按天扣租与蛋奶肉鱼入库');
+{
+  const t0 = new Date('2026-11-25T09:00:00+08:00');
+  const s = freshState(t0);
+  s.home.monthly = 0;
+
+  ok(SEEDS.length === 18, '种子目录已扩充至 18 种', String(SEEDS.length));
+  ok(ANIMALS.length === 4, '养殖目录包含 4 种品类（土鸡/奶牛/草鱼/鲈鱼）', String(ANIMALS.length));
+  ok(RECIPES.length === 18, '菜谱库包含 18 道分级菜谱', String(RECIPES.length));
+
+  // 城中村 0 养殖位拦截土鸡/奶牛
+  const noPen = applyBuyAnimal(s, '散养土鸡', t0);
+  ok(!noPen.ok && noPen.reason?.includes('鸡舍'), '城中村 0 栏位拦截放养土鸡');
+
+  // 搬入老小区自带 1 个鸡舍位
+  s.home.tier = 'old';
+  const buyHen = applyBuyAnimal(s, '散养土鸡', t0);
+  ok(buyHen.ok && s.ranch.pens.length === 1 && s.money.cash === 2975, '老小区自带 1 鸡舍放养土鸡扣 25 元');
+  ok(!applyBuyAnimal(s, '散养土鸡', t0).ok, '老小区鸡舍满 1 栏时拦截第二只');
+
+  // 签约城郊农牧场（180 元起租 + 240/月 = 8 元/天）解锁 +2鸡/+2牛/+2鱼
+  const rentR = applyRentRanch(s, t0);
+  ok(rentR.ok && s.ranch.leased && s.money.cash === 2795, '签约城郊农牧场扣 180 元起租费');
+  const buyCow = applyBuyAnimal(s, '奶牛', t0);
+  const buyCarp = applyBuyAnimal(s, '草鱼', t0);
+  ok(buyCow.ok && buyCarp.ok && s.ranch.pens.length === 3, '租牧场后可同时放养奶牛与塘养草鱼');
+
+  // 推进 1 天扣 8 元农牧场月租 + 喂鸡喂牛 + 收蛋收奶
+  const d1 = new Date(t0.getTime() + 24 * 3_600_000);
+  const cashBeforeAdv = s.money.cash;
+  advance(s, d1, {});
+  ok(s.money.cash === cashBeforeAdv - 8, '城郊农牧场推进 1 天精准扣 8 元月租（240/30）', String(s.money.cash));
+
+  const feedHen = applyFeedAnimal(s, buyHen.pen.id, d1);
+  ok(feedHen.ok && s.ranch.pens[0].feedCount === 1, '第 1 天给土鸡喂食成功');
+  ok(!applyFeedAnimal(s, buyHen.pen.id, d1).ok, '同天同栏不许重复喂食');
+  const colRes = applyCollectRanch(s, '', d1);
+  ok(colRes.ok && colRes.totalQty >= 5, '24h 后收取鲜鸡蛋与鲜牛奶共 ≥5 份入储物篮', String(colRes.totalQty));
+  ok(s.pantry.some((p) => p.itemId === 'egg' && p.origin === 'ranch'), '鲜鸡蛋准确写入储物篮(itemId=egg)');
+  ok(s.pantry.some((p) => p.itemId === 'milk' && p.origin === 'ranch'), '鲜牛奶准确写入储物篮(itemId=milk)');
+
+  // 4 天后草鱼熟：不传 penId 自动起塘鱼塘但不误出栏鸡牛；传 penId 可出栏土鸡肉
+  const d4 = new Date(t0.getTime() + 96 * 3_600_000);
+  const fishH = applyHarvestRanch(s, '', d4);
+  ok(fishH.ok && fishH.harvested.length === 1 && fishH.harvested[0].name === '塘养鲜鱼', '不传 penId 自动起塘成熟草鱼并保留鸡牛');
+  ok(s.pantry.some((p) => p.itemId === 'fresh_fish'), '塘养鲜鱼进入储物篮');
+
+  const d5 = new Date(t0.getTime() + 120 * 3_600_000);
+  // 再喂第 2 次土鸡后出栏，验证累计喂食满 2 次出栏+1份且单价摊入饲料费 (25 + 2*2) / 4 = 7 元
+  const feedHen2 = applyFeedAnimal(s, buyHen.pen.id, d5);
+  ok(feedHen2.ok && s.ranch.pens[0].feedCount === 2, '第 5 天再喂 1 次土鸡累计 2 次喂食');
+  const henH = applyHarvestRanch(s, buyHen.pen.id, d5);
+  const meatItem = s.pantry.find((p) => p.itemId === 'chicken_meat');
+  ok(henH.ok && henH.harvested[0].name === '土鸡肉' && meatItem?.qty === 4, '累计喂满 2 次土鸡出栏得 4 份土鸡肉');
+  ok(meatItem?.unitCost === 7, '出栏单价摊入幼苗与累计饲料费 (25+4)/4 ≈ 7 元', String(meatItem?.unitCost));
+  ok(!applyUnrentRanch(s, false, d5).ok, '场内还有奶牛时默认拦截退租');
+  ok(!applyUnrentRanch(s, true, d5).ok && s.ranch.leased, '非面板用户侧哪怕传 force=true 也不允许抹掉在养动物退租');
+  ok(applyUnrentRanch(s, true, d5, { byUser: true }).ok && !s.ranch.leased, '面板用户二次确认(byUser+force)可退掉农牧场租约');
+
+  // 喂食蛋奶加成仅本周期有效，不喂则恢复基础产蛋量（绝不永久白嫖 +1）
+  const sEgg = freshState(t0);
+  sEgg.home.tier = 'old';
+  const buyE = applyBuyAnimal(sEgg, '散养土鸡', t0);
+  applyFeedAnimal(sEgg, buyE.pen.id, t0);
+  const cDay1 = applyCollectRanch(sEgg, '', new Date(t0.getTime() + 24 * 3_600_000));
+  ok(cDay1.totalQty === 3, '本周期喂过 1 次，第 1 天收蛋 2+1=3 枚', String(cDay1.totalQty));
+  const cDay2 = applyCollectRanch(sEgg, '', new Date(t0.getTime() + 48 * 3_600_000));
+  ok(cDay2.totalQty === 2, '次日未喂恢复基础每天 2 枚（不永久白嫖）', String(cDay2.totalQty));
+}
+
+console.log('\n[57] 菜谱分级（烤红薯免证 vs 厨师招牌菜）、成品菜格与摆摊联动');
+{
+  const t0 = new Date('2026-11-25T10:00:00+08:00');
+  const s = freshState(t0);
+  s.home.monthly = 0;
+
+  // 种红薯 → 7 天收割 → 无需厨师证即可炭烤红薯
+  const rPlantSp = applyPlant(s, '红薯', t0);
+  ok(rPlantSp.ok, '播下蜜薯红薯种子');
+  const d7 = new Date(t0.getTime() + 168 * 3_600_000);
+  const hSp = applyHarvest(s, rPlantSp.plot.id, d7);
+  ok(hSp.ok && s.pantry.some((p) => p.itemId === 'sweet_potato'), '红薯收成精确标注 itemId=sweet_potato');
+
+  const simpleCook = applyCookRecipe(s, '烤红薯', 'eat', d7);
+  ok(simpleCook.ok && s.activity?.label.includes('炭烤红薯'), '无厨师证零门槛可直接炭烤红薯');
+  advance(s, new Date(d7.getTime() + 35 * 60_000), {});
+  ok(s.activity === null, '烤红薯完成后清空进行中活动');
+
+  // 存入 2 份成品格：再次烤红薯存成品格
+  const d8 = new Date(d7.getTime() + 40 * 60_000);
+  const storeRes = applyCookRecipe(s, '烤红薯', 'store', d8);
+  ok(storeRes.ok && cookedDishCount(s.cookedDishes) === 2, 'store 模式将 2 份炭烤红薯存入成品菜格');
+
+  // 成品菜格可直接用来摆料理摊（仅收 2 元打包费，不扣原料费也不拦门槛）
+  const stallPlanCooked = evaluateStallPlan(s, { item: '炭烤红薯', price: 15, stock: 2, freshVeg: false, category: 'food' });
+  ok(stallPlanCooked.ok && stallPlanCooked.cookedUsed === 2 && stallPlanCooked.cashCost === 2, '摆料理摊优先消耗成品菜格仅收 2 元打包费');
+
+  // 也可直接加热吃成品菜
+  const eatDish = applyEatCookedDish(s, '炭烤红薯', d8);
+  ok(eatDish.ok && cookedDishCount(s.cookedDishes) === 1, 'eat_dish 扣 1 份成品菜并开始用餐');
+  advance(s, new Date(d8.getTime() + 25 * 60_000), {});
+
+  // 厨师招牌菜门控测试：备齐番茄+牛肉+土豆后，无厨师证会被拦，考证后放行
+  s.pantry.push(
+    { id: 't1', itemId: 'tomato', kind: 'veg', name: '沙瓤西红柿', qty: 2, freshVeg: true, origin: 'home-grown', unitCost: 3, acquiredAt: d8.toISOString() },
+    { id: 't2', itemId: 'beef', kind: 'meat', name: '精选牛肉', qty: 2, freshVeg: true, origin: 'ranch', unitCost: 15, acquiredAt: d8.toISOString() },
+    { id: 't3', itemId: 'potato', kind: 'starch', name: '黄心土豆', qty: 2, freshVeg: true, origin: 'home-grown', unitCost: 2, acquiredAt: d8.toISOString() },
+  );
+  const chefBlock = applyCookRecipe(s, '西红柿炖牛腩', 'store', new Date(d8.getTime() + 30 * 60_000));
+  ok(!chefBlock.ok && chefBlock.reason?.includes('厨师证'), '无厨师证且烹饪<20 时禁止制作厨师招牌菜');
+
+  s.job.certs.push('厨师证');
+  const chefOk = applyCookRecipe(s, '西红柿炖牛腩', 'store', new Date(d8.getTime() + 30 * 60_000));
+  ok(chefOk.ok && s.cookedDishes.some((d) => d.recipeId === 'tomato_beef_stew' && d.qty === 2), '取得厨师证后成功做出 2 份西红柿炖牛腩存入成品菜格');
+
+  // 职业面板概览聚合检查
+  const ov = buildCareerOverview(s);
+  ok(ov.certs.length === 9 && ov.certs.find((c) => c.name === '厨师证')?.owned === true, 'buildCareerOverview 准确汇总 9 张证与持有状态');
+  ok(ov.recipes.find((r) => r.id === 'roast_sweet_potato')?.unlocked === true, '家常简食在职业面板保持解锁');
+  ok(ov.recipes.find((r) => r.id === 'tomato_beef_stew')?.canCook === true, '持证且余料充足时厨师招牌菜标记材料齐可做');
+}
+
+console.log('\n[58] 农牧帮手（离线/旅行自动浇水、喂食、收蛋奶与全托管）');
+{
+  const t0 = new Date('2026-11-25T10:00:00+08:00');
+  const s = freshState(t0);
+  s.home.monthly = 0;
+  s.home.tier = 'new'; // 4 菜槽 + 1 鸡舍 + 1 鱼塘
+
+  // 1) 空场雇帮手：先校验兜底门槛，再确认空场不扣工钱
+  const hireEmpty = applyHireHelper(s, 'care', t0);
+  ok(hireEmpty.ok && hireEmpty.paid === 0 && s.money.cash === 3000, '空场雇日常照料工不扣当天工钱');
+
+  // 2) 种青菜(5天) + 养土鸡 + 养草鱼(4天)，然后升级成 care 同日再雇或次日推进
+  applyPlant(s, '小青菜', t0);
+  applyBuyAnimal(s, '散养土鸡', t0);
+  applyBuyAnimal(s, '塘养草鱼', t0);
+  const cashAfterSetup = s.money.cash;
+
+  // 离线推进 3 天：应自动补第 1/2/3 天照料（每天 12 工钱 + 2 鸡饲料 + 2 鱼饲料 = 16/天，共 3 天 48 元）
+  const d3 = new Date(t0.getTime() + 72 * 3_600_000);
+  const adv3 = advance(s, d3, {});
+  ok(Boolean(adv3.helperRun) && adv3.helperRun.days === 3, '离线 3 天精确追补 3 个自然日', String(adv3.helperRun?.days));
+  ok(adv3.helperRun?.wagePaid === 36 && adv3.helperRun?.feedPaid === 12, '3 天扣除 36 元工钱与 12 元饲料费', `${adv3.helperRun?.wagePaid}/${adv3.helperRun?.feedPaid}`);
+  ok(s.money.cash === cashAfterSetup - 48, '现金实扣 48 元且未扣她精力', String(s.money.cash));
+  ok(s.farm.plots[0].waterCount >= 3, '帮手 3 天自动给青菜浇水 ≥3 次', String(s.farm.plots[0].waterCount));
+  ok(s.ranch.pens[0].feedCount >= 3 && s.ranch.pens[1].feedCount >= 3, '帮手 3 天自动给鸡和鱼喂食');
+  ok(s.pantry.some((p) => p.itemId === 'egg' && p.qty >= 6), '帮手 3 天自动收进鲜鸡蛋到储物篮');
+
+  // 同日再跑 advance 不应重复扣工钱
+  const cashSameDay = s.money.cash;
+  const advSame = advance(s, new Date(d3.getTime() + 3600_000), {});
+  ok(!advSame.helperRun && s.money.cash === cashSameDay, '同一天重复推进不二次扣帮手工钱');
+
+  // 3) 同日活已干完且无熟菜熟鱼时升级 full 今日 0 差价；第 5 天草鱼(4天)与青菜(5天)应被自动收获，而产蛋鸡保留
+  const upg = applyHireHelper(s, 'full', new Date(d3.getTime() + 3600_000));
+  ok(upg.ok && upg.mode === 'full' && upg.paid === 0, '今日已照料完毕且无待收熟菜时升级全托管 0 差价免扣', String(upg.paid));
+  const d5 = new Date(t0.getTime() + 120 * 3_600_000);
+  advance(s, d5, {});
+  ok(s.farm.plots.length === 0 && s.pantry.some((p) => p.itemId === 'bokchoy'), '全托管到期自动收割小青菜进储物篮');
+  ok(s.ranch.pens.length === 1 && s.ranch.pens[0].group === 'chicken' && s.pantry.some((p) => p.itemId === 'fresh_fish'), '全托管自动起塘草鱼并保留产蛋鸡');
+
+  // 4) 现金不够工钱时自动停工，不扣成负数
+  s.money.cash = 5;
+  const d6 = new Date(d5.getTime() + 24 * 3_600_000);
+  const advLow = advance(s, d6, {});
+  ok(advLow.helperRun?.pausedByLowCash === true && s.farmHelper.mode === 'off' && s.money.cash === 5, '现金不够工钱时帮手自动暂停不扣成负数');
+
+  // 5) 辞退检查
+  s.money.cash = 100;
+  applyHireHelper(s, 'care', d6);
+  ok(applyUnhireHelper(s, d6).ok && s.farmHelper.mode === 'off', 'applyUnhireHelper 可正常辞退帮手');
+}
+
+console.log('\n[59] 活已干完不扣自动照料费 + 真鱼邻里代管报价/动态耗时/超时退款/接单完工领钱');
+{
+  // A) 手动把当天的水浇完、鸡喂完后，自动照料不再扣当天工钱
+  const t0 = new Date('2026-11-25T10:00:00+08:00');
+  const s = freshState(t0);
+  s.home.monthly = 0;
+  s.home.tier = 'old'; // 2 菜槽 + 1 鸡舍
+  applyPlant(s, '红薯', t0);
+  applyWater(s, '', t0, { byUser: true });
+  applyBuyAnimal(s, '散养土鸡', t0);
+  applyFeedAnimal(s, '', t0, { byUser: true });
+
+  const pendingCare = countPendingFarmWork(s, 'care', t0);
+  ok(pendingCare.total === 0, '手动浇完水喂完食后待干活数量精确为 0', String(pendingCare.total));
+  const cashBeforeHire = s.money.cash;
+  const hireDone = applyHireHelper(s, 'care', t0);
+  ok(hireDone.ok && hireDone.paid === 0 && s.money.cash === cashBeforeHire, '当天活已干完再雇照料工 0 元不扣费', String(hireDone.paid));
+
+  // 已跑过一次后，次日若一上线先由本人手动干完活，再触发跨日追补同样 0 元不扣工钱
+  const d1 = new Date(t0.getTime() + 24 * 3_600_000);
+  applyWater(s, '', d1, { byUser: true });
+  applyFeedAnimal(s, '', d1, { byUser: true });
+  applyCollectRanch(s, '', d1, { byUser: true });
+  const cashBeforeD1Catchup = s.money.cash;
+  const catchupDone = runFarmHelperCatchup(s, new Date(d1.getTime() + 3600_000));
+  ok(Boolean(catchupDone) && catchupDone.wagePaid === 0 && s.money.cash === cashBeforeD1Catchup, '次日本人干完活后再触发追补仍 0 元不扣工钱', String(catchupDone?.wagePaid));
+
+  // B) 若当天地里正好有成熟作物待收，同日由 care 升 full 精准补 8 元差价并收割
+  const d7 = new Date(t0.getTime() + 168 * 3_600_000);
+  s.farmHelper.lastRunDay = localDateKey(d7);
+  s.farmHelper.dailyWage = 12;
+  const upgMature = applyHireHelper(s, 'full', d7);
+  ok(upgMature.ok && upgMature.paid === 8 && s.farm.plots.length === 0, '有熟菜待收时同日升 full 仅补 8 元差价并完成收割', `${upgMature.paid}/${s.farm.plots.length}`);
+
+  // C) 邻里代管报价严格低于自动照料（¥12 / ¥20），且耗时随动植物数量单调递增
+  const qSmall = calcNeighborErrandQuote(1, 0, 'care');
+  const qLarge = calcNeighborErrandQuote(4, 3, 'care');
+  const qFullMax = calcNeighborErrandQuote(8, 6, 'full');
+  ok(qSmall.wage < 12 && qLarge.wage <= 9 && qFullMax.wage <= 15, '邻里代管单价恒低于系统自动价（care<=9, full<=15）', `${qSmall.wage}/${qLarge.wage}/${qFullMax.wage}`);
+  ok(qLarge.minutes > qSmall.minutes && qFullMax.minutes <= 90, '邻里耗时随动植物数量递增并封顶 90 分钟', `${qSmall.minutes} -> ${qLarge.minutes} -> ${qFullMax.minutes}`);
+  ok(parseErrandMinutes(qLarge.itemLabel) === qLarge.minutes, 'parseErrandMinutes 能精确还原委托名称中的分钟数');
+
+  // D) 挂出邻里代管委托预扣托管 → 2h 未超时跳过今日自动扣费 → 满 6h 超时退还预扣并回落自动照料
+  const sErr = freshState(t0);
+  sErr.home.monthly = 0;
+  sErr.home.tier = 'new';
+  applyPlant(sErr, '小青菜', t0);
+  applyBuyAnimal(sErr, '散养土鸡', t0);
+  applyHireHelper(sErr, 'care', t0, { deferTodayForNeighbor: true });
+  const cashBeforePost = sErr.money.cash;
+  const q2 = calcNeighborErrandQuote(1, 1, 'care');
+  const rec = recordPostedNeighborErrand(sErr, { stallId: 'st-n1', mode: 'care', wage: q2.wage, minutes: q2.minutes, now: t0 });
+  ok(rec.ok && sErr.money.cash === cashBeforePost - q2.wage, '发邻里委托先托管预扣对应工钱', String(q2.wage));
+
+  const t2h = new Date(t0.getTime() + 2 * 3_600_000);
+  const advWait = advance(sErr, t2h, {});
+  ok(!advWait.helperRun && sErr.money.cash === cashBeforePost - q2.wage, '6 小时等待期内不走自动照料重复扣费');
+
+  const t7h = new Date(t0.getTime() + 7 * 3_600_000);
+  const advFallback = advance(sErr, t7h, {});
+  // 到期退款 +7 元，然后自动照料扣 12 元工钱 + 2 元鸡饲料 = 净变化 -(14 - 7) 相对于 t2h，即相对于 cashBeforePost 是 -14 元
+  ok(advFallback.helperRun?.errandRefunded === q2.wage, '超过 6 小时无人接单自动原路退还预扣工钱', String(advFallback.helperRun?.errandRefunded));
+  ok(advFallback.helperRun?.wagePaid === 12 && advFallback.helperRun?.feedPaid === 2, '退预扣后自动回落系统照料完成当日浇水喂食', `${advFallback.helperRun?.wagePaid}/${advFallback.helperRun?.feedPaid}`);
+  ok(sErr.money.cash === cashBeforePost - 14 && sErr.farm.plots[0].waterCount === 1 && sErr.ranch.pens[0].feedCount === 1, '退款与自动兜底后资金账和农活结果分毫不差', String(sErr.money.cash));
+
+  // E) 街坊真鱼接单后活动完工领全额工钱且不占当日正式打工额度
+  const helperFish = freshState(t0);
+  helperFish.home.monthly = 0;
+  helperFish.activity = {
+    kind: 'act',
+    id: 'neighbor_errand',
+    label: '帮雇主鱼照料农牧场',
+    from: t0.toISOString(),
+    until: new Date(t0.getTime() + q2.minutes * 60_000).toISOString(),
+    minutes: q2.minutes,
+    perMin: { energy: -8 / q2.minutes, social: 10 / q2.minutes },
+    errandPay: q2.wage,
+    errandEmployer: '雇主鱼',
+  };
+  const advHelperFinish = advance(helperFish, new Date(t0.getTime() + (q2.minutes + 1) * 60_000), {});
+  ok(helperFish.money.cash === 3000 + q2.wage && helperFish.job.lastAt === '', '街坊真鱼完工实得全额零花钱且不占今日正式打工额度', `${helperFish.money.cash}/${helperFish.job.lastAt}`);
+  ok(advHelperFinish.completed.some((c) => c.id === 'neighbor_errand' && c.workEarned === q2.wage), 'CompletedTask 记录领钱完工供账本入账');
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败 ${fail ? '← 有红，别交付' : ''}`);

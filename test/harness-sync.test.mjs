@@ -1098,7 +1098,7 @@ test('第五轮代次：life_buy 在 stalls/buy 两个外部 await 中 clear 都
     const stallsStarted = new Promise((resolve) => { markStalls = resolve; });
     globalThis.fetch = async (input) => {
       const url = String(input instanceof URL ? input : input?.url ?? input);
-      if (url.endsWith('/town/stalls')) {
+      if (new URL(url).pathname === '/town/stalls') {
         markStalls();
         await stallsGate;
         return response({ stalls: [stall] });
@@ -1133,7 +1133,7 @@ test('第五轮代次：life_buy 在 stalls/buy 两个外部 await 中 clear 都
     const buyStarted = new Promise((resolve) => { markBuy = resolve; });
     globalThis.fetch = async (input) => {
       const url = String(input instanceof URL ? input : input?.url ?? input);
-      if (url.endsWith('/town/stalls')) return response({ stalls: [stall] });
+      if (new URL(url).pathname === '/town/stalls') return response({ stalls: [stall] });
       if (url.endsWith('/town/buy')) {
         buyCalls2++;
         markBuy();

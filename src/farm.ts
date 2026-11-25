@@ -1,8 +1,8 @@
 /**
- * 菜园种菜、城郊租地、储物篮与五赛道摆摊真实成本引擎（2026-11-24）。
+ * 菜园种菜、城郊租地、储物篮、成品菜格与五赛道摆摊真实成本引擎（2026-11-25）。
  *
- * 严格遵守「鱼不吃鱼」底线：全部种子、作物与食材仅限水乡浅滩藕菱菌菇及陆上果蔬粮豆，
- * 不含任何鱼肉、虾蟹、贝类或海鲜表达。
+ * 严格遵守「鱼不吃鱼」底线（植物部分）：全部种子、作物与植物食材仅限水乡浅滩藕菱菌菇及陆上果蔬粮豆，
+ * 种子目录与作物名称不含鱼虾蟹贝海鲜。淡水食用鱼的养殖与烹饪统一在 ranch.ts / recipes.ts 处理。
  */
 
 export type FarmHomeTier = 'urban-village' | 'old' | 'new' | 'villa';
@@ -18,15 +18,19 @@ export const LEASE_PLOT_COUNT = 4;
 export const LEASE_SIGNUP_FEE = 100;
 export const LEASE_MONTHLY_RENT = 150;
 
+export type IngredientKind = 'veg' | 'starch' | 'fruit' | 'herb' | 'egg_dairy' | 'meat' | 'fish';
+
 export interface SeedDef {
   id: string;
   name: string;
   aliases: readonly string[];
+  category: 'veg' | 'starch' | 'fruit' | 'herb';
   price: number;
   growHours: number;
   baseYield: number;
   solarTerms: readonly string[];
   needSpace?: boolean;
+  dishHints: readonly string[];
   note: string;
 }
 
@@ -35,82 +39,220 @@ export const SEEDS: readonly SeedDef[] = [
     id: 'scallion',
     name: '香葱与罗勒',
     aliases: ['葱', '香葱', '小葱', '罗勒'],
+    category: 'herb',
     price: 5,
     growHours: 96,
     baseYield: 2,
     solarTerms: ['立春', '雨水', '立夏', '小满'],
+    dishHints: ['葱油拌面', '葱烧鲜物', '豆腐浓汤'],
     note: '好养活的香草调味菜，4 天熟，窗台小花盆也能种。',
+  },
+  {
+    id: 'spinach',
+    name: '鲜嫩菠菜',
+    aliases: ['菠菜', '红根菠菜'],
+    category: 'veg',
+    price: 5,
+    growHours: 96,
+    baseYield: 3,
+    solarTerms: ['惊蛰', '春分', '霜降', '立冬'],
+    dishHints: ['蒜蓉清炒时蔬', '香菇青菜粥'],
+    note: '4 天快熟叶菜，拌面清炒喝粥都能派上用场。',
   },
   {
     id: 'bokchoy',
     name: '鲜嫩小青菜',
     aliases: ['青菜', '小青菜', '小白菜', '油菜'],
+    category: 'veg',
     price: 6,
     growHours: 120,
     baseYield: 3,
     solarTerms: ['惊蛰', '春分', '清明', '霜降', '立冬'],
+    dishHints: ['蒜蓉清炒时蔬', '香菇青菜粥'],
     note: '5 天长成水灵青菜，下汤面炒菜最百搭。',
   },
   {
-    id: 'tomato',
-    name: '沙瓤西红柿',
-    aliases: ['番茄', '西红柿'],
-    price: 10,
-    growHours: 144,
-    baseYield: 3,
-    solarTerms: ['谷雨', '立夏', '芒种', '夏至'],
-    note: '6 天熟透红亮，自家吃或挂市集摊上都抢手。',
-  },
-  {
-    id: 'mushroom',
-    name: '椴木鲜香菇',
-    aliases: ['香菇', '菌菇', '蘑菇'],
-    price: 12,
-    growHours: 144,
-    baseYield: 3,
-    solarTerms: ['白露', '秋分', '寒露', '小雪', '大雪'],
-    note: '6 天采摘肥厚香菇，煮菌菇煲底味极鲜。',
-  },
-  {
-    id: 'eggplant',
-    name: '紫皮长茄与辣椒',
-    aliases: ['茄子', '长茄', '辣椒'],
-    price: 9,
-    growHours: 144,
-    baseYield: 3,
-    solarTerms: ['小满', '夏至', '小暑', '大暑'],
-    note: '6 天结果，炭烤或家常烧茄子都很顶饿。',
-  },
-  {
-    id: 'lotus',
-    name: '浅滩嫩莲藕',
-    aliases: ['莲藕', '嫩藕', '藕'],
-    price: 14,
-    growHours: 168,
+    id: 'cabbage',
+    name: '黄心大白菜',
+    aliases: ['白菜', '大白菜', '黄芽白'],
+    category: 'veg',
+    price: 6,
+    growHours: 120,
     baseYield: 4,
-    solarTerms: ['夏至', '大暑', '立秋', '处暑'],
-    needSpace: true,
-    note: '水乡招牌浅滩作物，需至少 2 槽空间（老小区及以上或租地），7 天熟，一次收 4 份。',
+    solarTerms: ['寒露', '霜降', '立冬', '小雪'],
+    dishHints: ['蒜蓉清炒时蔬', '白菜豆腐暖锅'],
+    note: '5 天包心，耐放产量稳，秋冬炖暖锅少不了。',
+  },
+  {
+    id: 'radish',
+    name: '水润白萝卜',
+    aliases: ['萝卜', '白萝卜'],
+    category: 'veg',
+    price: 6,
+    growHours: 120,
+    baseYield: 4,
+    solarTerms: ['霜降', '立冬', '小雪', '大雪'],
+    dishHints: ['莲藕萝卜炖牛腩', '白菜暖锅'],
+    note: '5 天出脆甜白萝卜，煲牛腩和暖锅汤头特别清润。',
+  },
+  {
+    id: 'potato',
+    name: '黄心土豆',
+    aliases: ['土豆', '马铃薯', '洋芋'],
+    category: 'starch',
+    price: 7,
+    growHours: 144,
+    baseYield: 4,
+    solarTerms: ['清明', '谷雨', '立秋', '白露'],
+    dishHints: ['椒盐烤土豆', '番茄炖牛腩'],
+    note: '6 天刨薯，直接烤着吃或切块炖牛腩都顶饱。',
+  },
+  {
+    id: 'carrot',
+    name: '甜脆胡萝卜',
+    aliases: ['胡萝卜', '红萝卜'],
+    category: 'veg',
+    price: 7,
+    growHours: 144,
+    baseYield: 3,
+    solarTerms: ['白露', '秋分', '寒露', '霜降'],
+    dishHints: ['番茄炖牛腩'],
+    note: '6 天拔萝卜，清甜耐存，炖菜提味提色。',
   },
   {
     id: 'sweet_potato',
     name: '蜜薯红薯',
     aliases: ['红薯', '蜜薯', '地瓜', '番薯'],
+    category: 'starch',
     price: 8,
     growHours: 168,
     baseYield: 4,
     solarTerms: ['立秋', '处暑', '白露', '霜降'],
-    note: '7 天起薯，烤红薯或做红薯粥本钱低产量稳。',
+    dishHints: ['炭烤红薯'],
+    note: '7 天起薯，烤红薯不挑厨艺自己就能烤着吃，本钱低产量稳。',
+  },
+  {
+    id: 'soybean',
+    name: '金粒黄豆',
+    aliases: ['黄豆', '大豆', '毛豆', '豆腐'],
+    category: 'starch',
+    price: 8,
+    growHours: 144,
+    baseYield: 4,
+    solarTerms: ['小满', '芒种', '立秋', '处暑'],
+    dishHints: ['奶白豆腐鲜汤'],
+    note: '6 天收豆，磨豆点豆腐最配清甜鲜汤。',
+  },
+  {
+    id: 'eggplant',
+    name: '紫皮长茄与辣椒',
+    aliases: ['茄子', '长茄', '辣椒'],
+    category: 'veg',
+    price: 9,
+    growHours: 144,
+    baseYield: 3,
+    solarTerms: ['小满', '夏至', '小暑', '大暑'],
+    dishHints: ['酱烧茄子鸡丁'],
+    note: '6 天结果，炭烤或配肉酱烧都很下饭。',
+  },
+  {
+    id: 'winter_melon',
+    name: '粉皮冬瓜',
+    aliases: ['冬瓜'],
+    category: 'veg',
+    price: 9,
+    growHours: 168,
+    baseYield: 4,
+    solarTerms: ['小暑', '大暑', '立秋', '处暑'],
+    needSpace: true,
+    dishHints: ['冬瓜菌菇老鸡汤'],
+    note: '7 天长成大冬瓜，需至少 2 槽搭架空间，煲老鸡汤清甜解腻。',
+  },
+  {
+    id: 'tomato',
+    name: '沙瓤西红柿',
+    aliases: ['番茄', '西红柿'],
+    category: 'veg',
+    price: 10,
+    growHours: 144,
+    baseYield: 3,
+    solarTerms: ['谷雨', '立夏', '芒种', '夏至'],
+    dishHints: ['番茄鸡蛋汤', '番茄炖牛腩'],
+    note: '6 天熟透红亮，做家常汤或炖牛腩、挂市集摊上都抢手。',
+  },
+  {
+    id: 'corn',
+    name: '水果甜玉米',
+    aliases: ['玉米', '甜玉米', '棒子'],
+    category: 'starch',
+    price: 10,
+    growHours: 168,
+    baseYield: 4,
+    solarTerms: ['芒种', '夏至', '小暑', '大暑'],
+    dishHints: ['蒸甜玉米南瓜', '奶香玉米浓汤'],
+    note: '7 天掰玉米，蒸着当简餐或配鲜奶熬浓汤都很甜。',
+  },
+  {
+    id: 'pumpkin',
+    name: '板栗南瓜',
+    aliases: ['南瓜', '小金瓜', '栗面南瓜'],
+    category: 'starch',
+    price: 11,
+    growHours: 168,
+    baseYield: 4,
+    solarTerms: ['处暑', '白露', '秋分', '霜降'],
+    dishHints: ['蒸甜玉米南瓜', '奶香玉米浓汤'],
+    note: '7 天熟透，粉糯香甜，蒸食或配鲜奶打浓汤。',
+  },
+  {
+    id: 'mushroom',
+    name: '椴木鲜香菇',
+    aliases: ['香菇', '菌菇', '蘑菇'],
+    category: 'veg',
+    price: 12,
+    growHours: 144,
+    baseYield: 3,
+    solarTerms: ['白露', '秋分', '寒露', '小雪', '大雪'],
+    dishHints: ['香菇青菜粥', '香菇滑鸡煲', '冬瓜菌菇鸡汤'],
+    note: '6 天采摘肥厚香菇，熬粥炖鸡汤底味极鲜。',
+  },
+  {
+    id: 'rice',
+    name: '水乡稻谷',
+    aliases: ['稻谷', '大米', '稻米', '米'],
+    category: 'starch',
+    price: 12,
+    growHours: 192,
+    baseYield: 5,
+    solarTerms: ['谷雨', '立夏', '秋分', '寒露'],
+    needSpace: true,
+    dishHints: ['香菇青菜粥'],
+    note: '8 天熟新米，需至少 2 槽浅水田，一次收 5 份。',
+  },
+  {
+    id: 'lotus',
+    name: '浅滩嫩莲藕',
+    aliases: ['莲藕', '嫩藕', '藕'],
+    category: 'veg',
+    price: 14,
+    growHours: 168,
+    baseYield: 4,
+    solarTerms: ['夏至', '大暑', '立秋', '处暑'],
+    needSpace: true,
+    dishHints: ['莲藕萝卜炖牛腩'],
+    note: '水乡招牌浅滩作物，需至少 2 槽空间（老小区及以上或租地），7 天熟，一次收 4 份。',
   },
   {
     id: 'strawberry',
     name: '奶油草莓与青梅',
     aliases: ['草莓', '青梅'],
+    category: 'fruit',
     price: 18,
     growHours: 216,
     baseYield: 4,
     solarTerms: ['立春', '雨水', '清明', '谷雨'],
-    note: '9 天慢熟精品果品，直接挂鲜蔬摊或做甜点利润最高。',
+    dishHints: ['奶油草莓蛋糕'],
+    note: '9 天慢熟精品果品，直接挂鲜蔬摊或配鸡蛋鲜奶做蛋糕利润最高。',
   },
 ];
 
@@ -137,13 +279,29 @@ export interface FarmState {
 
 export interface PantryItem {
   id: string;
+  itemId?: string;
+  kind?: IngredientKind;
   name: string;
   qty: number;
   freshVeg: boolean;
-  origin: 'home-grown' | 'town-buy' | 'market';
+  origin: 'home-grown' | 'ranch' | 'town-buy' | 'market';
   unitCost: number;
   fromSeller?: string;
   acquiredAt: string;
+}
+
+export interface CookedDishItem {
+  id: string;
+  recipeId: string;
+  name: string;
+  qty: number;
+  unitCost: number;
+  foodGain: number;
+  funGain: number;
+  energyGain?: number;
+  cleanGain?: number;
+  tier: 'simple' | 'chef';
+  cookedAt: string;
 }
 
 export type StallCategory = 'produce' | 'food' | 'craft' | 'writing' | 'photo';
@@ -182,18 +340,18 @@ export const STALL_RULES_GUIDE: readonly StallRuleGuide[] = [
   {
     category: 'produce',
     label: '鲜蔬农产',
-    requirement: '自家种植收成入储物篮；未种菜时 ≤20 元可按早市现批转卖（利润薄），>20 元或指定鲜蔬摊需自产鲜蔬',
-    costFormula: '用自产鲜蔬仅扣 3 元/批打包保鲜费；现批进货另扣约定价 60%/份',
+    requirement: '自家种植收成或养殖产出的肉蛋奶鱼入储物篮；未种养时 ≤20 元可按早市现批转卖（利润薄），>20 元或指定鲜蔬摊需自产农牧货',
+    costFormula: '用自产蔬果肉蛋奶鱼仅扣 3 元/批打包保鲜费；现批进货另扣约定价 60%/份',
     energyNote: '扣 3–12 精力',
-    examples: '香葱、浅滩嫩莲藕、蜜薯红薯、奶油草莓',
+    examples: '香葱、蜜薯红薯、鲜鸡蛋、鲜牛奶、塘养鲜鱼',
   },
   {
     category: 'food',
     label: '料理熟食',
-    requirement: '≤25 元家常小吃不限；>25 元需「厨师证 / 烹饪≥10 / 小烤箱 / 老小区及以上厨房」其一',
-    costFormula: '先消耗储物篮鲜蔬（仅 3 元/份油盐燃料费）；无囤货从早市现买原料（定价 38%/份，持厨师证 28%）',
+    requirement: '≤25 元家常小吃或使用已做好的「成品菜格」不限；>25 元现做需「厨师证 / 烹饪≥10 / 小烤箱 / 老小区及以上厨房」其一',
+    costFormula: '先消耗成品菜格（整批仅 2 元打包保鲜费）；再耗储物篮原料（3 元/份油盐费）；无囤货早市现买原料（定价 38%/份，持厨师证 28%）',
     energyNote: '扣 4–18 精力',
-    examples: '手擀面、桂花糕、卤豆干、菌菇砂锅饭',
+    examples: '炭烤红薯、番茄鸡蛋汤、西红柿炖牛腩、鲜香菇滑鸡煲',
   },
   {
     category: 'writing',
@@ -233,6 +391,7 @@ export interface FarmHostState {
   freshVegUntil?: string;
   farm: FarmState;
   pantry: PantryItem[];
+  cookedDishes?: CookedDishItem[];
   tellable: { id: string; text: string; at: string; said: boolean }[];
   moodlets: { id: string; source: string; text: string; kind: 'good' | 'bad'; expiresAt: string }[];
   updatedAt: string;
@@ -240,6 +399,35 @@ export interface FarmHostState {
 
 export function freshFarm(): FarmState {
   return { leased: false, leasedSince: '', leasedMonthly: LEASE_MONTHLY_RENT, plots: [] };
+}
+
+export function inferIngredientId(name: string, explicitId?: string): { itemId: string; kind: IngredientKind } {
+  const s = String(explicitId || '').trim().toLowerCase();
+  if (s) {
+    const sd = SEEDS.find((x) => x.id === s);
+    if (sd) return { itemId: sd.id, kind: sd.category };
+    if (s === 'egg' || s === 'milk') return { itemId: s, kind: 'egg_dairy' };
+    if (s === 'chicken_meat' || s === 'beef') return { itemId: s, kind: 'meat' };
+    if (s === 'fresh_fish') return { itemId: s, kind: 'fish' };
+  }
+  const raw = String(name || '').trim();
+  const low = raw.toLowerCase();
+  for (const sd of SEEDS) {
+    if (
+      sd.id === low
+      || sd.name === raw
+      || raw.includes(sd.name)
+      || sd.aliases.some((a) => raw.includes(a))
+    ) {
+      return { itemId: sd.id, kind: sd.category };
+    }
+  }
+  if (/牛奶|鲜奶|奶/.test(raw)) return { itemId: 'milk', kind: 'egg_dairy' };
+  if (/鸡蛋|土鸡蛋|鸭蛋|蛋/.test(raw)) return { itemId: 'egg', kind: 'egg_dairy' };
+  if (/牛肉|牛腩/.test(raw)) return { itemId: 'beef', kind: 'meat' };
+  if (/鸡肉|土鸡|鸡腿|鸡/.test(raw)) return { itemId: 'chicken_meat', kind: 'meat' };
+  if (/鲈鱼|草鱼|鲫鱼|鲜鱼|鱼/.test(raw)) return { itemId: 'fresh_fish', kind: 'fish' };
+  return { itemId: 'bokchoy', kind: 'veg' };
 }
 
 export function normFarm(raw: unknown): FarmState {
@@ -275,6 +463,7 @@ export function normFarm(raw: unknown): FarmState {
 
 export function normPantry(raw: unknown): PantryItem[] {
   if (!Array.isArray(raw)) return [];
+  const validKinds = new Set<IngredientKind>(['veg', 'starch', 'fruit', 'herb', 'egg_dairy', 'meat', 'fish']);
   const out: PantryItem[] = [];
   for (const x of raw) {
     if (!x || typeof x !== 'object') continue;
@@ -282,18 +471,122 @@ export function normPantry(raw: unknown): PantryItem[] {
     const name = String(o.name ?? '').trim();
     const qty = Math.max(0, Math.round(Number(o.qty) || 0));
     if (!name || qty <= 0) continue;
+    const inferred = inferIngredientId(name, o.itemId);
+    const kind = validKinds.has(o.kind as IngredientKind) ? (o.kind as IngredientKind) : inferred.kind;
+    const origin: PantryItem['origin'] = (o.origin === 'home-grown' || o.origin === 'ranch' || o.origin === 'town-buy')
+      ? o.origin
+      : 'market';
     out.push({
       id: typeof o.id === 'string' && o.id ? o.id : `pan-${out.length + 1}`,
+      itemId: typeof o.itemId === 'string' && o.itemId ? o.itemId : inferred.itemId,
+      kind,
       name,
       qty,
       freshVeg: Boolean(o.freshVeg),
-      origin: o.origin === 'home-grown' || o.origin === 'town-buy' ? o.origin : 'market',
+      origin,
       unitCost: Math.max(0, Math.round(Number(o.unitCost) || 0)),
       ...(typeof o.fromSeller === 'string' && o.fromSeller ? { fromSeller: o.fromSeller } : {}),
       acquiredAt: typeof o.acquiredAt === 'string' ? o.acquiredAt : '',
     });
   }
-  return out.slice(-40);
+  return out.slice(-50);
+}
+
+export function normCookedDishes(raw: unknown): CookedDishItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CookedDishItem[] = [];
+  for (const x of raw) {
+    if (!x || typeof x !== 'object') continue;
+    const o = x as Partial<CookedDishItem>;
+    const name = String(o.name ?? '').trim();
+    const recipeId = String(o.recipeId ?? '').trim();
+    const qty = Math.max(0, Math.round(Number(o.qty) || 0));
+    if (!name || !recipeId || qty <= 0) continue;
+    out.push({
+      id: typeof o.id === 'string' && o.id ? o.id : `dish-${out.length + 1}`,
+      recipeId,
+      name,
+      qty,
+      unitCost: Math.max(0, Math.round(Number(o.unitCost) || 0)),
+      foodGain: Math.max(10, Math.round(Number(o.foodGain) || 35)),
+      funGain: Math.max(0, Math.round(Number(o.funGain) || 6)),
+      ...(Number.isFinite(Number(o.energyGain)) ? { energyGain: Math.round(Number(o.energyGain)) } : {}),
+      ...(Number.isFinite(Number(o.cleanGain)) ? { cleanGain: Math.round(Number(o.cleanGain)) } : {}),
+      tier: o.tier === 'chef' ? 'chef' : 'simple',
+      cookedAt: typeof o.cookedAt === 'string' ? o.cookedAt : '',
+    });
+  }
+  return out.slice(-30);
+}
+
+export function addCookedDish(
+  dishes: CookedDishItem[],
+  item: Omit<CookedDishItem, 'id'>,
+): CookedDishItem[] {
+  const qty = Math.max(0, Math.round(item.qty));
+  if (!item.name.trim() || !item.recipeId.trim() || qty <= 0) return dishes;
+  const hit = dishes.find((x) => x.recipeId === item.recipeId && x.name === item.name);
+  if (hit) {
+    hit.qty += qty;
+    hit.unitCost = Math.max(0, Math.round(item.unitCost));
+    hit.cookedAt = item.cookedAt;
+    return dishes.slice(-30);
+  }
+  dishes.push({
+    id: `dish-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    ...item,
+    qty,
+  });
+  return dishes.slice(-30);
+}
+
+export function cookedDishCount(dishes: readonly CookedDishItem[] | undefined): number {
+  if (!Array.isArray(dishes)) return 0;
+  let total = 0;
+  for (const d of dishes) {
+    if (d.qty > 0) total += d.qty;
+  }
+  return total;
+}
+
+export function consumeCookedDish(
+  dishes: CookedDishItem[],
+  qty: number,
+  preferNameOrId?: string,
+): { consumed: number; sources: string[]; totalUnitCost: number } {
+  let need = Math.max(0, Math.round(qty));
+  if (need <= 0 || !Array.isArray(dishes) || !dishes.length) {
+    return { consumed: 0, sources: [], totalUnitCost: 0 };
+  }
+  const q = String(preferNameOrId ?? '').trim().toLowerCase();
+  const score = (d: CookedDishItem) => {
+    if (!q) return 1;
+    const n = d.name.toLowerCase();
+    const r = d.recipeId.toLowerCase();
+    if (n === q || r === q) return 0;
+    if (n.includes(q) || q.includes(n)) return 1;
+    return 2;
+  };
+  const candidates = dishes
+    .filter((d) => d.qty > 0)
+    .sort((a, b) => score(a) - score(b));
+
+  let consumed = 0;
+  let totalUnitCost = 0;
+  const sources: string[] = [];
+  for (const d of candidates) {
+    if (need <= 0) break;
+    const take = Math.min(need, d.qty);
+    d.qty -= take;
+    need -= take;
+    consumed += take;
+    totalUnitCost += take * d.unitCost;
+    sources.push(`自制「${d.name}」×${take}`);
+  }
+  for (let i = dishes.length - 1; i >= 0; i--) {
+    if (dishes[i].qty <= 0) dishes.splice(i, 1);
+  }
+  return { consumed, sources, totalUnitCost };
 }
 
 export function normStallRecords(raw: unknown): StallRecord[] {
@@ -394,30 +687,49 @@ export function addPantryItem(
 ): PantryItem[] {
   const qty = Math.max(0, Math.round(item.qty));
   if (!item.name.trim() || qty <= 0) return pantry;
+  const inferred = inferIngredientId(item.name, item.itemId);
+  const itemId = item.itemId || inferred.itemId;
+  const kind = item.kind || inferred.kind;
   const hit = pantry.find((x) =>
-    x.name === item.name
+    (x.itemId || inferIngredientId(x.name).itemId) === itemId
+    && x.name === item.name
     && x.origin === item.origin
     && (x.fromSeller || '') === (item.fromSeller || ''),
   );
   if (hit) {
     hit.qty += qty;
+    hit.itemId = itemId;
+    hit.kind = kind;
     hit.unitCost = Math.max(0, Math.round(item.unitCost));
     hit.acquiredAt = item.acquiredAt;
-    return pantry.slice(-40);
+    return pantry.slice(-50);
   }
   pantry.push({
     id: `pan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     ...item,
+    itemId,
+    kind,
     qty,
   });
-  return pantry.slice(-40);
+  return pantry.slice(-50);
 }
 
 export function pantryCount(pantry: readonly PantryItem[], opts: { homeOnly?: boolean } = {}): number {
   let total = 0;
   for (const x of pantry) {
-    if (opts.homeOnly && x.origin !== 'home-grown') continue;
+    if (opts.homeOnly && x.origin !== 'home-grown' && x.origin !== 'ranch') continue;
     if (x.qty > 0) total += x.qty;
+  }
+  return total;
+}
+
+export function pantryCountByIds(pantry: readonly PantryItem[], ingredientIds: readonly string[]): number {
+  const idSet = new Set(ingredientIds);
+  let total = 0;
+  for (const x of pantry) {
+    if (x.qty <= 0) continue;
+    const id = x.itemId || inferIngredientId(x.name).itemId;
+    if (idSet.has(id)) total += x.qty;
   }
   return total;
 }
@@ -429,9 +741,9 @@ export function consumePantry(
 ): { consumed: number; sources: string[]; totalUnitCost: number } {
   let need = Math.max(0, Math.round(qty));
   if (need <= 0) return { consumed: 0, sources: [], totalUnitCost: 0 };
-  const rank = (o: PantryItem['origin']) => (o === 'home-grown' ? 0 : o === 'town-buy' ? 1 : 2);
+  const rank = (o: PantryItem['origin']) => (o === 'home-grown' ? 0 : o === 'ranch' ? 1 : o === 'town-buy' ? 2 : 3);
   const candidates = pantry
-    .filter((x) => x.qty > 0 && (!opts.homeOnly || x.origin === 'home-grown'))
+    .filter((x) => x.qty > 0 && (!opts.homeOnly || x.origin === 'home-grown' || x.origin === 'ranch'))
     .sort((a, b) => rank(a.origin) - rank(b.origin));
 
   let consumed = 0;
@@ -446,10 +758,43 @@ export function consumePantry(
     totalUnitCost += take * item.unitCost;
     const fromLabel = item.origin === 'home-grown'
       ? `自种「${item.name}」×${take}`
-      : item.origin === 'town-buy'
-        ? `向${item.fromSeller || '街坊'}买的「${item.name}」×${take}`
-        : `早市备的「${item.name}」×${take}`;
+      : item.origin === 'ranch'
+        ? `自家牧场「${item.name}」×${take}`
+        : item.origin === 'town-buy'
+          ? `向${item.fromSeller || '街坊'}买的「${item.name}」×${take}`
+          : `早市备的「${item.name}」×${take}`;
     sources.push(fromLabel);
+  }
+  for (let i = pantry.length - 1; i >= 0; i--) {
+    if (pantry[i].qty <= 0) pantry.splice(i, 1);
+  }
+  return { consumed, sources, totalUnitCost };
+}
+
+export function consumePantryByIngredient(
+  pantry: PantryItem[],
+  ingredientIds: readonly string[],
+  qty: number,
+): { consumed: number; sources: string[]; totalUnitCost: number } {
+  let need = Math.max(0, Math.round(qty));
+  if (need <= 0) return { consumed: 0, sources: [], totalUnitCost: 0 };
+  const idSet = new Set(ingredientIds);
+  const rank = (o: PantryItem['origin']) => (o === 'home-grown' ? 0 : o === 'ranch' ? 1 : o === 'town-buy' ? 2 : 3);
+  const candidates = pantry
+    .filter((x) => x.qty > 0 && idSet.has(x.itemId || inferIngredientId(x.name).itemId))
+    .sort((a, b) => rank(a.origin) - rank(b.origin));
+
+  let consumed = 0;
+  let totalUnitCost = 0;
+  const sources: string[] = [];
+  for (const item of candidates) {
+    if (need <= 0) break;
+    const take = Math.min(need, item.qty);
+    item.qty -= take;
+    need -= take;
+    consumed += take;
+    totalUnitCost += take * item.unitCost;
+    sources.push(`${item.name}×${take}`);
   }
   for (let i = pantry.length - 1; i >= 0; i--) {
     if (pantry[i].qty <= 0) pantry.splice(i, 1);
@@ -462,11 +807,12 @@ export function applyPlant(
   seedQuery: string,
   now: Date,
   solarTermName = '',
+  opts: { byUser?: boolean } = {},
 ): { ok: boolean; reason?: string; plot?: FarmPlot; paid: number; cash: number } {
   const seed = findSeed(seedQuery);
   if (!seed) {
-    const names = SEEDS.map((s) => `${s.name}（${s.price}元/${Math.round(s.growHours / 24)}天）`).join('、');
-    return { ok: false, reason: `没认出「${seedQuery || '空白'}」是什么种子。现有种子：${names}。`, paid: 0, cash: state.money.cash };
+    const names = SEEDS.slice(0, 10).map((s) => `${s.name}(${s.price}元)`).join('、');
+    return { ok: false, reason: `没认出「${seedQuery || '空白'}」是什么种子。现有 ${SEEDS.length} 种种子，例如：${names} 等。`, paid: 0, cash: state.money.cash };
   }
   const homeCap = homeFarmSlots(state.home.tier);
   const maxSlots = totalFarmSlots(state);
@@ -517,9 +863,10 @@ export function applyPlant(
   state.money.spent += seed.price;
   state.farm.plots.push(plot);
   const days = Math.round(seed.growHours / 24);
+  const who = opts.byUser ? '你在面板上帮我' : '';
   pushMemory(
     state,
-    `在${source === 'leased' ? '城郊菜地' : '家里种植槽'}播下了「${seed.name}」（花 ${seed.price} 元，约 ${days} 天成熟${solarBonus ? '，正赶上应季好节气' : ''}）。`,
+    `${who}在${source === 'leased' ? '城郊菜地' : '家里种植槽'}播下了「${seed.name}」（花 ${seed.price} 元，约 ${days} 天成熟${solarBonus ? '，正赶上应季好节气' : ''}）。`,
     now,
   );
   state.updatedAt = now.toISOString();
@@ -530,6 +877,7 @@ export function applyWater(
   state: FarmHostState,
   plotId: string,
   now: Date,
+  opts: { byUser?: boolean } = {},
 ): { ok: boolean; reason?: string; watered: number; energy: number } {
   if (!state.farm.plots.length) {
     return { ok: false, reason: '地里还没有种东西呢，先选种子播下去吧。', watered: 0, energy: state.vitals.energy };
@@ -559,15 +907,15 @@ export function applyWater(
   if (target.wateredDay === today) {
     return { ok: false, reason: `「${target.name}」今天已经浇过水了，每天浇一次就够啦。`, watered: 0, energy: state.vitals.energy };
   }
-  if (state.vitals.energy < 5) {
+  if (!opts.byUser && state.vitals.energy < 5) {
     return { ok: false, reason: `精力只剩 ${Math.round(state.vitals.energy)} 点了，歇一歇再去提水浇菜吧。`, watered: 0, energy: state.vitals.energy };
   }
 
-  state.vitals.energy = Math.max(0, state.vitals.energy - 3);
+  if (!opts.byUser) state.vitals.energy = Math.max(0, state.vitals.energy - 3);
   target.waterCount += 1;
   target.wateredAt = now.toISOString();
   target.wateredDay = today;
-  pushMemory(state, `提水浇了「${target.name}」（已照料 ${target.waterCount} 次）。`, now);
+  pushMemory(state, `${opts.byUser ? '你顺手帮菜地里的' : '提水浇了'}「${target.name}」浇水（已照料 ${target.waterCount} 次）。`, now);
   state.updatedAt = now.toISOString();
   return { ok: true, watered: 1, energy: state.vitals.energy };
 }
@@ -576,6 +924,7 @@ export function applyHarvest(
   state: FarmHostState,
   plotId: string,
   now: Date,
+  opts: { byUser?: boolean } = {},
 ): { ok: boolean; reason?: string; harvested: { name: string; qty: number }[]; totalQty: number } {
   if (!state.farm.plots.length) {
     return { ok: false, reason: '地里还空着，先播种再等成熟收成吧。', harvested: [], totalQty: 0 };
@@ -617,6 +966,8 @@ export function applyHarvest(
     const seed = findSeed(p.seedId);
     const unitCost = Math.max(1, Math.round((seed?.price ?? 8) / qty));
     addPantryItem(state.pantry, {
+      itemId: p.seedId,
+      kind: seed?.category ?? 'veg',
       name: p.name,
       qty,
       freshVeg: true,
@@ -635,17 +986,17 @@ export function applyHarvest(
   if (!Number.isFinite(oldVegMs) || nextVegMs > oldVegMs) {
     state.freshVegUntil = new Date(nextVegMs).toISOString();
   }
-  state.fitness = Math.min(100, Math.max(5, (state.fitness ?? 25) + 0.3));
+  if (!opts.byUser) state.fitness = Math.min(100, Math.max(5, (state.fitness ?? 25) + 0.3));
   state.moodlets = state.moodlets.filter((m) => m.source !== 'farm-harvest');
   const sumStr = harvested.map((h) => `${h.name}×${h.qty}`).join('、');
   state.moodlets.push({
     id: `m-fh-${now.getTime().toString(36)}`,
     source: 'farm-harvest',
-    text: `亲手收成了 ${sumStr}，看着满满一篮真踏实`,
+    text: `收成了 ${sumStr}，看着满满一篮真踏实`,
     kind: 'good',
     expiresAt: new Date(now.getTime() + 5 * 3_600_000).toISOString(),
   });
-  pushMemory(state, `收成了亲手种的 ${sumStr}，放进了储物篮。`, now);
+  pushMemory(state, `${opts.byUser ? '你帮忙收成了' : '收成了亲手种的'} ${sumStr}，放进了储物篮。`, now);
   state.updatedAt = now.toISOString();
   return { ok: true, harvested, totalQty };
 }
@@ -653,6 +1004,7 @@ export function applyHarvest(
 export function applyRentFarm(
   state: FarmHostState,
   now: Date,
+  opts: { byUser?: boolean } = {},
 ): { ok: boolean; reason?: string; paid: number; cash: number } {
   if (state.farm.leased) {
     return { ok: false, reason: '你已经租着一块城郊菜地了（4 槽，月租 150 元）。', paid: 0, cash: state.money.cash };
@@ -670,7 +1022,7 @@ export function applyRentFarm(
   state.farm.leased = true;
   state.farm.leasedSince = now.toISOString();
   state.farm.leasedMonthly = LEASE_MONTHLY_RENT;
-  pushMemory(state, `签下了一块城郊菜地（多出 ${LEASE_PLOT_COUNT} 个种菜槽，签约费 ${LEASE_SIGNUP_FEE} 元，月租 ${LEASE_MONTHLY_RENT} 元）。`, now);
+  pushMemory(state, `${opts.byUser ? '你在面板上签下了一块' : '签下了一块'}城郊菜地（多出 ${LEASE_PLOT_COUNT} 个种菜槽，签约费 ${LEASE_SIGNUP_FEE} 元，月租 ${LEASE_MONTHLY_RENT} 元）。`, now);
   state.updatedAt = now.toISOString();
   return { ok: true, paid: LEASE_SIGNUP_FEE, cash: state.money.cash };
 }
@@ -679,21 +1031,25 @@ export function applyUnrentFarm(
   state: FarmHostState,
   force: boolean,
   now: Date,
+  opts: { byUser?: boolean } = {},
 ): { ok: boolean; reason?: string } {
   if (!state.farm.leased) {
     return { ok: false, reason: '现在没有租着城郊菜地。' };
   }
   const leasedPlots = state.farm.plots.filter((p) => p.source === 'leased');
-  if (leasedPlots.length > 0 && !force) {
+  if (leasedPlots.length > 0 && !(force && opts.byUser)) {
+    const names = leasedPlots.map((p) => p.name).join('、');
     return {
       ok: false,
-      reason: `城郊菜地里还有 ${leasedPlots.map((p) => p.name).join('、')} 没收完，先收割或传 force: true 放弃作物退租。`,
+      reason: opts.byUser
+        ? `城郊菜地里还有 ${names} 没收完，先收割，或再次点击「确认退租」放弃作物止损。`
+        : `城郊菜地里还有 ${names} 没收完，必须先收割清空才能退租（若确实要放弃作物止损，请由用户在面板上二次确认退租）。`,
     };
   }
   state.farm.plots = state.farm.plots.filter((p) => p.source !== 'leased');
   state.farm.leased = false;
   state.farm.leasedSince = '';
-  pushMemory(state, '退掉了城郊菜地的租约。', now);
+  pushMemory(state, `${opts.byUser ? '你在面板上' : ''}退掉了城郊菜地的租约。`, now);
   state.updatedAt = now.toISOString();
   return { ok: true };
 }
@@ -718,6 +1074,7 @@ export interface StallPlanResult {
   freshVeg: boolean;
   explicitCategory: boolean;
   cashCost: number;
+  cookedUsed: number;
   pantryUsed: number;
   pantrySources: string[];
   pantryUnitCostSum: number;
@@ -756,6 +1113,7 @@ export function evaluateStallPlan(
     freshVeg,
     explicitCategory,
     cashCost: 0,
+    cookedUsed: 0,
     pantryUsed: 0,
     pantrySources: [],
     pantryUnitCostSum: 0,
@@ -765,6 +1123,7 @@ export function evaluateStallPlan(
   });
 
   let cashCost = 0;
+  let cookedUsed = 0;
   let pantryUsed = 0;
   let energyCost = 0;
   let breakdown = '';
@@ -776,10 +1135,10 @@ export function evaluateStallPlan(
     if (homeAvail >= stock) {
       pantryUsed = stock;
       cashCost = packFee;
-      breakdown = `消耗自产鲜蔬 ${stock} 份 + 打包保鲜费 ${packFee} 元`;
+      breakdown = `消耗自产农牧货 ${stock} 份 + 打包保鲜费 ${packFee} 元`;
     } else if (explicitCategory || price > 20) {
       return fail(
-        `自产鲜蔬储备不足（家里储物篮里自己种出的只有 ${homeAvail} 份，摆 ${stock} 份还差 ${stock - homeAvail} 份）。先用 life_farm 在阳台/菜地种菜收成再摆鲜蔬摊吧。`,
+        `自产鲜蔬储备不足（家里储物篮里自己种养的只有 ${homeAvail} 份，摆 ${stock} 份还差 ${stock - homeAvail} 份）。先用 life_farm / life_ranch 收成或从面板打理再摆摊吧。`,
         energyCost,
       );
     } else {
@@ -789,8 +1148,8 @@ export function evaluateStallPlan(
       pantryUsed = fromHome;
       cashCost = packFee + buyNeed * wholesalePer;
       breakdown = fromHome > 0
-        ? `自产鲜蔬 ${fromHome} 份 + 早市现批 ${buyNeed} 份(${buyNeed * wholesalePer}元) + 打包 ${packFee} 元`
-        : `暂无自产囤菜，按早市现批进货 ${buyNeed} 份(${buyNeed * wholesalePer}元) + 打包 ${packFee} 元（自己种菜卖只用 3 元打包费）`;
+        ? `自产农牧货 ${fromHome} 份 + 早市现批 ${buyNeed} 份(${buyNeed * wholesalePer}元) + 打包 ${packFee} 元`
+        : `暂无自产囤货，按早市现批进货 ${buyNeed} 份(${buyNeed * wholesalePer}元) + 打包 ${packFee} 元（自己种养卖只用 3 元打包费）`;
     }
   } else if (category === 'food') {
     energyCost = Math.min(18, 4 + stock);
@@ -798,22 +1157,28 @@ export function evaluateStallPlan(
     const cookExp = Number(skills.cooking ?? 0);
     const hasOven = gear.includes('oven');
     const hasKitchen = homeTier !== 'urban-village';
-    if (price > 25 && !hasChef && cookExp < 10 && !hasOven && !hasKitchen) {
+    const cookedAvail = usePantry ? cookedDishCount(state.cookedDishes) : 0;
+    cookedUsed = Math.min(stock, cookedAvail);
+    const remNeed = stock - cookedUsed;
+
+    if (remNeed > 0 && price > 25 && !hasChef && cookExp < 10 && !hasOven && !hasKitchen) {
       return fail(
-        `想卖 ${price} 元一盘的进阶/私房料理，需要先满足之一：考取「厨师证」、烹饪熟练度达到 10、添置「家用小烤箱」，或搬出城中村拥有独立厨房。`,
+        `想现做 ${price} 元一盘的进阶/私房料理，需要先满足之一：考取「厨师证」、烹饪熟练度达到 10、添置「家用小烤箱」，或搬出城中村拥有独立厨房（若先把菜做进成品格则不限）。`,
         energyCost,
       );
     }
     const avail = usePantry ? pantryCount(state.pantry) : 0;
-    const fromPantry = Math.min(stock, avail);
-    const buyNeed = stock - fromPantry;
+    const fromPantry = Math.min(remNeed, avail);
+    const buyNeed = remNeed - fromPantry;
     const fuelPer = price <= 5 ? Math.min(3, Math.max(1, Math.ceil(price * 0.45))) : 3;
     const marketPer = price <= 5
       ? Math.max(1, Math.ceil(price * 0.45))
       : Math.max(2, Math.ceil(price * (hasChef ? 0.28 : 0.38)));
     pantryUsed = fromPantry;
-    cashCost = fromPantry * fuelPer + buyNeed * marketPer;
+    const cookedPackFee = cookedUsed > 0 ? 2 : 0;
+    cashCost = cookedPackFee + fromPantry * fuelPer + buyNeed * marketPer;
     const segs: string[] = [];
+    if (cookedUsed > 0) segs.push(`用已做好的成品菜 ${cookedUsed} 份(打包保鲜 ${cookedPackFee}元)`);
     if (fromPantry > 0) segs.push(`用储物篮鲜蔬 ${fromPantry} 份(油盐燃料 ${fromPantry * fuelPer}元)`);
     if (buyNeed > 0) segs.push(`早市现买原料 ${buyNeed} 份(${buyNeed * marketPer}元)`);
     breakdown = segs.join(' + ');
@@ -879,6 +1244,7 @@ export function evaluateStallPlan(
     freshVeg,
     explicitCategory,
     cashCost,
+    cookedUsed,
     pantryUsed,
     pantrySources: [],
     pantryUnitCostSum: 0,

@@ -1,5 +1,5 @@
 /*
- * 模拟鱼生面板（1.3.1，原生 ES module，零打包直跑）。
+ * 模拟鱼生面板（1.4.2，原生 ES module，零打包直跑）。
  */
 
 /** 作者的 QQ 群。反馈栏那一行和简介里写的是同一个号，改这里一处就够。 */
@@ -54,7 +54,7 @@ const TEXT = {
     moveTo: '搬过去',
     cantMove: '钱不够',
     moving: '搬…',
-    moveNote: '换房押二付一（老房子押金不退）；住得越好除日常损耗更慢，家里种植槽也越多（1→2→4→8 槽）。',
+    moveNote: '换房押二付一（老房子押金不退）；住得越好日常损耗越慢，种植槽与鸡舍/鱼池也越多。',
     noGoal: '暂未定目标。',
     left: '还差 ¥{n}',
     canNow: '攒够了，可以办了',
@@ -125,7 +125,7 @@ const TEXT = {
     moveTo: 'Move',
     cantMove: 'short',
     moving: 'moving…',
-    moveNote: 'Two months deposit upfront; better housing gives more garden slots (1→2→4→8).',
+    moveNote: 'Two months deposit upfront; better housing gives more garden slots & ranch pens.',
     noGoal: 'No goal set.',
     left: '¥{n} left',
     canNow: 'ready',
@@ -207,9 +207,20 @@ const CAT_LABEL = {
 };
 
 const ORIGIN_LABEL = {
-  'home-grown': '自产',
+  'home-grown': '自种',
+  ranch: '自家牧场',
   'town-buy': '街坊',
   market: '早市',
+};
+
+const KIND_LABEL = {
+  veg: '蔬菜',
+  starch: '粮薯',
+  fruit: '鲜果',
+  herb: '香草',
+  egg_dairy: '蛋奶',
+  meat: '肉类',
+  fish: '鲜鱼',
 };
 
 const HOME_SLOTS_FALLBACK = {
@@ -223,18 +234,18 @@ const DEFAULT_STALL_RULES = [
   {
     category: 'produce',
     label: '鲜蔬农产',
-    requirement: '自家种植收成入储物篮；未种菜时 ≤20 元可按早市现批转卖（利润薄），>20 元或指定鲜蔬摊需自产鲜蔬',
-    costFormula: '用自产鲜蔬仅扣 3 元/批打包保鲜费；现批进货另扣约定价 60%/份',
+    requirement: '自家种植收成或养殖产出的肉蛋奶鱼入储物篮；未种养时 ≤20 元可按早市现批转卖（利润薄），>20 元或指定鲜蔬摊需自产农牧货',
+    costFormula: '用自产蔬果肉蛋奶鱼仅扣 3 元/批打包保鲜费；现批进货另扣约定价 60%/份',
     energyNote: '扣 3–12 精力',
-    examples: '香葱、浅滩嫩莲藕、蜜薯红薯、奶油草莓',
+    examples: '香葱、蜜薯红薯、鲜鸡蛋、鲜牛奶、塘养鲜鱼',
   },
   {
     category: 'food',
     label: '料理熟食',
-    requirement: '≤25 元家常小吃不限；>25 元需「厨师证 / 烹饪≥10 / 小烤箱 / 老小区及以上厨房」其一',
-    costFormula: '先消耗储物篮鲜蔬（仅 3 元/份油盐燃料费）；无囤货从早市现买原料（定价 38%/份，持厨师证 28%）',
+    requirement: '≤25 元家常小吃或使用已做好的「成品菜格」不限；>25 元现做需「厨师证 / 烹饪≥10 / 小烤箱 / 老小区及以上厨房」其一',
+    costFormula: '先消耗成品菜格（整批仅 2 元打包保鲜费）；再耗储物篮原料（3 元/份油盐费）；无囤货早市现买原料（定价 38%/份，持厨师证 28%）',
     energyNote: '扣 4–18 精力',
-    examples: '手擀面、桂花糕、卤豆干、菌菇砂锅饭',
+    examples: '炭烤红薯、番茄鸡蛋汤、西红柿炖牛腩、鲜香菇滑鸡煲',
   },
   {
     category: 'writing',
@@ -377,6 +388,7 @@ function ensureStyle(root) {
 .lf-chip.bad { background: #fdeceb; border-color: #f0cfcb; color: #c0392b; }
 .lf-chip.good { background: #eaf5ee; border-color: #cbe7d6; color: #2f855a; }
 .lf-chip.info { background: #eff6ff; border-color: #dbeafe; color: #1d4ed8; }
+.lf-chip.warn { background: #fff7ed; border-color: #fed7aa; color: #c2410c; }
 .lf-muted { color: #9ca3af; font-size: 12.5px; margin: 0; }
 
 .lf-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
@@ -419,13 +431,13 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-st-info .st-desc { font-size: 11.5px; color: #6b7280; margin-top: 1px; }
 .lf-st-info .lf-chips { margin-top: 4px; }
 
-/* 鱼市街单行紧凑摊位清单 & 菜园种植槽 */
-.lf-mkt-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+/* 鱼市街单行紧凑摊位清单 & 农牧场操作面板 */
+.lf-mkt-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .lf-mkt-head h3 { margin: 0; }
-.lf-mkt-guide { font-size: 11.5px; color: #64748b; margin: 0 0 8px; line-height: 1.55; }
-.lf-mkt-tip { font-size: 11.5px; color: #64748b; margin: 0 0 8px; }
-.lf-mkt-tip summary { cursor: pointer; color: #2f6fed; user-select: none; }
-.lf-mkt-tip ul { margin: 5px 0 0; padding-left: 16px; line-height: 1.65; color: #475569; }
+.lf-mkt-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lf-feedback { margin: 6px 0 8px; padding: 6px 10px; border-radius: 7px; font-size: 12px; }
+.lf-feedback.ok { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+.lf-feedback.err { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
 .lf-board-strip { font-size: 12px; padding: 6px 9px; border-radius: 7px; background: #fdf8ec; border: 1px solid #ecd9b6; color: #7a5b1c; margin-bottom: 8px; }
 .lf-stall { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px dashed #f0f1f3; }
 .lf-stall:last-child { border-bottom: 0; }
@@ -451,10 +463,10 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-step { padding: 8px 10px; border-radius: 8px; border: 1px solid #e5e7eb; background: #f8fafc; }
 .lf-step .st-t { font-size: 12px; font-weight: 650; color: #1e3a8a; margin-bottom: 3px; }
 .lf-step .st-d { font-size: 11.5px; color: #475569; line-height: 1.5; }
-.lf-plots { display: grid; grid-template-columns: repeat(auto-fill, minmax(185px, 1fr)); gap: 8px; margin-bottom: 8px; }
-.lf-plot { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; background: #fbfcfd; display: flex; flex-direction: column; gap: 4px; }
+.lf-plots { display: grid; grid-template-columns: repeat(auto-fill, minmax(195px, 1fr)); gap: 8px; margin-bottom: 8px; }
+.lf-plot { border: 1px solid #e5e7eb; border-radius: 8px; padding: 9px 10px; background: #fbfcfd; display: flex; flex-direction: column; gap: 5px; }
 .lf-plot.ready { border-color: #86efac; background: #f0fdf4; }
-.lf-plot.empty { border-style: dashed; border-color: #cbd5e1; background: #f8fafc; justify-content: center; min-height: 76px; }
+.lf-plot.empty { border-style: dashed; border-color: #cbd5e1; background: #f8fafc; justify-content: space-between; min-height: 86px; }
 .lf-plot .ptop { display: flex; justify-content: space-between; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: #1f2937; }
 .lf-plot .ptag { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: #eef2f7; color: #475569; font-weight: 500; }
 .lf-plot.ready .ptag { background: #dcfce7; color: #166534; }
@@ -462,6 +474,9 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-plot .ptrack { height: 6px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
 .lf-plot .pfill { height: 100%; border-radius: 999px; background: #3b82f6; }
 .lf-plot.ready .pfill { background: #16a34a; }
+.lf-plot .pact { display: flex; gap: 5px; flex-wrap: wrap; margin-top: auto; padding-top: 3px; }
+.lf-plot .pact select { flex: 1 1 110px; min-width: 0; font-size: 11.5px; padding: 3px 5px; }
+
 .lf-table-wrap { overflow-x: auto; width: 100%; margin-top: 6px; border: 1px solid #e5e7eb; border-radius: 8px; }
 .lf-table { width: 100%; min-width: 520px; border-collapse: collapse; font-size: 11.5px; }
 .lf-table thead th { background: #f3f4f6; color: #374151; font-weight: 600; text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
@@ -469,12 +484,33 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-table tbody tr:last-child td { border-bottom: 0; }
 .lf-say-list { margin: 6px 0 0; padding-left: 16px; font-size: 11.5px; color: #475569; line-height: 1.65; }
 
+/* 职业与工坊面板 */
+.lf-cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 8px; }
+.lf-cert { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; background: #fbfcfd; display: flex; flex-direction: column; gap: 4px; }
+.lf-cert.owned { border-color: #86efac; background: #f0fdf4; }
+.lf-cert .ctop { display: flex; justify-content: space-between; align-items: center; gap: 5px; font-weight: 600; font-size: 12.5px; }
+.lf-cert .cmeta { font-size: 11px; color: #64748b; }
+.lf-recipe-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.lf-recipe { border: 1px solid #e5e7eb; border-radius: 8px; padding: 9px 10px; background: #fbfcfd; display: flex; flex-direction: column; gap: 5px; }
+.lf-recipe.ready { border-color: #86efac; background: #f0fdf4; }
+.lf-recipe.locked { opacity: .82; background: #f8fafc; }
+.lf-recipe .rtop { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.lf-recipe .rmeta { font-size: 11px; color: #64748b; }
+.lf-ing { font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid #e5e7eb; }
+.lf-ing.ok { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
+.lf-ing.miss { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+
 .lf-list { margin: 0; padding: 0; list-style: none; }
 .lf-list li { font-size: 12.5px; padding: 4px 0; border-bottom: 1px dashed #f0f1f3; color: #374151; }
 .lf-list li:last-child { border-bottom: 0; }
 .lf-list .id { color: #b0b5bd; font-size: 11px; margin-left: 6px; font-family: ui-monospace, Consolas, monospace; }
 .lf-btn { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #e5e7eb; background: #fff; color: #1b1e24; cursor: pointer; text-decoration: none; display: inline-block; }
-.lf-btn:hover { background: #f7f8fa; }
+.lf-btn:hover:not(:disabled) { background: #f7f8fa; }
+.lf-btn:disabled { opacity: .55; cursor: not-allowed; }
+.lf-btn.sm { font-size: 11.5px; padding: 3px 8px; }
+.lf-btn.primary { border-color: #93c5fd; background: #eff6ff; color: #1d4ed8; font-weight: 600; }
+.lf-btn.primary:hover:not(:disabled) { background: #dbeafe; }
+.lf-btn.danger { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
 .lf-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .lf-msg { font-size: 12px; color: #6b7280; }
 .lf-tools-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
@@ -526,13 +562,13 @@ function colorOf(v) {
   return '#2f855a';
 }
 
-const copyText = (text) => {
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
-  } catch { /* fallback */ }
+const copyText = (str) => {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(str).catch(() => {});
+  }
   try {
     const ta = document.createElement('textarea');
-    ta.value = text;
+    ta.value = str;
     ta.style.position = 'fixed';
     ta.style.opacity = '0';
     document.body.append(ta);
@@ -545,8 +581,22 @@ const copyText = (text) => {
 
 function renderStallRow(st, showSeller, recordMap) {
   const row = el('div', 'lf-stall');
-  if (st.note) row.title = `摊主吆喝：${st.note}`;
+  if (st.note) row.title = `说明：${st.note}`;
   const left = el('div', 'lf-stall-l');
+  if (st.kind === 'errand') {
+    const ePill = el('span', 'lf-cat-pill', '邻里代管委托');
+    ePill.setAttribute('data-cat', 'writing');
+    left.append(ePill);
+    left.append(el('span', 'nm', st.item));
+    if (showSeller && st.seller) left.append(el('span', 'seller', `雇主：${st.seller}`));
+    const mMatch = /(\d+)\s*分/.exec(String(st.item || ''));
+    const mins = mMatch ? Number(mMatch[1]) : 25;
+    left.append(el('span', 'lf-fx-pill', `忙活约 ${mins} 分 · 社交+10 · 不占正式出工`));
+    const right = el('div', 'lf-stall-r');
+    right.append(el('b', null, `挣+¥${st.price}`), document.createTextNode(`×${st.stock}`));
+    row.append(left, right);
+    return row;
+  }
   if (st.category && CAT_LABEL[st.category]) {
     const cPill = el('span', 'lf-cat-pill', CAT_LABEL[st.category]);
     cPill.setAttribute('data-cat', st.category);
@@ -580,9 +630,15 @@ function renderDealsList(ds) {
   const ul = el('ul', 'lf-list');
   for (const dl of ds) {
     const li = el('li');
-    li.append(document.createTextNode(`${dl.seen ? '' : '[新] '}${dl.buyerPet} 买走 ${dl.qty} 份「${dl.item}」`));
-    if (dl.income > 0) {
-      li.append(el('span', 'lf-income-pill', `+¥${dl.income}`));
+    const isErrand = Boolean(dl.isErrand);
+    if (isErrand) {
+      li.append(document.createTextNode(`${dl.seen ? '' : '[新] '}${dl.buyerPet} 接下「${dl.item}」帮忙照料`));
+      li.append(el('span', 'lf-chip good', '已代管完成'));
+    } else {
+      li.append(document.createTextNode(`${dl.seen ? '' : '[新] '}${dl.buyerPet} 买走 ${dl.qty} 份「${dl.item}」`));
+      if (dl.income > 0) {
+        li.append(el('span', 'lf-income-pill', `+¥${dl.income}`));
+      }
     }
     if (dl.at) li.append(el('span', 'id', fmtLocal(dl.at, 'mdhm')));
     ul.append(li);
@@ -697,8 +753,28 @@ export default {
               'lf-chip' + (fm.readyCount > 0 ? ' good' : ''),
               `菜园 ${fm.usedSlots}/${fm.totalSlots}槽${fm.readyCount > 0 ? `（可收${fm.readyCount}）` : ''}${fm.leased ? '·含租地' : ''}`,
             );
-            fChip.title = '详细作物进度、租地与五赛道摆摊说明请查看「菜园与鱼市街」页签';
+            fChip.title = '可在「农牧场与鱼市街」页签手动播种、浇水与收成';
             subRow.append(fChip);
+          }
+          if (d.ranch) {
+            const rn = d.ranch;
+            const tot = (rn.totalSlots?.chicken || 0) + (rn.totalSlots?.cow || 0) + (rn.totalSlots?.fish || 0);
+            const used = (rn.usedSlots?.chicken || 0) + (rn.usedSlots?.cow || 0) + (rn.usedSlots?.fish || 0);
+            if (tot > 0 || used > 0) {
+              const readySum = (rn.collectableCount || 0) + (rn.readyHarvestCount || 0);
+              const rChip = el(
+                'span',
+                'lf-chip' + (readySum > 0 ? ' good' : ''),
+                `牧场 ${used}/${tot}栏${readySum > 0 ? `（可收${readySum}）` : ''}${rn.leased ? '·含城郊' : ''}`,
+              );
+              subRow.append(rChip);
+            }
+          }
+          if (d.farmHelper && d.farmHelper.mode && d.farmHelper.mode !== 'off') {
+            const hLab = d.farmHelper.mode === 'full' ? '全托管' : '照料工';
+            const hChip = el('span', 'lf-chip info', `代管：${hLab}(¥${d.farmHelper.dailyWage}/天)`);
+            if (d.farmHelper.lastSummary) hChip.title = d.farmHelper.lastSummary;
+            subRow.append(hChip);
           }
           const pan = d.pantry || [];
           const panQty = pan.reduce((sum, x) => sum + (Number(x.qty) || 0), 0);
@@ -708,6 +784,13 @@ export default {
             subRow.append(pChip);
           } else if (d.freshVeg) {
             subRow.append(el('span', 'lf-chip good', '带鲜蔬（下厨更香）'));
+          }
+          const dishes = d.cookedDishes || [];
+          const dishQty = dishes.reduce((sum, x) => sum + (Number(x.qty) || 0), 0);
+          if (dishQty > 0) {
+            const dChip = el('span', 'lf-chip info', `成品菜 ${dishQty} 份`);
+            dChip.title = dishes.map((x) => `${x.name}×${x.qty}`).join('、');
+            subRow.append(dChip);
           }
           whoCard.append(subRow);
         };
@@ -1004,77 +1087,200 @@ export default {
       },
     },
 
-    day: {
+    career: {
       async mount(ctx) {
         ensureStyle(ctx.root);
         const app = el('div', 'lf');
         ctx.root.append(app);
 
         const head = el('div', 'lf-head');
-        const title = el('h1', 'lf-town', '一天 · 时间轴');
+        head.append(el('h1', 'lf-town', '职业与工坊'));
         const ver = el('span', 'lf-ver', '');
-        head.append(title, ver);
+        head.append(ver);
         const sub = el('p', 'lf-sub', '读取中…');
-        const tlCard = el('div', 'lf-card');
-        const ledgerCard = el('div', 'lf-card');
+
+        const summaryCard = el('div', 'lf-card');
+        const certCard = el('div', 'lf-card');
+        const recipeCard = el('div', 'lf-card');
+        const jobCard = el('div', 'lf-card');
         const foot = el('div', 'lf-foot');
         const reload = el('button', 'lf-btn', '刷新');
         reload.type = 'button';
         foot.append(reload);
-        app.append(head, sub, tlCard, ledgerCard, foot);
+
+        app.append(head, sub, summaryCard, certCard, recipeCard, jobCard, foot);
+
+        let recipeTab = 'all';
+        let lastSnap = null;
 
         const render = (d) => {
           if (!d) return;
+          lastSnap = d;
           ver.textContent = d.version ? `· v${d.version}` : '';
-          const statusNow = d.asleep
-            ? `在睡（约余 ${d.asleep.hoursLeft}h）`
-            : (d.activity ? `正在「${d.activity.label}」（剩 ${d.activity.minutesLeft}m）` : '空闲');
-          const parts = [
-            `${d.today || ''} ${d.dayPart || ''} ${d.clock || ''}`.trim(),
-            d.solarTerm?.name ? `节气·${d.solarTerm.name}` : '',
-            d.streetWindow ? `${d.streetWindow.place}${d.streetWindow.label}` : '',
-            statusNow,
-          ].filter(Boolean);
-          sub.textContent = parts.join(' · ');
+          const c = d.career || {};
+          const jb = c.currentJob || d.job || {};
+          const ownedCerts = (jb.certs || []).length;
+          sub.textContent = `${jb.what ? `当前职业：${jb.what}（¥${jb.daily}/天）` : '暂无固定营生'} · 工龄 ${jb.days || 0} 天 · 见识 ${c.knowledge ?? d.knowledge ?? 0} · 已考取 ${ownedCerts}/${(c.certs || []).length || 9} 证`;
 
-          tlCard.innerHTML = '';
-          const list = (d.todayTellable && d.todayTellable.length) ? d.todayTellable : (d.recentTellable || []);
-          tlCard.append(el('h3', null, (d.todayTellable && d.todayTellable.length) ? '今天经历' : '近期经历（今日暂无）'));
-          if (!list.length) {
-            tlCard.append(el('p', 'lf-muted', '暂无记录。'));
-          } else {
-            const ul = el('ul', 'lf-list');
-            for (const it of list) {
-              const li = el('li');
-              li.append(document.createTextNode(it.text || ''));
-              li.append(el('span', 'id', fmtLocal(it.at, 'mdhm')));
-              ul.append(li);
-            }
-            tlCard.append(ul);
-          }
+          /* 1. 职业概览与手艺/装备 */
+          summaryCard.innerHTML = '';
+          summaryCard.append(el('h3', null, '当前职业、八大手艺与装备（只读：对话里让它考证/打工/培训/下厨）'));
+          const stats = el('div', 'lf-stats');
+          const c1 = el('div', 'lf-stat');
+          c1.append(el('span', 'lab', '当前营生'), el('div', 'val', jb.what || '自由接活'));
+          c1.append(el('div', 'sub2', d.job?.workedToday ? '今日已出工 ✓' : '今日还未出工'));
+          const c2 = el('div', 'lf-stat');
+          c2.append(el('span', 'lab', '日薪与工龄'), el('div', 'val', `¥${jb.daily || 0}/天`));
+          c2.append(el('div', 'sub2', `累计出工 ${jb.days || 0} 天`));
+          const c3 = el('div', 'lf-stat');
+          c3.append(el('span', 'lab', '见识水平'), el('div', 'val', String(c.knowledge ?? d.knowledge ?? 0)));
+          c3.append(el('div', 'sub2', '读书 +6 / 天，不学 -1.2 / 天'));
+          const readyRecipes = (c.recipes || []).filter((r) => r.canCook);
+          const c4 = el('div', 'lf-stat');
+          c4.append(el('span', 'lab', '此刻能做的菜'), el('div', 'val', `${readyRecipes.length} 道`));
+          c4.append(el('div', 'sub2', `成品菜格 ${(c.cookedDishes || []).reduce((s, x) => s + x.qty, 0)} 份`));
+          stats.append(c1, c2, c3, c4);
+          summaryCard.append(stats);
 
-          ledgerCard.innerHTML = '';
-          const lList = (d.todayLedger && d.todayLedger.length) ? d.todayLedger : (d.ledger || []);
-          ledgerCard.append(el('h3', null, (d.todayLedger && d.todayLedger.length) ? '今日流水' : '近期流水'));
-          if (!lList.length) {
-            ledgerCard.append(el('p', 'lf-muted', '暂无收支流水。'));
-          } else {
-            const ul = el('ul', 'lf-list');
-            for (const e of lList) {
-              const li = el('li');
-              const sign = e.kind === 'income' ? '+' : '-';
-              li.append(document.createTextNode(`${sign}¥${e.amount} · ${e.note || e.source}${e.payee ? `（${e.payee}）` : ''}`));
-              if (e.ts) li.append(el('span', 'id', fmtLocal(e.ts, 'mdhm')));
-              ul.append(li);
-            }
-            ledgerCard.append(ul);
+          const skillRow = el('div', 'lf-subrow');
+          for (const sk of (c.skills || [])) {
+            const ch = el('span', 'lf-chip' + (sk.exp > 0 ? ' info' : ''), `${sk.label} ${sk.exp}${sk.trained > 0 ? `(${sk.trained}课)` : ''}`);
+            skillRow.append(ch);
           }
+          for (const eq of (c.gear || [])) {
+            const ch = el('span', 'lf-chip' + (eq.owned ? ' good' : ''), `${eq.owned ? '✓ ' : ''}${eq.name}`);
+            ch.title = `${eq.owned ? '已购置' : `未买 · ¥${eq.price}`}：${eq.note}`;
+            skillRow.append(ch);
+          }
+          summaryCard.append(skillRow);
+
+          /* 2. 考证中心 */
+          certCard.innerHTML = '';
+          certCard.append(el('h3', null, '考证进度与实时通过率（随当前见识动态计算）'));
+          const certGrid = el('div', 'lf-cert-grid');
+          for (const ct of (c.certs || [])) {
+            const box = el('div', 'lf-cert' + (ct.owned ? ' owned' : ''));
+            const top = el('div', 'ctop');
+            top.append(el('span', null, ct.name));
+            top.append(el('span', 'lf-chip ' + (ct.owned ? 'good' : (ct.chancePct >= 70 ? 'info' : '')), ct.owned ? '已持证' : `${ct.chancePct}% 过考率`));
+            box.append(top);
+            box.append(el('div', 'cmeta', `考费 ¥${ct.price} · 建议见识 ${ct.need}`));
+            if (ct.unlockJobs && ct.unlockJobs.length) {
+              box.append(el('div', 'cmeta', `解锁：${ct.unlockJobs.join('、')}`));
+            }
+            if (!ct.owned) {
+              const tr = el('div', 'lf-goal');
+              const tk = el('div', 'track');
+              const fl = el('div', 'fill');
+              fl.style.width = `${ct.chancePct}%`;
+              fl.style.background = ct.chancePct >= 75 ? '#16a34a' : (ct.chancePct >= 45 ? '#2563eb' : '#d97706');
+              tk.append(fl);
+              tr.append(tk);
+              box.append(tr);
+            }
+            certGrid.append(box);
+          }
+          certCard.append(certGrid);
+
+          /* 3. 厨房与菜谱工坊 */
+          recipeCard.innerHTML = '';
+          const rHead = el('div', 'lf-mkt-head');
+          rHead.append(el('h3', null, '职业能做什么 · 厨房菜谱与原料匹配（简食免证，招牌菜需厨师资质）'));
+          const tabBox = el('div', 'lf-tabs');
+          tabBox.style.marginBottom = '0';
+          for (const [tid, tlab] of [['all', '全部菜谱'], ['ready', `材料齐可做 (${readyRecipes.length})`], ['simple', '零门槛简食'], ['chef', '厨师招牌菜']]) {
+            const tb = el('button', 'lf-btn sm lf-tab', tlab);
+            tb.type = 'button';
+            if (recipeTab === tid) tb.dataset.on = '1';
+            tb.addEventListener('click', () => { recipeTab = tid; render(lastSnap); });
+            tabBox.append(tb);
+          }
+          rHead.append(tabBox);
+          recipeCard.append(rHead);
+
+          const panSum = c.pantrySummary || [];
+          const panChips = el('div', 'lf-chips');
+          panChips.style.marginBottom = '8px';
+          if (!panSum.length) {
+            panChips.append(el('span', 'lf-chip warn', '储物篮目前空着，去「农牧场与鱼市街」种菜或养殖就能做菜'));
+          } else {
+            for (const p of panSum) {
+              panChips.append(el('span', 'lf-chip good', `${p.name} ×${p.qty}`));
+            }
+          }
+          recipeCard.append(panChips);
+
+          const rList = (c.recipes || []).filter((r) => {
+            if (recipeTab === 'ready') return r.canCook;
+            if (recipeTab === 'simple') return r.tier === 'simple';
+            if (recipeTab === 'chef') return r.tier === 'chef';
+            return true;
+          });
+          if (!rList.length) {
+            recipeCard.append(el('p', 'lf-muted', '当前筛选下暂无菜谱。'));
+          } else {
+            const rGrid = el('div', 'lf-recipe-grid');
+            for (const rc of rList) {
+              const card = el('div', 'lf-recipe' + (rc.canCook ? ' ready' : (!rc.unlocked ? ' locked' : '')));
+              const top = el('div', 'rtop');
+              top.append(el('span', null, rc.name));
+              const badgeTxt = !rc.unlocked ? '未解锁' : (rc.canCook ? '材料齐 · 可做' : '缺原料');
+              const badgeCls = !rc.unlocked ? '' : (rc.canCook ? 'good' : 'warn');
+              top.append(el('span', 'lf-chip ' + badgeCls, badgeTxt));
+              card.append(top);
+              card.append(el('div', 'rmeta', `${rc.tier === 'simple' ? '家常简食(免证)' : '厨师招牌'} · 饱腹+${rc.foodGain} 娱+${rc.funGain}${rc.energyGain ? ` 精+${rc.energyGain}` : ''} · 油盐¥${rc.fuelCost} · 建议摊价¥${rc.suggestedPrice}`));
+              if (!rc.unlocked && rc.lockReason) {
+                const lp = el('div', 'rmeta', `门槛：${rc.lockReason}`);
+                lp.style.color = '#b45309';
+                card.append(lp);
+              }
+              const ingRow = el('div', 'lf-chips');
+              for (const ing of (rc.ingredients || [])) {
+                ingRow.append(el('span', 'lf-ing ' + (ing.ok ? 'ok' : 'miss'), `${ing.label} ${ing.have}/${ing.need}`));
+              }
+              card.append(ingRow);
+              rGrid.append(card);
+            }
+            recipeCard.append(rGrid);
+          }
+          recipeCard.append(el('p', 'lf-note-line', '在对话里对它说「去烤个红薯」「做一份番茄鸡蛋汤存起来」「用成品菜去鱼市街摆摊」即可由它自主开火。'));
+
+          /* 4. 全职业岗位目录 */
+          jobCard.innerHTML = '';
+          const jFold = el('details', 'lf-fold');
+          const qualifiedCnt = (c.jobs || []).filter((j) => j.qualified).length;
+          const jSum = el('summary', null, `全部职业门槛与日薪清单（当前可接 ${qualifiedCnt}/${(c.jobs || []).length} 项）`);
+          jSum.append(el('span', 'hint', '点击展开岗位表'));
+          const jWrap = el('div', 'lf-table-wrap');
+          const jTable = el('table', 'lf-table');
+          const jThead = document.createElement('thead');
+          const jThr = document.createElement('tr');
+          for (const hText of ['档位', '职业', '日薪', '工时/地点', '门槛与缺项']) jThr.append(el('th', null, hText));
+          jThead.append(jThr);
+          const jTbody = document.createElement('tbody');
+          for (const jbItem of (c.jobs || [])) {
+            const tr = document.createElement('tr');
+            const statusTd = el('td', null, jbItem.qualified ? '✓ 已可接' : `缺：${jbItem.missing.join('、')}`);
+            statusTd.style.color = jbItem.qualified ? '#166534' : '#9a3412';
+            tr.append(
+              el('td', null, `${jbItem.tierLabel}·${jbItem.domainLabel}`),
+              el('td', null, jbItem.name + (jbItem.materialCost > 0 ? ` (垫¥${jbItem.materialCost})` : '')),
+              el('td', null, `¥${jbItem.pay}`),
+              el('td', null, `${Math.round(jbItem.minutes / 60 * 10) / 10}h · ${jbItem.place}`),
+              statusTd,
+            );
+            jTbody.append(tr);
+          }
+          jTable.append(jThead, jTbody);
+          jWrap.append(jTable);
+          jFold.append(jSum, jWrap);
+          jobCard.append(jFold);
         };
 
         const load = () => ctx.invoke('snapshot').then(render).catch(() => {});
         reload.addEventListener('click', load);
         await load();
-        const loop = () => ctx.timeout(() => load().finally(loop), 20_000);
+        const loop = () => ctx.timeout(() => load().finally(loop), 25_000);
         loop();
       },
     },
@@ -1250,13 +1456,15 @@ export default {
         ctx.root.append(app);
 
         const head = el('div', 'lf-head');
-        const title = el('h1', 'lf-town', '菜园与鱼市街');
+        const title = el('h1', 'lf-town', '农牧场与鱼市街');
         const ver = el('span', 'lf-ver', '');
         head.append(title, ver);
         const sub = el('p', 'lf-sub', '读取中…');
 
         const guideCard = el('div', 'lf-card');
+        const helperCard = el('div', 'lf-card');
         const farmCard = el('div', 'lf-card');
+        const ranchCard = el('div', 'lf-card');
         const pantryCard = el('div', 'lf-card');
         const stallCard = el('div', 'lf-card');
 
@@ -1265,28 +1473,57 @@ export default {
         reload.type = 'button';
         const msg = el('span', 'lf-msg', '');
         foot.append(reload, msg);
-        app.append(head, sub, guideCard, farmCard, pantryCard, stallCard, foot);
+        app.append(head, sub, guideCard, helperCard, farmCard, ranchCard, pantryCard, stallCard, foot);
+
+        let helperTip = null;
+        let farmTip = null;
+        let ranchTip = null;
+        let confirmHarvestId = '';
+        let confirmUnrentFarm = false;
+        let confirmUnrentRanch = false;
+        let lastData = null;
+
+        const runOp = (section, method, payload) => {
+          return ctx.invoke(method, payload !== undefined ? [payload] : undefined)
+            .then((r) => {
+              const tip = (r && r.ok === false)
+                ? { text: r.reason || '操作没成功', err: true, until: Date.now() + 5500 }
+                : { text: (r && r.message) || '操作成功 ✓', err: false, until: Date.now() + 4500 };
+              if (section === 'farm') farmTip = tip;
+              else if (section === 'helper') helperTip = tip;
+              else ranchTip = tip;
+              render(r);
+            })
+            .catch((e) => {
+              const tip = { text: (e && e.message) || '请求失败', err: true, until: Date.now() + 5500 };
+              if (section === 'farm') farmTip = tip;
+              else if (section === 'helper') helperTip = tip;
+              else ranchTip = tip;
+              if (lastData) render(lastData);
+            });
+        };
 
         const render = (d) => {
           if (!d) return;
+          lastData = d;
           ver.textContent = d.version ? `· v${d.version}` : '';
           const parts = [
             d.town?.name || '兰州',
             d.solarTerm?.name ? `节气·${d.solarTerm.name}` : '',
-            d.home?.tierLabel ? `${d.home.tierLabel}（自有 ${d.farm?.homeSlots ?? 1} 种植槽）` : '',
+            d.home?.tierLabel ? `${d.home.tierLabel}（菜槽 ${d.farm?.homeSlots ?? 1}）` : '',
             d.money ? `现金 ¥${Number(d.money.cash || 0).toLocaleString('zh-CN')}` : '',
           ].filter(Boolean);
           sub.textContent = parts.join(' · ');
 
           /* 1. 玩法全链路图解 + 五大赛道成本说明表 */
           guideCard.innerHTML = '';
-          guideCard.append(el('h3', null, '怎么玩转菜园、储物篮与鱼市街（面板只读，对话指令触发）'));
+          guideCard.append(el('h3', null, '农牧场（支持下方直接点击种菜与养殖）× 鱼市街闭环'));
           const steps = el('div', 'lf-steps');
           const stepDefs = [
-            ['① 拿地扩槽', '城中村窗台 1 槽、老小区 2 槽、新小区 4 槽、别墅区 8 槽；住得小也能花 ¥100 起租 4 槽城郊菜地（月租 ¥150，按天扣 ¥5）。'],
-            ['② 慢养收成', '8 种节气作物需 4–9 天成熟；每天浇 1 次水耗 3 精力，浇满 2 次多收 1 份，赶上当季好节气再 +1 份，采收顺便涨体质。'],
-            ['③ 储物篮衔接', '自家收成与鱼市街买来的鲜蔬都会放进储物篮；自己下厨优先用囤菜省至 ¥3 油盐钱，开料理摊也优先消耗囤菜省早市进货费。'],
-            ['④ 真实扣本与入账', '摆摊按五大品类真扣本钱与精力（卖不掉 3 天过期亏本）；成交后在 life_deals 自动把货款打进钱包，同两人每日限买 2 单防刷。'],
+            ['① 种菜扩展 18 种', '18 种节气作物（红薯/土豆/萝卜/玉米/黄豆/莲藕等，4–9 天）；可直接在下方选种子点击播种、浇水与收割。'],
+            ['② 养鸡牛与鱼塘', '大肥鱼是鲸鱼不算鱼，可放心养草鱼/鲈鱼，另有鸡舍收蛋肉、牛棚挤奶收牛肉；老小区起有鸡舍，签约城郊农牧场全解锁。'],
+            ['③ 储物篮与成品菜', '蔬果与肉蛋奶鱼入储物篮；她下厨做出成品菜格既可热吃，也能在鱼市街摆料理摊免现买原料费（仅 ¥2 打包）。'],
+            ['④ 鱼市街摆摊入账', '五大品类摆摊实扣本钱与精力（3 天过期压货）；成交后由 life_deals 进账钱包（同两人每日限 2 单防刷）。'],
           ];
           for (const [st, sd] of stepDefs) {
             const box = el('div', 'lf-step');
@@ -1311,7 +1548,7 @@ export default {
           const rules = d.stallRules || DEFAULT_STALL_RULES;
           for (const r of rules) {
             const tr = document.createElement('tr');
-            const cTd = document.createElement('td');
+            const cTd = el('td');
             const cp = el('span', 'lf-cat-pill', r.label);
             cp.setAttribute('data-cat', r.category);
             cTd.append(cp);
@@ -1328,34 +1565,132 @@ export default {
           wrap.append(table);
           rulesBody.append(wrap);
 
-          const sayTitle = el('div', 'lf-subh', '常用对话示范（在聊天里对它说即可）');
+          const sayTitle = el('div', 'lf-subh', '常用对话示范（下厨与摆摊在聊天里对它说即可）');
           sayTitle.style.marginTop = '9px';
           const sayList = el('ul', 'lf-say-list');
           sayList.append(
-            el('li', null, '租地与种菜：「看看家里菜园和这节气适合种啥」「花一百块租一块城郊菜地」「在阳台种点香葱和西红柿」'),
-            el('li', null, '浇水与收割：「给地里的菜浇浇水」「看看菜熟了没有，熟了就收进储物篮」'),
-            el('li', null, '农产/料理联动：「把自家收的莲藕挂鱼市街卖 12 元 3 份」「用储物篮里的青菜做碗面挂摊卖 18 元」'),
-            el('li', null, '写作/手作/影像与收款：「整理一本《芦花塘随笔集》挂摊卖 32 元」「去看看鱼市街成交回执，把货款领进钱包」'),
+            el('li', null, '菜谱下厨：「去用储物篮里的红薯烤个红薯吃」「考个厨师证」「用番茄和牛肉做份西红柿炖牛腩存着摆摊」'),
+            el('li', null, '养殖与收货：「看看牧场和鱼塘还能放养啥」「去鸡舍把鸡蛋收了」「起塘收草鱼」'),
+            el('li', null, '农产/料理摆摊：「把自家鲜鸡蛋或莲藕挂鱼市街卖 16 元 3 份」「把做好的成品菜拿去鱼市街摆摊」'),
           );
           rulesBody.append(sayTitle, sayList);
           rulesFold.append(rulesSum, rulesBody);
           guideCard.append(rulesFold);
 
-          /* 2. 菜园与种植槽 */
+          /* 1.5 农牧帮手（活干完0元免扣 · 优先真鱼邻里代管，找不到自动回落） */
+          helperCard.innerHTML = '';
+          const fh = d.farmHelper || { mode: 'off', dailyWage: 0, lastRunDay: '', lastSummary: '', preferNeighbor: true, pendingErrand: null };
+          const hPlans = d.helperPlans || [
+            { mode: 'care', label: '日常照料工', dailyWage: 12, note: '每日自动浇水、喂食（实扣饲料）并收鸡蛋/牛奶入储物篮；当日活干完 0 元免扣。' },
+            { mode: 'full', label: '农牧全托管', dailyWage: 20, note: '含照料全部内容，外加自动收割成熟蔬菜与起塘鱼塘（不出栏鸡牛）；当日活干完 0 元免扣。' },
+          ];
+          const pw = d.pendingWork || { total: 0, workPlots: 0, workPens: 0 };
+          const nQuotes = d.neighborQuotes || {
+            care: { wage: 6, minutes: 15, itemLabel: '农牧代管·照料' },
+            full: { wage: 10, minutes: 20, itemLabel: '农牧代管·全托' },
+          };
+          const prefNeighbor = fh.preferNeighbor !== false;
+          const curModeForErrand = fh.mode === 'full' ? 'full' : 'care';
+          const curQuote = nQuotes[curModeForErrand] || nQuotes.care;
+
+          const hHead = el('div', 'lf-mkt-head');
+          const curPlan = hPlans.find((p) => p.mode === fh.mode);
+          const hTitle = fh.mode !== 'off'
+            ? `农牧帮手 · 已雇「${curPlan ? curPlan.label : fh.mode}」(自动 ¥${fh.dailyWage}/天 · ${prefNeighbor ? '优先找真鱼代管' : '仅自动照料'})`
+            : '农牧帮手 · 今日活干完不扣钱 · 优先找真鱼代管（找不到自动兜底）';
+          hHead.append(el('h3', null, hTitle));
+          const hActs = el('div', 'lf-mkt-actions');
+
+          const prefLabel = document.createElement('label');
+          prefLabel.style.cssText = 'display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#334155;cursor:pointer;';
+          const prefBox = document.createElement('input');
+          prefBox.type = 'checkbox';
+          prefBox.checked = prefNeighbor;
+          prefBox.addEventListener('change', () => {
+            prefBox.disabled = true;
+            runOp('helper', 'setHelperPref', { preferNeighbor: prefBox.checked });
+          });
+          prefLabel.append(prefBox, document.createTextNode('优先找真鱼代管'));
+          hActs.append(prefLabel);
+
+          for (const pl of hPlans) {
+            const on = fh.mode === pl.mode;
+            const nq = nQuotes[pl.mode];
+            const priceHint = nq ? `邻里¥${nq.wage}/自动¥${pl.dailyWage}` : `¥${pl.dailyWage}/天`;
+            const btn = el('button', 'lf-btn sm ' + (on ? 'info' : 'primary'), on ? `✓ ${pl.label}` : `雇 ${pl.label}(${priceHint})`);
+            btn.type = 'button';
+            btn.disabled = on;
+            btn.title = pl.note;
+            btn.addEventListener('click', () => { btn.disabled = true; runOp('helper', 'hireHelper', { mode: pl.mode, preferNeighbor: prefBox.checked }); });
+            hActs.append(btn);
+          }
+          if (d.townConnected && pw.total > 0 && !fh.pendingErrand) {
+            const postErrBtn = el('button', 'lf-btn sm', `发今日邻里单(¥${curQuote.wage}·约${curQuote.minutes}分)`);
+            postErrBtn.type = 'button';
+            postErrBtn.title = '在鱼市街单次发一条农牧代管委托，比系统自动更便宜；耗时按动植物数量算，6 小时无人接自动退钱';
+            postErrBtn.addEventListener('click', () => { postErrBtn.disabled = true; runOp('helper', 'postErrand', { mode: curModeForErrand }); });
+            hActs.append(postErrBtn);
+          }
+          if (fh.mode !== 'off') {
+            const offBtn = el('button', 'lf-btn sm danger', '解雇帮手');
+            offBtn.type = 'button';
+            offBtn.addEventListener('click', () => { offBtn.disabled = true; runOp('helper', 'unhireHelper', {}); });
+            hActs.append(offBtn);
+          }
+          hHead.append(hActs);
+          helperCard.append(hHead);
+          if (helperTip && helperTip.until > Date.now()) {
+            helperCard.append(el('div', 'lf-feedback ' + (helperTip.err ? 'err' : 'ok'), helperTip.text));
+          }
+          if (fh.pendingErrand) {
+            const pe = fh.pendingErrand;
+            const peBar = el('div', 'lf-feedback ok');
+            peBar.textContent = `鱼市街正挂着邻里代管委托：预扣 ¥${pe.wage} · 预计忙活 ${pe.minutes} 分钟 · 截止 ${fmtLocal(pe.expiresAt, 'mdhm')}（街坊接单即免费照看，超时无人接自动退回并转自动照料）`;
+            helperCard.append(peBar);
+          }
+          if (fh.lastSummary) {
+            helperCard.append(el('div', 'lf-board-strip', `最近代管：${fh.lastSummary}`));
+          }
+          const workStatusTxt = pw.total > 0
+            ? `眼下有 ${pw.total} 项未照料（邻里参考：照料 ¥${nQuotes.care.wage}/约${nQuotes.care.minutes}分 · 全托 ¥${nQuotes.full.wage}/约${nQuotes.full.minutes}分）。`
+            : '今天菜地与牧场的活都已照料完毕（自己干或街坊帮完后，自动照料系统今日 0 元不扣钱）。';
+          helperCard.append(el('p', 'lf-note-line', `${workStatusTxt} 找不到街坊时才走系统自动照料兜底（最多追补 7 天）；现金不够工钱自动暂停绝不倒欠；绝不擅自出栏产蛋产奶的鸡牛。`));
+
+          /* 2. 菜园与种植槽（支持用户直接点击操作） */
           farmCard.innerHTML = '';
           const fm = d.farm || { homeSlots: 1, leased: false, leasedSlots: 0, leasedMonthly: 150, totalSlots: 1, usedSlots: 0, readyCount: 0, plots: [] };
           const leaseCfg = d.leaseConfig || { slots: 4, signupFee: 100, monthly: 150 };
           const fHead = el('div', 'lf-mkt-head');
           fHead.append(el('h3', null, `菜园与种植槽（${fm.usedSlots}/${fm.totalSlots} 槽已种${fm.readyCount > 0 ? ` · ${fm.readyCount} 槽已熟可收` : ''}）`));
-          const fTag = el(
-            'span',
-            'lf-chip ' + (fm.leased ? 'info' : ''),
-            fm.leased
-              ? `城郊租地已签约：+${fm.leasedSlots}槽（¥${fm.leasedMonthly}/月 · 约¥${Math.round(fm.leasedMonthly / 30)}/天）`
-              : `住处自带 ${fm.homeSlots} 槽（可选签城郊 ${leaseCfg.slots} 槽：签约 ¥${leaseCfg.signupFee} + ¥${leaseCfg.monthly}/月）`,
-          );
-          fHead.append(fTag);
+          const fActs = el('div', 'lf-mkt-actions');
+          if (!fm.leased) {
+            const rentBtn = el('button', 'lf-btn sm primary', `签约城郊菜地 +${leaseCfg.slots}槽 (¥${leaseCfg.signupFee}+¥${leaseCfg.monthly}/月)`);
+            rentBtn.type = 'button';
+            rentBtn.addEventListener('click', () => { rentBtn.disabled = true; runOp('farm', 'rentFarm', {}); });
+            fActs.append(rentBtn);
+          } else {
+            fActs.append(el('span', 'lf-chip info', `城郊菜地已签：+${fm.leasedSlots}槽（¥${fm.leasedMonthly}/月）`));
+            const unrentBtn = el('button', 'lf-btn sm' + (confirmUnrentFarm ? ' danger' : ''), confirmUnrentFarm ? '确认退租(放弃租地未收)?' : '退租菜地');
+            unrentBtn.type = 'button';
+            unrentBtn.addEventListener('click', () => {
+              const hasLeasedPlot = (fm.plots || []).some((p) => p.source === 'leased');
+              if (hasLeasedPlot && !confirmUnrentFarm) {
+                confirmUnrentFarm = true;
+                render(d);
+                return;
+              }
+              confirmUnrentFarm = false;
+              unrentBtn.disabled = true;
+              runOp('farm', 'unrentFarm', { force: hasLeasedPlot });
+            });
+            fActs.append(unrentBtn);
+          }
+          fHead.append(fActs);
           farmCard.append(fHead);
+
+          if (farmTip && farmTip.until > Date.now()) {
+            farmCard.append(el('div', 'lf-feedback ' + (farmTip.err ? 'err' : 'ok'), farmTip.text));
+          }
 
           const plotsGrid = el('div', 'lf-plots');
           for (const p of (fm.plots || [])) {
@@ -1377,29 +1712,60 @@ export default {
               el('span', null, p.solarBonus ? '★当季节气 +1 产' : `成熟：${fmtLocal(p.matureAt, 'mdhm')}`),
               el('span', null, `${Math.round((p.progress || 0) * 100)}%`),
             );
-            card.append(top, meta1, track, meta2);
+            const pact = el('div', 'pact');
+            if (p.ready) {
+              const hb = el('button', 'lf-btn sm primary', '收割入篮');
+              hb.type = 'button';
+              hb.addEventListener('click', () => { hb.disabled = true; runOp('farm', 'harvest', { plotId: p.id }); });
+              pact.append(hb);
+            } else {
+              const wb = el('button', 'lf-btn sm', p.wateredToday ? '今日已浇水' : '浇水');
+              wb.type = 'button';
+              wb.disabled = Boolean(p.wateredToday);
+              wb.addEventListener('click', () => { wb.disabled = true; runOp('farm', 'water', { plotId: p.id }); });
+              pact.append(wb);
+            }
+            card.append(top, meta1, track, meta2, pact);
             plotsGrid.append(card);
           }
+
           const emptyCount = Math.max(0, (fm.totalSlots || 0) - (fm.plots || []).length);
+          const curTerm = d.solarTerm?.name || '';
+          const seeds = d.seeds || [];
           for (let i = 0; i < emptyCount; i++) {
             const ec = el('div', 'lf-plot empty');
-            ec.append(el('p', 'lf-muted', '空种植槽 · 对话里说「种棵青菜/西红柿」即可播种'));
+            ec.append(el('div', 'ptop', '空种植槽'));
+            const pact = el('div', 'pact');
+            const sel = document.createElement('select');
+            sel.className = 'lf-select';
+            for (const sd of seeds) {
+              const op = document.createElement('option');
+              op.value = sd.id;
+              const hit = curTerm && Array.isArray(sd.solarTerms) && sd.solarTerms.includes(curTerm);
+              op.textContent = `${sd.name} ¥${sd.price}/${Math.round(sd.growHours / 24)}天${hit ? ' ★' : ''}${sd.needSpace && (fm.totalSlots || 0) < 2 ? '(需≥2槽)' : ''}`;
+              if (sd.needSpace && (fm.totalSlots || 0) < 2) op.disabled = true;
+              sel.append(op);
+            }
+            const pb = el('button', 'lf-btn sm primary', '播种');
+            pb.type = 'button';
+            pb.addEventListener('click', () => { pb.disabled = true; runOp('farm', 'plant', { seed: sel.value }); });
+            pact.append(sel, pb);
+            ec.append(pact);
             plotsGrid.append(ec);
           }
           farmCard.append(plotsGrid);
 
           const seedsFold = el('details', 'lf-fold');
-          const seedsSum = el('summary', null, '节气种子目录（4–9 天慢熟 · 严守鱼不吃鱼）');
-          seedsSum.append(el('span', 'hint', `共 ${(d.seeds || []).length} 种`));
+          const seedsSum = el('summary', null, '节气种子目录（4–9 天慢熟 · 含下游菜品联动）');
+          seedsSum.append(el('span', 'hint', `共 ${seeds.length} 种`));
           const sWrap = el('div', 'lf-table-wrap');
           const sTable = el('table', 'lf-table');
           const sThead = document.createElement('thead');
           const sThr = document.createElement('tr');
-          for (const hText of ['作物名称', '种子费', '周期', '基础产量', '加产节气', '说明']) sThr.append(el('th', null, hText));
+          for (const hText of ['作物名称', '种子费', '周期', '基础产量', '加产节气', '下游可做菜品', '说明']) sThr.append(el('th', null, hText));
           sThead.append(sThr);
           const sTbody = document.createElement('tbody');
-          const curTerm = d.solarTerm?.name || '';
-          for (const sd of (d.seeds || [])) {
+          for (const sd of seeds) {
             const tr = document.createElement('tr');
             const hitTerm = curTerm && Array.isArray(sd.solarTerms) && sd.solarTerms.includes(curTerm);
             const nmTd = el('td', null, sd.name + (hitTerm ? ' ★当季+1' : ''));
@@ -1410,6 +1776,7 @@ export default {
               el('td', null, `${Math.round(sd.growHours / 24)} 天`),
               el('td', null, `${sd.baseYield} 份`),
               el('td', null, (sd.solarTerms || []).join(' / ')),
+              el('td', null, (sd.dishHints || []).join('、') || '—'),
               el('td', null, sd.note || ''),
             );
             sTbody.append(tr);
@@ -1419,30 +1786,215 @@ export default {
           seedsFold.append(seedsSum, sWrap);
           farmCard.append(seedsFold);
 
-          /* 3. 储物篮 */
+          /* 3. 动物养殖场（鸡舍 / 牛棚 / 鱼塘，支持手动点击操作） */
+          ranchCard.innerHTML = '';
+          const rn = d.ranch || {
+            homeSlots: { chicken: 0, cow: 0, fish: 0 },
+            leased: false,
+            leasedSlots: { chicken: 0, cow: 0, fish: 0 },
+            leasedMonthly: 240,
+            totalSlots: { chicken: 0, cow: 0, fish: 0 },
+            usedSlots: { chicken: 0, cow: 0, fish: 0 },
+            collectableCount: 0,
+            readyHarvestCount: 0,
+            pens: [],
+          };
+          const rLease = d.ranchLeaseConfig || { slots: { chicken: 2, cow: 2, fish: 2 }, signupFee: 180, monthly: 240 };
+          const grpLabels = d.animalGroupLabels || { chicken: '鸡舍', cow: '牛棚', fish: '鱼塘' };
+
+          const rHead = el('div', 'lf-mkt-head');
+          const capDesc = `鸡 ${rn.usedSlots.chicken}/${rn.totalSlots.chicken} · 牛 ${rn.usedSlots.cow}/${rn.totalSlots.cow} · 鱼 ${rn.usedSlots.fish}/${rn.totalSlots.fish}`;
+          rHead.append(el('h3', null, `养殖场 · 鸡舍 / 牛棚 / 鱼塘（${capDesc}）`));
+          const rActs = el('div', 'lf-mkt-actions');
+          if (!rn.leased) {
+            const rrBtn = el('button', 'lf-btn sm primary', `签约城郊农牧场 +2鸡/+2牛/+2鱼 (¥${rLease.signupFee}+¥${rLease.monthly}/月)`);
+            rrBtn.type = 'button';
+            rrBtn.addEventListener('click', () => { rrBtn.disabled = true; runOp('ranch', 'rentRanch', {}); });
+            rActs.append(rrBtn);
+          } else {
+            rActs.append(el('span', 'lf-chip info', `城郊农牧场已签（¥${rn.leasedMonthly}/月）`));
+            const urBtn = el('button', 'lf-btn sm' + (confirmUnrentRanch ? ' danger' : ''), confirmUnrentRanch ? '确认退租(放弃场内在养)?' : '退租农牧场');
+            urBtn.type = 'button';
+            urBtn.addEventListener('click', () => {
+              const hasLeasedPen = (rn.pens || []).some((p) => p.source === 'leased');
+              if (hasLeasedPen && !confirmUnrentRanch) {
+                confirmUnrentRanch = true;
+                render(d);
+                return;
+              }
+              confirmUnrentRanch = false;
+              urBtn.disabled = true;
+              runOp('ranch', 'unrentRanch', { force: hasLeasedPen });
+            });
+            rActs.append(urBtn);
+          }
+          rHead.append(rActs);
+          ranchCard.append(rHead);
+
+          if (ranchTip && ranchTip.until > Date.now()) {
+            ranchCard.append(el('div', 'lf-feedback ' + (ranchTip.err ? 'err' : 'ok'), ranchTip.text));
+          }
+
+          const pensGrid = el('div', 'lf-plots');
+          const animals = d.animals || [];
+          for (const pen of (rn.pens || [])) {
+            const readyFlag = pen.collectableQty > 0 || pen.mature;
+            const card = el('div', 'lf-plot' + (readyFlag ? ' ready' : ''));
+            const top = el('div', 'ptop');
+            top.append(el('span', null, `${pen.name} (${grpLabels[pen.group] || pen.group})`));
+            top.append(el('span', 'ptag', pen.mature ? '已育成' : `剩 ${pen.daysLeft}天`));
+            const m1 = el('div', 'pmeta');
+            m1.append(
+              el('span', null, `${pen.source === 'leased' ? '城郊牧场' : '自家小院'} · 喂食 ${pen.feedCount}次${pen.fedToday ? ' ✓今' : ''}`),
+              el('span', null, pen.collectableQty > 0 ? `可收 ${pen.collectProductName}×${pen.collectableQty}` : `出栏/起塘：${pen.harvestProductName}×${pen.harvestYield}`),
+            );
+            const track = el('div', 'ptrack');
+            const fill = el('div', 'pfill');
+            fill.style.width = `${Math.max(4, Math.min(100, Math.round((pen.progress || 0) * 100)))}%`;
+            track.append(fill);
+
+            const pact = el('div', 'pact');
+            const fb = el('button', 'lf-btn sm', pen.fedToday ? '今日已喂' : `喂食 ¥${pen.feedCost}`);
+            fb.type = 'button';
+            fb.disabled = Boolean(pen.fedToday);
+            fb.addEventListener('click', () => { fb.disabled = true; runOp('ranch', 'ranchFeed', { penId: pen.id }); });
+            pact.append(fb);
+
+            if (pen.collectableQty > 0) {
+              const cb = el('button', 'lf-btn sm primary', `收${pen.collectProductName}×${pen.collectableQty}`);
+              cb.type = 'button';
+              cb.addEventListener('click', () => { cb.disabled = true; runOp('ranch', 'ranchCollect', { penId: pen.id }); });
+              pact.append(cb);
+            }
+            if (pen.mature) {
+              const isFish = pen.group === 'fish';
+              const needConf = !isFish && confirmHarvestId !== pen.id;
+              const hb = el('button', 'lf-btn sm ' + (isFish ? 'primary' : (needConf ? '' : 'danger')), isFish ? `起塘收${pen.harvestProductName}` : (needConf ? `出栏收${pen.harvestProductName}` : `确认出栏收肉`));
+              hb.type = 'button';
+              hb.addEventListener('click', () => {
+                if (needConf) {
+                  confirmHarvestId = pen.id;
+                  render(d);
+                  return;
+                }
+                confirmHarvestId = '';
+                hb.disabled = true;
+                runOp('ranch', 'ranchHarvest', { penId: pen.id });
+              });
+              pact.append(hb);
+            }
+            card.append(top, m1, track, pact);
+            pensGrid.append(card);
+          }
+
+          let hasAnyEmptyRanch = false;
+          for (const grp of ['chicken', 'cow', 'fish']) {
+            const free = Math.max(0, (rn.totalSlots?.[grp] || 0) - (rn.usedSlots?.[grp] || 0));
+            const opts = animals.filter((a) => a.group === grp);
+            for (let i = 0; i < free; i++) {
+              hasAnyEmptyRanch = true;
+              const ec = el('div', 'lf-plot empty');
+              ec.append(el('div', 'ptop', `空${grpLabels[grp] || grp}栏`));
+              const pact = el('div', 'pact');
+              const sel = document.createElement('select');
+              sel.className = 'lf-select';
+              for (const an of opts) {
+                const op = document.createElement('option');
+                op.value = an.id;
+                op.textContent = `${an.name} ¥${an.price}`;
+                sel.append(op);
+              }
+              const bb = el('button', 'lf-btn sm primary', '放养');
+              bb.type = 'button';
+              bb.addEventListener('click', () => { bb.disabled = true; runOp('ranch', 'ranchBuy', { animal: sel.value }); });
+              pact.append(sel, bb);
+              ec.append(pact);
+              pensGrid.append(ec);
+            }
+          }
+          if (!(rn.pens || []).length && !hasAnyEmptyRanch) {
+            ranchCard.append(el('p', 'lf-muted', '当前住处（城中村）还没有自家养殖栏位：搬到老小区起解锁鸡舍，新小区起解锁鱼池，或直接点右上角签约城郊农牧场解锁鸡舍+牛棚+鱼塘！'));
+          } else {
+            ranchCard.append(pensGrid);
+          }
+
+          const animalsFold = el('details', 'lf-fold');
+          const animalsSum = el('summary', null, '养殖品类与产出周期表（住处栏位 + 城郊农牧场）');
+          animalsSum.append(el('span', 'hint', `共 ${animals.length} 种`));
+          const aWrap = el('div', 'lf-table-wrap');
+          const aTable = el('table', 'lf-table');
+          const aThead = document.createElement('thead');
+          const aThr = document.createElement('tr');
+          for (const hText of ['品种', '栏位类型', '幼苗/饲料', '日常周期产出', '育成收获', '说明']) aThr.append(el('th', null, hText));
+          aThead.append(aThr);
+          const aTbody = document.createElement('tbody');
+          for (const an of animals) {
+            const tr = document.createElement('tr');
+            tr.append(
+              el('td', null, an.name),
+              el('td', null, grpLabels[an.group] || an.group),
+              el('td', null, `¥${an.price} / 饲料¥${an.feedCost}`),
+              el('td', null, an.cycleHours > 0 ? `每${an.cycleHours}h ${an.cycleProductName}×${an.cycleYield}` : '无'),
+              el('td', null, `${Math.round(an.matureHours / 24)}天 ${an.harvestProductName}×${an.harvestYield}`),
+              el('td', null, an.note || ''),
+            );
+            aTbody.append(tr);
+          }
+          aTable.append(aThead, aTbody);
+          aWrap.append(aTable);
+          animalsFold.append(animalsSum, aWrap);
+          ranchCard.append(animalsFold);
+
+          /* 4. 储物篮与成品菜格 */
           pantryCard.innerHTML = '';
           const pan = d.pantry || [];
+          const dishes = d.cookedDishes || [];
           const panTotal = pan.reduce((s, x) => s + (Number(x.qty) || 0), 0);
-          pantryCard.append(el('h3', null, `食材储物篮（共 ${panTotal} 份）`));
+          const dishTotal = dishes.reduce((s, x) => s + (Number(x.qty) || 0), 0);
+          pantryCard.append(el('h3', null, `储物篮原料（${panTotal} 份）与成品菜格（${dishTotal} 份）`));
+
+          const splitBox = el('div', 'lf-mkt-split');
+          splitBox.style.marginTop = '0';
+          splitBox.style.paddingTop = '0';
+          splitBox.style.borderTop = '0';
+
+          const panCol = el('div', null);
+          panCol.append(el('div', 'lf-subh', '储物篮原料（来自种菜、牧场与买菜）'));
           if (!pan.length) {
-            pantryCard.append(el('p', 'lf-muted', '储物篮眼下空着。等菜地成熟收割，或在鱼市街/早市买回鲜蔬后会自动收入这里（自家下厨只扣 ¥3 油盐钱，开料理摊也能直接抵扣原料费）。'));
+            panCol.append(el('p', 'lf-muted', '储物篮眼下空着。播种收割、收集蛋奶鱼肉或早市买鲜蔬后会存在这里。'));
           } else {
             const ul = el('ul', 'lf-list');
             for (const item of pan) {
               const li = el('li');
-              const originTxt = item.origin === 'home-grown'
-                ? '自家种植'
-                : (item.origin === 'town-buy' ? `购自 ${item.fromSeller || '街坊'}` : '早市采购');
-              const pill = el('span', 'lf-chip ' + (item.origin === 'home-grown' ? 'good' : (item.origin === 'town-buy' ? 'info' : '')), originTxt);
+              const originTxt = ORIGIN_LABEL[item.origin] || item.origin;
+              const kTxt = item.kind && KIND_LABEL[item.kind] ? KIND_LABEL[item.kind] : '';
+              const pill = el('span', 'lf-chip ' + (item.origin === 'home-grown' || item.origin === 'ranch' ? 'good' : (item.origin === 'town-buy' ? 'info' : '')), originTxt);
               pill.style.marginRight = '6px';
-              li.append(pill, document.createTextNode(`${item.name} ×${item.qty}`), el('span', 'id', `折合本钱 ¥${item.unitCost}/份`));
+              li.append(pill, document.createTextNode(`${item.name}${kTxt ? `(${kTxt})` : ''} ×${item.qty}`), el('span', 'id', `约¥${item.unitCost}/份`));
               ul.append(li);
             }
-            pantryCard.append(ul);
-            pantryCard.append(el('p', 'lf-note-line', '做饭（cook）或摆料理摊（food）时优先从「自家种植 → 街坊鲜蔬 → 早市采购」顺序消耗；摆鲜蔬摊（produce）仅耗自产囤货。'));
+            panCol.append(ul);
           }
 
-          /* 4. 鱼市街与成交入账 */
+          const dishCol = el('div', null);
+          dishCol.append(el('div', 'lf-subh', '成品菜格（可让它热吃或直挂料理摊）'));
+          if (!dishes.length) {
+            dishCol.append(el('p', 'lf-muted', '暂无存好的成品菜（在对话里让它做菜存起来即可，做料理摊只收 ¥2 打包保鲜费）。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const ds of dishes) {
+              const li = el('li');
+              const tPill = el('span', 'lf-chip ' + (ds.tier === 'chef' ? 'info' : 'good'), ds.tier === 'chef' ? '厨师招牌' : '家常简食');
+              tPill.style.marginRight = '6px';
+              li.append(tPill, document.createTextNode(`${ds.name} ×${ds.qty}`), el('span', 'id', `饱+${ds.foodGain} 娱+${ds.funGain}`));
+              ul.append(li);
+            }
+            dishCol.append(ul);
+          }
+          splitBox.append(panCol, dishCol);
+          pantryCard.append(splitBox);
+
+          /* 5. 鱼市街与成交入账 */
           stallCard.innerHTML = '';
           stallCard.append(el('h3', null, '鱼市街 · 摊位与成交入账'));
           const bd = d.bulletin || [];
@@ -1450,11 +2002,20 @@ export default {
 
           const recordMap = new Map((d.stallRecords || []).map((r) => [r.id, r]));
           const os = d.otherStalls || [];
-          if (!os.length) {
-            stallCard.append(el('p', 'lf-muted', '街坊这会儿还没摆出摊子（或未连接城服务器）。'));
+          const otherErrands = os.filter((st) => st.kind === 'errand');
+          const otherGoods = os.filter((st) => st.kind !== 'errand');
+          if (otherErrands.length) {
+            stallCard.append(el('div', 'lf-subh', `街坊农牧委托 · 让大肥鱼帮忙干活挣零花钱（${otherErrands.length}）`));
+            for (const st of otherErrands) stallCard.append(renderStallRow(st, true, recordMap));
+            stallCard.append(el('p', 'lf-note-line', '在对话里对它说「去鱼市街看看有没有街坊要帮忙照料菜地牧场的委托，接一单挣点零花钱」即可认领（不占今天正式打工额度）。'));
+          }
+          if (!otherGoods.length) {
+            if (!otherErrands.length) {
+              stallCard.append(el('p', 'lf-muted', '街坊这会儿还没摆出摊子或委托（或未连接城服务器）。'));
+            }
           } else {
-            stallCard.append(el('div', 'lf-subh', `街坊在售（${os.length}）`));
-            for (const st of os) stallCard.append(renderStallRow(st, true, recordMap));
+            stallCard.append(el('div', 'lf-subh', `街坊在售（${otherGoods.length}）`));
+            for (const st of otherGoods) stallCard.append(renderStallRow(st, true, recordMap));
           }
 
           const split = el('div', 'lf-mkt-split');
@@ -1492,25 +2053,32 @@ export default {
         ctx.root.append(app);
 
         const head = el('div', 'lf-head');
-        head.append(el('h1', 'lf-town', '生活日记与流水'));
-        const dirLine = el('p', 'lf-dir', '读取中…');
+        head.append(el('h1', 'lf-town', '日记与时间轴'));
+        const ver = el('span', 'lf-ver', '');
+        head.append(ver);
+        const sub = el('p', 'lf-sub', '读取中…');
+        const dirLine = el('p', 'lf-dir', '');
         const notice = el('div', 'lf-note');
         notice.hidden = true;
-        app.append(head, dirLine, notice);
 
+        const tlCard = el('div', 'lf-card');
         const wrap = el('div', 'lf-diary-wrap');
         const listBox = el('div', 'lf-dlist');
         const viewBox = el('article', 'lf-dview');
         wrap.append(listBox, viewBox);
-        app.append(wrap);
 
-        const cols = el('div', 'lf-cols');
         const ledgerCard = el('div', 'lf-card');
-        const eventsCard = el('div', 'lf-card');
-        cols.append(ledgerCard, eventsCard);
-        app.append(cols);
+        const foot = el('div', 'lf-foot');
+        const reload = el('button', 'lf-btn', '刷新');
+        reload.type = 'button';
+        foot.append(reload);
+
+        app.append(head, sub, dirLine, notice, tlCard, wrap, ledgerCard, foot);
 
         let selectedDate = '';
+        let ledgerTab = 'today';
+        let lastResp = null;
+
         const showEntry = (d) => {
           viewBox.innerHTML = '';
           if (!d) {
@@ -1529,7 +2097,20 @@ export default {
 
         const render = (r) => {
           if (!r) return;
-          dirLine.textContent = r.dir ? `目录：${r.dir}` : '';
+          lastResp = r;
+          ver.textContent = r.version ? `· v${r.version}` : '';
+          const statusNow = r.asleep
+            ? `在睡（约余 ${r.asleep.hoursLeft}h）`
+            : (r.activity ? `正在「${r.activity.label}」（剩 ${r.activity.minutesLeft}m）` : '空闲');
+          const parts = [
+            `${r.today || ''} ${r.dayPart || ''} ${r.clock || ''}`.trim(),
+            r.solarTerm?.name ? `节气·${r.solarTerm.name}` : '',
+            r.streetWindow ? `${r.streetWindow.place}${r.streetWindow.label}` : '',
+            statusNow,
+          ].filter(Boolean);
+          sub.textContent = parts.join(' · ') || '生活日记与一日时间轴';
+
+          dirLine.textContent = r.dir ? `日记目录：${r.dir}` : '';
           notice.hidden = true;
           if (r.problem) {
             notice.hidden = false;
@@ -1539,6 +2120,24 @@ export default {
             notice.textContent = '旅行途中记录写入旅行日记，回家后恢复写入生活日记。';
           }
 
+          /* 1. 一日时间轴（合并原 day 页签，不再与下面重复） */
+          tlCard.innerHTML = '';
+          const tList = (r.todayTellable && r.todayTellable.length) ? r.todayTellable : (r.recentTellable || r.tellable || []);
+          tlCard.append(el('h3', null, (r.todayTellable && r.todayTellable.length) ? '今日时间轴' : '近期经历时间轴（今日暂无）'));
+          if (!tList.length) {
+            tlCard.append(el('p', 'lf-muted', '暂无经历片段。'));
+          } else {
+            const ul = el('ul', 'lf-list');
+            for (const it of tList) {
+              const li = el('li');
+              li.append(document.createTextNode(it.text || ''));
+              if (it.at) li.append(el('span', 'id', fmtLocal(it.at, 'mdhm')));
+              ul.append(li);
+            }
+            tlCard.append(ul);
+          }
+
+          /* 2. 第一人称生活日记 */
           const days = r.days || [];
           listBox.innerHTML = '';
           if (!days.length) showEntry(null);
@@ -1559,43 +2158,51 @@ export default {
             showEntry(active);
           }
 
+          /* 3. 合并收支流水（支持今日 / 近期切换，不重复渲染两遍） */
           ledgerCard.innerHTML = '';
-          ledgerCard.append(el('h3', null, '最近流水'));
-          const ledger = r.ledger || [];
-          if (!ledger.length) ledgerCard.append(el('p', 'lf-muted', '暂无收支流水。'));
-          else {
+          const lHead = el('div', 'lf-mkt-head');
+          const todayL = r.todayLedger || [];
+          const recentL = r.ledger || [];
+          lHead.append(el('h3', null, '收支流水'));
+          const lTabs = el('div', 'lf-tabs');
+          lTabs.style.marginBottom = '0';
+          for (const [lid, llab] of [['today', `今日 (${todayL.length})`], ['recent', `近期 (${recentL.length})`]]) {
+            const tb = el('button', 'lf-btn sm lf-tab', llab);
+            tb.type = 'button';
+            if (ledgerTab === lid) tb.dataset.on = '1';
+            tb.addEventListener('click', () => { ledgerTab = lid; render(lastResp); });
+            lTabs.append(tb);
+          }
+          lHead.append(lTabs);
+          ledgerCard.append(lHead);
+
+          const lShow = ledgerTab === 'today'
+            ? (todayL.length ? todayL : recentL)
+            : recentL;
+          if (!lShow.length) {
+            ledgerCard.append(el('p', 'lf-muted', '暂无收支流水。'));
+          } else {
+            if (ledgerTab === 'today' && !todayL.length) {
+              ledgerCard.append(el('p', 'lf-note-line', '今日暂无流水，暂展示近期记录：'));
+            }
             const ul = el('ul', 'lf-list');
-            for (const e of ledger) {
+            for (const e of lShow) {
               const li = el('li');
               const sign = e.kind === 'income' ? '+' : '-';
               li.append(document.createTextNode(`${sign}¥${e.amount} · ${e.note || e.source}${e.payee ? `（${e.payee}）` : ''}`));
-              if (e.ts) li.append(el('span', 'id', fmtLocal(e.ts, 'md')));
+              if (e.ts) li.append(el('span', 'id', fmtLocal(e.ts, 'mdhm')));
               ul.append(li);
             }
             ledgerCard.append(ul);
-          }
-
-          eventsCard.innerHTML = '';
-          eventsCard.append(el('h3', null, '最近经历'));
-          const tells = r.tellable || [];
-          if (!tells.length) eventsCard.append(el('p', 'lf-muted', '暂无经历片段。'));
-          else {
-            const ul = el('ul', 'lf-list');
-            for (const it of tells) {
-              const li = el('li');
-              li.append(document.createTextNode(it.text || ''));
-              if (it.at) li.append(el('span', 'id', fmtLocal(it.at, 'md')));
-              ul.append(li);
-            }
-            eventsCard.append(ul);
           }
         };
 
         const load = () => ctx.invoke('list').then(render).catch((e) => {
           dirLine.textContent = (e && e.message) ? e.message : '读取失败';
         });
+        reload.addEventListener('click', load);
         await load();
-        const loop = () => ctx.timeout(() => load().finally(loop), 30_000);
+        const loop = () => ctx.timeout(() => load().finally(loop), 25_000);
         loop();
       },
     },

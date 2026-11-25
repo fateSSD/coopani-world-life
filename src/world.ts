@@ -16,12 +16,19 @@ import {
   ACTS, CRITICAL, DECAY_PER_HOUR, FITNESS_MAX, HOME_TIER_COST, HOME_TIER_LABEL, HOME_TIER_RELIEF, KNOWLEDGE_MAX, LOW, MAX_PENDING, MAX_PLEDGES, NON_OCCUPYING_ACTS,
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL, SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG,
   HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_MONTHLY_RENT, LEASE_SIGNUP_FEE, SEEDS, STALL_CATEGORY_LABEL, STALL_RULES_GUIDE,
+  ANIMAL_GROUP_LABEL, HOME_RANCH_SLOTS, RANCH_LEASE_SLOTS, RANCH_SIGNUP_FEE, RANCH_MONTHLY_RENT, ANIMALS, HELPER_PLANS, NEIGHBOR_ERRAND_TTL_HOURS,
+  RECIPES,
   advance, applyAct, applyMove, applyStreetMove, applySpend, applyWork, applyCert, applyLearn, applyGift, asleepRefusal, busyRefusal, freshState, isAsleep, isBusy, isCruiseJourney, isThemeCruiseJourney, isRiverCruiseJourney, isScenicTrainJourney, isCampervanJourney,
   applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm, addPantryItem, consumePantry, pantryCount, evaluateStallPlan, solarTermOf,
+  consumeCookedDish, cookedDishCount,
+  applyRentRanch, applyUnrentRanch, applyBuyAnimal, applyFeedAnimal, applyCollectRanch, applyHarvestRanch,
+  countPendingFarmWork, calcNeighborErrandQuote, parseErrandMinutes, recordPostedNeighborErrand,
+  applyNeighborErrandCompleted, refundExpiredErrand, applyHireHelper, applyUnhireHelper,
+  findRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
   jobGate, localDateKey, noteVisit, quoteMove, readyGoals,
   recentVisits, remember, snapshot, streetDecayFactor, SLEEP_ENERGY_PER_HOUR,
   appendLedger, readLedger, fullMarketPrices, weatherOf,
-  type AdvanceResult, type HomeTier, type LifeState, type PendingBlock, type PendingNotice, type Snapshot, type VitalKey, type SkillDomain, type StallCategory, type WeatherInfo,
+  type AdvanceResult, type HelperMode, type HomeTier, type LifeState, type PendingBlock, type PendingNotice, type Snapshot, type VitalKey, type SkillDomain, type StallCategory, type WeatherInfo,
 } from './state.ts';
 import { JOBS, certOf, jobAllowedAt } from './jobs.ts';
 import {
@@ -303,10 +310,14 @@ export class LifeWorld implements World {
   private otherStallsCache: TownStall[] = [];
   private myDealsCache: TownDeal[] = [];
   private unseenDealsCount = 0;
+  private lastErrandPostAttemptDay = '';
 
   private marketShowcaseLine(limit = 3): string {
     if (!this.otherStallsCache.length) return '';
     return this.otherStallsCache.slice(0, limit).map((st) => {
+      if (st.kind === 'errand') {
+        return `${st.seller}的「${st.item}」[邻里委托·接单挣+${st.price}元]`;
+      }
       const fx = formatStallEffects(resolveStallEffects(st.effects, st.price));
       return `${st.seller}的「${st.item}」${st.price}元（${fx}）`;
     }).join('；');
@@ -535,7 +546,7 @@ export class LifeWorld implements World {
         this.townBulletin = remote.bulletin;
         const myName = this.opts.botName || 'fish';
         this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
-        this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 8);
+        this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 12);
       }
     } catch { /* 静默保留上次黑板 */ }
     if (uid) {
@@ -552,6 +563,13 @@ export class LifeWorld implements World {
     this.lastBulletinFetchMs = ok ? Date.now() : Math.max(this.lastBulletinFetchMs, Date.now() - 14 * 60_000);
   }
 
+  /** 判断一条成交回执是否对应自己发出的农牧邻里代管委托（绝不误按卖货给雇主加钱）。 */
+  private isMyFarmErrandDeal(d: Pick<TownDeal, 'stallId' | 'item'>): boolean {
+    if (!d.stallId) return false;
+    if (this.state.farmHelper.pendingErrand?.stallId === d.stallId) return true;
+    return (this.state.farmHelper.errandStallIds ?? []).includes(d.stallId);
+  }
+
   /** 按本地摊位单价与服务端单价给卖家真实入账，严格按 deal.id 幂等防重。 */
   private resolveDealPrice(d: TownDeal): number {
     if (d.unitPrice && d.unitPrice > 0) return d.unitPrice;
@@ -561,13 +579,43 @@ export class LifeWorld implements World {
     return cached && cached.price > 0 ? cached.price : 0;
   }
 
-  private settleTownDeals(deals: readonly TownDeal[], now: Date): { newCount: number; newIncome: number } {
-    if (this.stateCleared || !deals.length) return { newCount: 0, newIncome: 0 };
+  private settleTownDeals(deals: readonly TownDeal[], now: Date): { newCount: number; newIncome: number; errandCompleted: number } {
+    if (this.stateCleared || !deals.length) return { newCount: 0, newIncome: 0, errandCompleted: 0 };
     const settled = new Set(this.state.settledDeals);
     let newCount = 0;
     let newIncome = 0;
+    let errandCompleted = 0;
+    let changed = false;
     for (const d of deals) {
       if (!d.id || settled.has(d.id)) continue;
+      if (this.isMyFarmErrandDeal(d)) {
+        settled.add(d.id);
+        this.state.settledDeals.push(d.id);
+        changed = true;
+        errandCompleted += 1;
+        const pe = this.state.farmHelper.pendingErrand;
+        if (pe && pe.stallId === d.stallId) {
+          const comp = applyNeighborErrandCompleted(this.state, d.buyerPet, now, { stallId: d.stallId });
+          if (comp.feedPaid > 0) {
+            appendLedger(this.opts.dataDir, {
+              id: `errand-feed-${d.id}`,
+              ts: now.toISOString(),
+              kind: 'expense',
+              amount: comp.feedPaid,
+              source: 'farm_helper',
+              payee: '牧场饲料',
+              note: `街坊${d.buyerPet}代管喂食饲料费`,
+            });
+          }
+        } else {
+          remember(
+            this.state,
+            `街坊${d.buyerPet}稍晚点接了之前的农牧代管单（今天已先由自动照料照看完毕，不再重复扣费）。`,
+            now,
+          );
+        }
+        continue;
+      }
       const unitPrice = this.resolveDealPrice(d);
       if (unitPrice <= 0) continue;
       const income = unitPrice * Math.max(1, d.qty);
@@ -577,6 +625,7 @@ export class LifeWorld implements World {
       this.state.money.earned += income;
       newCount += 1;
       newIncome += income;
+      changed = true;
       appendLedger(this.opts.dataDir, {
         id: `deal-${d.id}`,
         ts: now.toISOString(),
@@ -588,12 +637,87 @@ export class LifeWorld implements World {
       });
       remember(this.state, `鱼市街摊上的「${d.item}」被${d.buyerPet}买走了 ${d.qty} 份，进账 ${income} 元。`, now);
     }
-    if (newCount > 0) {
+    if (changed) {
       this.state.settledDeals = this.state.settledDeals.slice(-200);
       this.saveDeliveredState();
       this.broadcastLife(now);
     }
-    return { newCount, newIncome };
+    return { newCount, newIncome, errandCompleted };
+  }
+
+  /** 向鱼市街发布一条农牧邻里代管委托（先预扣邻里工钱，6 小时无人接自动退回并转自动照料）。 */
+  private async postNeighborFarmErrand(
+    now: Date,
+    mode: Exclude<HelperMode, 'off'>,
+    generation: number,
+  ): Promise<{ ok: boolean; noWork?: boolean; reason?: string; stallId?: string; wage?: number; minutes?: number; itemLabel?: string }> {
+    const pending = countPendingFarmWork(this.state, mode, now);
+    if (pending.total === 0) {
+      return { ok: false, noWork: true, reason: '今天菜地和牧场的活都已照料完毕，不用发邻里委托。' };
+    }
+    const todayKey = localDateKey(now);
+    const existing = this.state.farmHelper.pendingErrand;
+    if (existing && existing.day === todayKey && Date.parse(existing.expiresAt) > now.getTime()) {
+      return { ok: false, reason: `今天鱼市街上已经挂着邻里代管单（预扣 ¥${existing.wage} · 约 ${existing.minutes} 分钟），正等街坊接单。` };
+    }
+    if (!parseTownUrls(this.cfg.townUrl).length) {
+      return { ok: false, reason: '未连接城服务器' };
+    }
+    const uid = readMeetUid(this.opts.dataDir);
+    if (!uid) return { ok: false, reason: '缺少本机 uid' };
+    const quote = calcNeighborErrandQuote(pending.workPlots, pending.workPens, mode);
+    if (this.state.money.cash < quote.wage) {
+      return { ok: false, reason: `发邻里代管委托需先托管预扣 ¥${quote.wage}，手上只有 ${Math.round(this.state.money.cash)} 元。` };
+    }
+    const myName = this.opts.botName || 'fish';
+    const res = await postTownStall(this.cfg.townUrl, {
+      uid,
+      pet: myName,
+      kind: 'errand',
+      item: quote.itemLabel,
+      price: quote.wage,
+      stock: 1,
+      note: '请街坊帮忙浇水喂食收蛋奶，6h无人接自动退回',
+    });
+    if (generation !== this.stateGeneration) {
+      return { ok: false, reason: '生活档案刚刚被清理' };
+    }
+    if (!res.ok || !res.id) {
+      return { ok: false, reason: res.reason || '鱼市街挂委托单失败' };
+    }
+    const rec = recordPostedNeighborErrand(this.state, {
+      stallId: res.id,
+      mode,
+      wage: quote.wage,
+      minutes: quote.minutes,
+      now,
+    });
+    if (!rec.ok) return { ok: false, reason: rec.reason };
+    appendLedger(this.opts.dataDir, {
+      id: `errand-post-${res.id}`,
+      ts: now.toISOString(),
+      kind: 'expense',
+      amount: quote.wage,
+      source: 'farm_errand_post',
+      payee: '鱼市街委托托管',
+      note: `发出委托：${quote.itemLabel}`,
+    });
+    this.myStallsCache = [
+      {
+        id: res.id,
+        seller: myName,
+        kind: 'errand',
+        item: res.item || quote.itemLabel,
+        price: quote.wage,
+        stock: 1,
+        freshVeg: false,
+        note: '请街坊帮忙浇水喂食收蛋奶，6h无人接自动退回',
+      },
+      ...this.myStallsCache.filter((s) => s.id !== res.id),
+    ];
+    this.saveDeliveredState();
+    this.broadcastLife(now);
+    return { ok: true, stallId: res.id, wage: quote.wage, minutes: quote.minutes, itemLabel: quote.itemLabel };
   }
 
   /** 版本号与新版本检查。面板表头那个徽章读它。 */
@@ -883,6 +1007,49 @@ export class LifeWorld implements World {
      * 放在 `advance` 之前、并且**不跟着 `r.hours` 走** —— 她欠的那笔钱跟她这一小时
      * 过没过没有关系，不能因为「这一跳没走时间」就把条子留着不发。
      */
+    /*
+     * 跨新日且开了农牧帮手（默认优先找邻里真鱼代管）：
+     * 若今天有待干活、连着城服务器且还没挂出今日邻里单，先发委托等 6h；
+     * 若发单失败或断网，则直接落入接下来的 advance() 自动照料兜底。
+     */
+    const tickToday = localDateKey(now);
+    if (
+      !this.stateCleared
+      && this.state.farmHelper.mode !== 'off'
+      && this.state.farmHelper.preferNeighbor
+      && this.state.farmHelper.lastRunDay !== tickToday
+      && this.lastErrandPostAttemptDay !== tickToday
+      && parseTownUrls(this.cfg.townUrl).length > 0
+    ) {
+      const oldPe = this.state.farmHelper.pendingErrand;
+      if (oldPe && (oldPe.day !== tickToday || Date.parse(oldPe.expiresAt) <= now.getTime())) {
+        const ref = refundExpiredErrand(this.state, now);
+        if (ref && ref.refunded > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `errand-refund-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'income',
+            amount: ref.refunded,
+            source: 'farm_errand_refund',
+            payee: '鱼市街托管退回',
+            note: '邻里农牧委托超时无人接单，预扣工钱原路退回',
+          });
+          this.saveDeliveredState();
+        }
+      }
+      const hasValidTodayErrand = Boolean(
+        this.state.farmHelper.pendingErrand
+        && this.state.farmHelper.pendingErrand.day === tickToday
+        && Date.parse(this.state.farmHelper.pendingErrand.expiresAt) > now.getTime(),
+      );
+      if (!hasValidTodayErrand && countPendingFarmWork(this.state, this.state.farmHelper.mode, now).total > 0) {
+        this.lastErrandPostAttemptDay = tickToday;
+        try {
+          await this.postNeighborFarmErrand(now, this.state.farmHelper.mode, generation);
+          if (generation !== this.stateGeneration) return;
+        } catch { /* 网络失败则自动落入下面 advance 兜底 */ }
+      }
+    }
     this.settleSpendRequests(now);
     this.broadcastLife(now);
     const r = advance(this.state, now, {
@@ -1179,6 +1346,16 @@ export class LifeWorld implements World {
                 ? `${c.label}（${c.gradeLabel}）`
                 : c.label,
         });
+      } else if (c.kind === 'act' && c.workEarned > 0) {
+        appendLedger(this.opts.dataDir, {
+          id: `errand-earn-${c.id}-${now.getTime().toString(36)}`,
+          ts: now.toISOString(),
+          kind: 'income',
+          amount: c.workEarned,
+          source: 'life_errand_earn',
+          payee: c.errandEmployer || '街坊',
+          note: `${c.label}（邻里代管工钱）`,
+        });
       } else if (c.kind === 'act' && c.costPaid > 0) {
         appendLedger(this.opts.dataDir, {
           id: `act-done-${c.id}-${now.getTime().toString(36)}`,
@@ -1212,6 +1389,28 @@ export class LifeWorld implements World {
 
   private async settleAdvanceEffects(r: AdvanceResult, now: Date, generation = this.stateGeneration): Promise<void> {
     this.settleCompleted(r, now);
+    if (r.helperRun && (r.helperRun.wagePaid > 0 || r.helperRun.feedPaid > 0)) {
+      appendLedger(this.opts.dataDir, {
+        id: `helper-catchup-${now.getTime().toString(36)}`,
+        ts: now.toISOString(),
+        kind: 'expense',
+        amount: r.helperRun.wagePaid + r.helperRun.feedPaid,
+        source: 'farm_helper',
+        payee: '农牧帮手',
+        note: r.helperRun.summary,
+      });
+    }
+    if (r.helperRun?.errandRefunded && r.helperRun.errandRefunded > 0) {
+      appendLedger(this.opts.dataDir, {
+        id: `errand-refund-${now.getTime().toString(36)}`,
+        ts: now.toISOString(),
+        kind: 'income',
+        amount: r.helperRun.errandRefunded,
+        source: 'farm_errand_refund',
+        payee: '鱼市街托管退回',
+        note: '邻里农牧委托超时无人接单，预扣工钱原路退回',
+      });
+    }
     for (const c of r.caught) {
       remember(this.state, c.text, now);
       this.enqueueNotice({
@@ -1763,6 +1962,8 @@ export class LifeWorld implements World {
       this.toolStall(),
       this.toolDeals(),
       this.toolFarm(),
+      this.toolRanch(),
+      this.toolCook(),
       this.toolDiaryWrite(),
       this.toolDiaryRead(),
       this.toolLibrary(),
@@ -1780,7 +1981,7 @@ export class LifeWorld implements World {
       parameters: { type: 'object', additionalProperties: false, properties: {} },
       tags: ['read', 'snapshot'],
       handler: async () => {
-        const now = new Date();
+        const now = this.now();
         await this.settleBeforeTool(now);
         const j = readJourney(this.opts.dataDir, now);
         this.journey = j;
@@ -2585,12 +2786,12 @@ export class LifeWorld implements World {
     return {
       name: 'life_buy',
       description:
-        '去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的（不传参数看摊位、时段折扣与街口黑板报，传 stall_id 或菜名就买下来；买鱼市街街坊摊位会额外叠邻里社交与好心情，买鲜蔬果品还会收入储物篮供下厨与摆料理摊省本钱）。',
+        '去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的，也可接下街坊发出的农牧代管委托帮忙干活挣零花钱（不传参数看摊位、邻里委托与街口黑板报，传 stall_id 或菜名就购买或接单；接邻里代管委托不扣钱、按动植物数量忙活对应分钟后领全额工钱且不占今天正式打工额度；买鲜蔬果品还会收入储物篮供下厨与摆摊）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          stall_id: { type: 'string', description: '摊位 id 或早市/尾货/节气菜名；不填则先逛逛看看价。' },
+          stall_id: { type: 'string', description: '摊位 id、邻里代管委托 id 或早市/尾货/节气菜名；不填则先逛逛看看价。' },
         },
       },
       tags: ['write'],
@@ -2599,7 +2800,7 @@ export class LifeWorld implements World {
         await this.settleBeforeTool(now);
         const generation = this.stateGeneration;
         const cleared = () => ({ text: '生活档案刚刚被清理，这次旧购买操作已停止，未写入新档案。' });
-        if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去买菜') };
+        if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去鱼市街') };
         const pick = String(args?.stall_id ?? '').trim();
         const hasTownUrl = parseTownUrls(this.cfg.townUrl).length > 0;
         const myName = this.opts.botName || 'fish';
@@ -2609,7 +2810,7 @@ export class LifeWorld implements World {
           if (remote.ok) {
             this.townBulletin = remote.bulletin;
             this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
-            this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 8);
+            this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 12);
           }
           const local = fullMarketPrices(now);
           const s = snapshot(this.state, now);
@@ -2617,7 +2818,12 @@ export class LifeWorld implements World {
           const boardTxt = this.townBulletin.length ? `\n街口黑板报：${this.townBulletin.slice(0, 3).join('；')}` : '';
           if (remote.ok && remote.stalls.length) {
             return {
-              text: `${winTxt}鱼市街今天摆出来的摊位（买街坊摊货会额外附赠邻里社交与好心情）：${remote.stalls.map((st) => {
+              text: `${winTxt}鱼市街今天摆出来的摊位与邻里委托（买摊货涨社交与好心情；接农牧代管委托可帮街坊浇水喂食挣零花钱）：${remote.stalls.map((st) => {
+                if (st.kind === 'errand') {
+                  const mins = parseErrandMinutes(st.item);
+                  const noteTxt = st.note ? ` · 「${st.note}」` : '';
+                  return `[邻里代管委托·挣钱] ${st.item} 工钱+${st.price}元/约${mins}分（雇主:${st.seller}，id:${st.id}${noteTxt}）`;
+                }
                 const fx = formatStallEffects(resolveStallEffects(st.effects, st.price));
                 const noteTxt = st.note ? ` · 「${st.note}」` : '';
                 return `${st.item} ${st.price}元（${st.seller}，id:${st.id}，${fx}${noteTxt}）`;
@@ -2644,9 +2850,63 @@ export class LifeWorld implements World {
           if (remote.ok) {
             this.townBulletin = remote.bulletin;
             this.myStallsCache = remote.stalls.filter((st) => st.seller === myName);
-            this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 8);
+            this.otherStallsCache = remote.stalls.filter((st) => st.seller !== myName).slice(0, 12);
           }
           const match = remote.ok ? remote.stalls.find((st) => st.id === pick || st.item === pick) : null;
+          if (match && match.kind === 'errand') {
+            if (this.state.vitals.energy < 10) {
+              return { text: `精力只剩 ${Math.round(this.state.vitals.energy)} 点了，先歇会儿或睡一觉再去帮街坊照料农牧场吧。` };
+            }
+            const buyerUid = readMeetUid(this.opts.dataDir);
+            if (!buyerUid) {
+              return { text: '缺少本机 uid（先跟城里连一次碰面生成 uid 后再接鱼市街邻里委托）。' };
+            }
+            const accepted = await buyTownStall(this.cfg.townUrl, match.id, myName, {
+              buyerUid,
+              note: '我来帮你照料农牧场啦',
+            });
+            if (generation !== this.stateGeneration) return cleared();
+            if (!accepted.ok) return { text: accepted.reason ?? '没抢到这单委托。' };
+
+            const errandItem = accepted.item || match.item;
+            const pay = accepted.price || match.price;
+            const employer = accepted.seller || match.seller;
+            const mins = parseErrandMinutes(errandItem);
+            const energyCost = Math.min(24, Math.max(8, Math.round(mins * 0.25)));
+            const foodCost = 6;
+            const until = new Date(now.getTime() + mins * 60_000).toISOString();
+            this.state.activity = {
+              kind: 'act',
+              id: 'neighbor_errand',
+              label: `帮${employer}照料农牧场`,
+              from: now.toISOString(),
+              until,
+              minutes: mins,
+              perMin: {
+                energy: -energyCost / mins,
+                food: -foodCost / mins,
+                social: 10 / mins,
+              },
+              errandPay: pay,
+              errandEmployer: employer,
+              mood: {
+                text: `帮街坊${employer}照料好了农牧场，挣到 +${pay} 元零花钱`,
+                kind: 'good',
+                hours: 4,
+              },
+              scene: `${employer}家的农牧场`,
+            };
+            this.otherStallsCache = this.otherStallsCache
+              .map((st) => (st.id === match.id ? { ...st, stock: st.stock - 1 } : st))
+              .filter((st) => st.stock > 0);
+            remember(this.state, `在鱼市街接下街坊${employer}的委托「${errandItem}」，过去帮忙照料（约 ${mins} 分钟，完工挣 +${pay} 元）。`, now);
+            this.state.updatedAt = now.toISOString();
+            try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
+            this.broadcastLife(now);
+            return {
+              text: `接下了街坊 ${employer} 的农牧代管委托「${errandItem}」！（不用自己花钱）预计去忙活 ${mins} 分钟（耗精力约 ${energyCost}、涨社交 +10），干完自动领全额工钱 +${pay} 元，不占今天正式打工额度。`,
+            };
+          }
           if (match) {
             if (this.state.money.cash < match.price) {
               return { text: `「${match.item}」要 ${match.price} 元，手上只有 ${this.state.money.cash} 元。` };
@@ -2777,17 +3037,17 @@ export class LifeWorld implements World {
       description:
         '去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位与储物篮余量）。'
         + '价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效，卖不掉过期亏本）。'
-        + '五大品类各扣真实本钱与精力：鲜蔬农产（produce，耗自产鲜蔬或早市现批+3元打包）、'
-        + '料理熟食（food，先用储物篮鲜蔬仅收3元/份油盐费，无囤货现买原料；单价>25需厨师证/烹饪≥10/烤箱/独立厨房）、'
+        + '五大品类各扣真实本钱与精力：鲜蔬农产（produce，耗自产农牧货或早市现批+3元打包）、'
+        + '料理熟食（food，先用已做好成品菜格仅2元打包费，再用储物篮原料仅收3元/份油盐费，无囤货现买原料；单价>25现做需厨师证/烹饪≥10/烤箱/独立厨房）、'
         + '写作出版（writing，扣纸笔排版底费+印刷装帧费及较多精力；>25需见识≥15/文字≥10/电脑）、'
         + '手作文创（craft，扣材料包装费；>25需手作≥5/缝纫机）、影像周边（photo，扣冲扫+相纸费；>15需微单/影像≥10）。'
-        + '做新鲜蔬果时可标 fresh_veg: true；也可传 effects 自定义给买家回复的属性点数（每 1 元定价 = 2 点预算）。卖出后在 life_deals 自动进账。',
+        + '做新鲜蔬果时可标 fresh_veg: true；摆菜谱里的成品菜时可不填 price 自动采用菜谱参考摊价，自定义定价低于保本价也会附参考价提醒；也可传 effects 自定义给买家回复的属性点数（每 1 元定价 = 2 点预算）。卖出后在 life_deals 自动进账。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
           item: { type: 'string', description: '卖什么东西，不填则查看自己此刻挂着的摊位与储物篮备料。' },
-          price: { type: 'number', description: '定价（1–999 元）。' },
+          price: { type: 'number', description: '定价（1–999 元；若卖菜谱同名菜肴且不填则自动采用菜谱参考摊价）。' },
           stock: { type: 'number', description: '准备卖几份（1–99，默认 3）。' },
           category: {
             type: 'string',
@@ -2831,7 +3091,7 @@ export class LifeWorld implements World {
           this.townBulletin = remote.bulletin;
           const mine = remote.stalls.filter((s) => s.seller === myName);
           this.myStallsCache = mine;
-          this.otherStallsCache = remote.stalls.filter((s) => s.seller !== myName).slice(0, 8);
+          this.otherStallsCache = remote.stalls.filter((s) => s.seller !== myName).slice(0, 12);
           const panLine = this.state.pantry.length
             ? `储物篮备料：${this.state.pantry.map((p) => `${p.name}×${p.qty}(${p.origin === 'home-grown' ? '自种' : p.origin === 'town-buy' ? `购自${p.fromSeller || '街坊'}` : '早市'})`).join('、')}。`
             : '储物篮眼下空着（可用 life_farm 种菜收成或去鱼市街买菜囤鲜蔬）。';
@@ -2848,10 +3108,22 @@ export class LifeWorld implements World {
         if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去摆摊') };
         const uid = readMeetUid(this.opts.dataDir);
         if (!uid) return { text: '缺少本机 uid，没法在鱼市街实名挂摊。' };
-        const price = Math.round(Number(args?.price));
+        const matchedRecipe = findRecipe(item) ?? (() => {
+          const d = (this.state.cookedDishes ?? []).find(
+            (x) => x.name === item || x.name.includes(item) || item.includes(x.name),
+          );
+          return d ? findRecipe(d.recipeId) : null;
+        })();
+        const hasRawPrice = args?.price !== undefined && args?.price !== null && args?.price !== '';
+        let price = hasRawPrice ? Math.round(Number(args?.price)) : NaN;
+        let usedSuggestedPrice = false;
+        if (!hasRawPrice && matchedRecipe && matchedRecipe.suggestedPrice > 0) {
+          price = matchedRecipe.suggestedPrice;
+          usedSuggestedPrice = true;
+        }
         const stock = args?.stock !== undefined ? Math.round(Number(args.stock)) : 3;
         if (!Number.isFinite(price) || price < 1 || price > 999) {
-          return { text: '定价得填 1–999 之间的整数元。' };
+          return { text: '定价得填 1–999 之间的整数元（只有摆已知菜谱的菜肴时才能不填定价，自动套用参考摊价）。' };
         }
         if (!Number.isFinite(stock) || stock < 1 || stock > 99) {
           return { text: '份数得填 1–99 之间的整数。' };
@@ -2888,10 +3160,16 @@ export class LifeWorld implements World {
 
         let consumedSources: string[] = [];
         let pantryUnitCostSum = 0;
+        if (plan.cookedUsed > 0) {
+          this.state.cookedDishes = this.state.cookedDishes ?? [];
+          const usedCooked = consumeCookedDish(this.state.cookedDishes, plan.cookedUsed, item);
+          consumedSources.push(...usedCooked.sources);
+          pantryUnitCostSum += usedCooked.totalUnitCost;
+        }
         if (plan.pantryUsed > 0) {
           const used = consumePantry(this.state.pantry, plan.pantryUsed, { homeOnly: plan.category === 'produce' });
-          consumedSources = used.sources;
-          pantryUnitCostSum = used.totalUnitCost;
+          consumedSources.push(...used.sources);
+          pantryUnitCostSum += used.totalUnitCost;
         }
         this.state.money.cash = Math.max(0, this.state.money.cash - plan.cashCost);
         this.state.money.spent += plan.cashCost;
@@ -2932,11 +3210,16 @@ export class LifeWorld implements World {
         if (remote.ok) {
           this.townBulletin = remote.bulletin;
           this.myStallsCache = remote.stalls.filter((s) => s.seller === myName);
-          this.otherStallsCache = remote.stalls.filter((s) => s.seller !== myName).slice(0, 8);
+          this.otherStallsCache = remote.stalls.filter((s) => s.seller !== myName).slice(0, 12);
         }
         const finalEffects = res.effects ?? effects;
         const fxTxt = formatStallEffects(finalEffects);
         const pantryTxt = consumedSources.length ? `（动用了${consumedSources.join('、')}）` : '';
+        const refPriceHint = usedSuggestedPrice
+          ? `（已自动按菜谱参考摊价 ${price} 元定价）`
+          : (matchedRecipe && price < plan.breakEvenPrice
+            ? `（提醒：当前定价低于保本价 ${plan.breakEvenPrice} 元，该菜谱参考摊价约 ${matchedRecipe.suggestedPrice} 元）`
+            : '');
         remember(
           this.state,
           `在鱼市街挂出${STALL_CATEGORY_LABEL[plan.category]}摊：${res.item}（${res.price} 元×${res.stock} 份，本钱 ${plan.cashCost} 元${pantryTxt}）。`,
@@ -2946,7 +3229,7 @@ export class LifeWorld implements World {
         this.broadcastLife(now);
         return {
           text: `摊子挂上鱼市街了：${res.item} [${STALL_CATEGORY_LABEL[plan.category]}]，定价 ${res.price} 元、共 ${res.stock} 份（id:${res.id}`
-            + `${fxTxt ? `；买家收益：${fxTxt}` : ''}）。`
+            + `${fxTxt ? `；买家收益：${fxTxt}` : ''}）${refPriceHint}。`
             + `实扣备货本钱 ${plan.cashCost} 元（${plan.breakdown}${pantryTxt}）、耗精力 ${plan.energyCost}，手上剩 ${Math.round(this.state.money.cash)} 元。`
             + '卖掉后在 life_deals 自动进账；3 天没卖完会过期压在手里亏本。',
         };
@@ -2994,6 +3277,9 @@ export class LifeWorld implements World {
           try { this.store.save(this.state); } catch { /* ignore */ }
         }
         const lines = res.deals.slice(0, 10).map((d) => {
+          if (this.isMyFarmErrandDeal(d)) {
+            return `${d.seen ? '' : '[新] '}${d.buyerPet} 接下了「${d.item}」${d.note ? `（留言：${d.note}）` : ''}（街坊帮忙照料，已自动完成今日农活）`;
+          }
           const up = this.resolveDealPrice(d);
           const incTxt = up > 0 ? `（进账 +${up * d.qty} 元）` : '';
           return `${d.seen ? '' : '[新] '}${d.buyerPet} 买走 ${d.qty} 份「${d.item}」${incTxt}${d.note ? `（留言：${d.note}）` : ''}`;
@@ -3001,10 +3287,123 @@ export class LifeWorld implements World {
         const incomeSummary = settledRes.newCount > 0
           ? `，本次新入账 +${settledRes.newIncome} 元（当前现金 ${Math.round(this.state.money.cash)} 元）`
           : '';
+        const errandSummary = settledRes.errandCompleted > 0
+          ? `，其中 ${settledRes.errandCompleted} 笔农牧邻里代管委托已生效并完成今日照料`
+          : '';
         return {
-          text: `最近鱼市街成交回执（共 ${res.deals.length} 条，新未读 ${newOnes.length} 条${shouldAck && newOnes.length ? '，已标为已读' : ''}${incomeSummary}）：\n${lines.join('\n')}`,
+          text: `最近鱼市街成交回执（共 ${res.deals.length} 条，新未读 ${newOnes.length} 条${shouldAck && newOnes.length ? '，已标为已读' : ''}${incomeSummary}${errandSummary}）：\n${lines.join('\n')}`,
         };
       },
+    };
+  }
+
+  /** 汇总农牧帮手状态、今日待干农活数、邻里代管报价与挂单倒计时（共用于 status / 工具回显）。 */
+  private helperStatusLine(now: Date): string {
+    const fh = this.state.farmHelper;
+    const activeMode: Exclude<HelperMode, 'off'> = fh.mode === 'full' ? 'full' : 'care';
+    const pending = countPendingFarmWork(this.state, activeMode, now);
+    const quotePlots = pending.total > 0 ? pending.workPlots : this.state.farm.plots.length;
+    const quotePens = pending.total > 0 ? pending.workPens : this.state.ranch.pens.length;
+    const q = calcNeighborErrandQuote(quotePlots, quotePens, activeMode);
+    const pe = fh.pendingErrand;
+    const peTxt = pe
+      ? `；当前鱼市街正挂着邻里委托「${pe.wage}元/约${pe.minutes}分」（等待街坊真鱼接单，超${NEIGHBOR_ERRAND_TTL_HOURS}小时无人接自动退回）`
+      : '';
+    const workTxt = pending.total > 0
+      ? `今日还有 ${pending.total} 项未照料（邻里参考报价 ¥${q.wage}/约${q.minutes}分）`
+      : '今日菜地与牧场的活都已照料完（自动照料今天 0 元免扣）';
+    if (fh.mode !== 'off') {
+      const prefTxt = fh.preferNeighbor ? '优先找真鱼邻里代管，找不到自动兜底' : '仅用系统自动照料';
+      return `农牧帮手：已雇「${HELPER_PLANS[fh.mode].label}」（自动 ¥${fh.dailyWage}/天 · ${prefTxt}）· ${workTxt}${peTxt}${fh.lastSummary ? ` · ${fh.lastSummary}` : ''}。`;
+    }
+    return `农牧帮手：未雇用（${workTxt}${peTxt}；用 hire 可雇帮手，用 post_errand 可单次发鱼市街邻里代管委托）。`;
+  }
+
+  /** 雇用农牧帮手共用执行器：开启 preferNeighbor 且今日有活、连城服务器时优先发真鱼委托，失败平滑回落自动照料。 */
+  private async runHireAction(
+    modeQuery: string,
+    preferNeighborArg: boolean | undefined,
+    now: Date,
+    generation: number,
+    opts: { byUser?: boolean; ledgerPrefix: string } = { ledgerPrefix: 'farm-hire' },
+  ): Promise<{ ok: boolean; cleared?: boolean; mode: HelperMode; paid: number; feedPaid: number; summary: string; message: string; cash: number }> {
+    const raw = String(modeQuery || 'care').trim().toLowerCase();
+    const mode: Exclude<HelperMode, 'off'> = (raw === 'full' || /全|托管|收/.test(raw)) ? 'full' : 'care';
+    const preferNeighbor = typeof preferNeighborArg === 'boolean' ? preferNeighborArg : this.state.farmHelper.preferNeighbor;
+    const pending = countPendingFarmWork(this.state, mode, now);
+    const todayKey = localDateKey(now);
+    const alreadyPaidToday = this.state.farmHelper.lastRunDay === todayKey;
+    const existingErrand = this.state.farmHelper.pendingErrand;
+    const hasValidTodayErrand = Boolean(
+      existingErrand && existingErrand.day === todayKey && Date.parse(existingErrand.expiresAt) > now.getTime(),
+    );
+
+    if (hasValidTodayErrand && existingErrand) {
+      applyHireHelper(this.state, mode, now, {
+        byUser: opts.byUser,
+        preferNeighbor,
+        deferTodayForNeighbor: true,
+      });
+      this.saveDeliveredState();
+      this.broadcastLife(now);
+      const msg = `今天鱼市街上已经挂着邻里代管委托（预扣 ¥${existingErrand.wage} · 约 ${existingErrand.minutes} 分钟），已将帮手设为「${HELPER_PLANS[mode].label}」（不会重复扣自动照料费；如到期无人接自动退回并按新档位兜底）。`;
+      return { ok: true, mode, paid: 0, feedPaid: 0, summary: msg, message: msg, cash: this.state.money.cash };
+    }
+
+    if (preferNeighbor && pending.total > 0 && !alreadyPaidToday) {
+      const errRes = await this.postNeighborFarmErrand(now, mode, generation);
+      if (generation !== this.stateGeneration) {
+        return { ok: false, cleared: true, mode, paid: 0, feedPaid: 0, summary: '', message: '生活档案刚刚被清理，操作已取消。', cash: this.state.money.cash };
+      }
+      if (errRes.ok) {
+        const hired = applyHireHelper(this.state, mode, now, {
+          byUser: opts.byUser,
+          preferNeighbor: true,
+          deferTodayForNeighbor: true,
+        });
+        this.saveDeliveredState();
+        this.broadcastLife(now);
+        const msg = `已启用「${HELPER_PLANS[mode].label}」，并已先在鱼市街挂出邻里代管委托（${errRes.itemLabel}，预扣 ¥${errRes.wage} 托管），等其他真鱼接单帮你照看；${NEIGHBOR_ERRAND_TTL_HOURS} 小时无人接单会自动退还 ¥${errRes.wage} 并无缝转为系统自动照料。`;
+        return { ok: true, mode, paid: errRes.wage ?? 0, feedPaid: 0, summary: msg, message: msg, cash: this.state.money.cash };
+      }
+    }
+
+    const r = applyHireHelper(this.state, mode, now, { byUser: opts.byUser, preferNeighbor });
+    if (!r.ok) {
+      return { ok: false, mode: r.mode, paid: 0, feedPaid: 0, summary: '', message: r.reason ?? '没雇上帮手。', cash: r.cash };
+    }
+    if (generation !== this.stateGeneration) {
+      return { ok: false, cleared: true, mode: r.mode, paid: 0, feedPaid: 0, summary: '', message: '生活档案刚刚被清理，操作已取消。', cash: this.state.money.cash };
+    }
+    if (r.paid + r.feedPaid > 0) {
+      appendLedger(this.opts.dataDir, {
+        id: `${opts.ledgerPrefix}-${now.getTime().toString(36)}`,
+        ts: now.toISOString(),
+        kind: 'expense',
+        amount: r.paid + r.feedPaid,
+        source: 'farm_helper',
+        payee: '农牧帮手',
+        note: r.summary,
+      });
+    }
+    this.saveDeliveredState();
+    this.broadcastLife(now);
+    const hasPendingErrandToday = Boolean(
+      this.state.farmHelper.pendingErrand
+      && this.state.farmHelper.pendingErrand.day === todayKey
+      && Date.parse(this.state.farmHelper.pendingErrand.expiresAt) > now.getTime(),
+    );
+    const fallbackHint = preferNeighbor && pending.total > 0 && !alreadyPaidToday && !hasPendingErrandToday
+      ? '（眼下未挂上邻里代管单，已直接由系统自动照料兜底）'
+      : '';
+    return {
+      ok: true,
+      mode: r.mode,
+      paid: r.paid,
+      feedPaid: r.feedPaid,
+      summary: `${r.summary}${fallbackHint}`,
+      message: `${r.summary}${fallbackHint}`,
+      cash: r.cash,
     };
   }
 
@@ -3012,32 +3411,38 @@ export class LifeWorld implements World {
     return {
       name: 'life_farm',
       description:
-        '打理家里阳台/院子的种植槽，或签约城郊菜地种慢熟果蔬（4–9 天成熟）：'
-        + 'action=status 看槽位、作物进度、储物篮与节气种子单；'
-        + 'plant 选种子播种（需空槽与种子费，部分浅滩莲藕需 ≥2 槽）；'
+        '打理家里阳台/院子的种植槽，或签约城郊菜地种慢熟果蔬（18 种节气作物，4–9 天成熟）：'
+        + 'action=status 看槽位、作物进度、储物篮与农牧代管状态；'
+        + 'plant 选种子播种（需空槽与种子费，莲藕/冬瓜/稻谷需 ≥2 槽）；'
         + 'water 浇水（每块地每天限 1 次，耗 3 精力，累计浇满 2 次收成 +1 份）；'
-        + 'harvest 采摘成熟作物入储物篮（供自家下厨降本或上鱼市街卖鲜蔬，顺手涨体质）；'
-        + `rent 签约 ${LEASE_PLOT_COUNT} 槽城郊菜地（签约费 ${LEASE_SIGNUP_FEE} 元 + 月租 ${LEASE_MONTHLY_RENT} 元按天扣）；unrent 退租。`,
+        + 'harvest 采摘成熟作物入储物篮（供下厨按菜谱做菜或上鱼市街卖鲜蔬，顺手涨体质）；'
+        + `rent 签约 ${LEASE_PLOT_COUNT} 槽城郊菜地（签约费 ${LEASE_SIGNUP_FEE} 元 + 月租 ${LEASE_MONTHLY_RENT} 元按天扣）；unrent 退租；`
+        + 'hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天浇水喂食收蛋奶，或 full 农牧全托管20元/天并自动收菜起塘；prefer_neighbor 默认 true 优先发鱼市街邻里真鱼代管单¥6–15按量计价且6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
           action: {
             type: 'string',
-            enum: ['status', 'plant', 'water', 'harvest', 'rent', 'unrent'],
-            description: '操作类型：status(看菜园与种子，默认)/plant(播种)/water(浇水)/harvest(收割)/rent(租城郊菜地)/unrent(退租)。',
+            enum: ['status', 'plant', 'water', 'harvest', 'rent', 'unrent', 'hire', 'post_errand', 'unhire'],
+            description: '操作类型：status(看菜园与种子，默认)/plant(播种)/water(浇水)/harvest(收割)/rent(租城郊菜地)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)。',
           },
           seed: {
             type: 'string',
-            description: 'plant 时传种子 id 或名字（如 香葱、小青菜、西红柿、香菇、茄子、莲藕、红薯、草莓）。',
+            description: 'plant 时传种子 id 或名字（支持 18 种，如 红薯、土豆、胡萝卜、大白菜、白萝卜、玉米、黄豆、冬瓜、菠菜、南瓜、稻谷、香葱、小青菜、西红柿、香菇、茄子、莲藕、草莓）。',
           },
           plot_id: {
             type: 'string',
             description: 'water / harvest 可选：指定某块地的 id，不填则自动浇水或收割全部成熟地。',
           },
-          force: {
+          helper_mode: {
+            type: 'string',
+            enum: ['care', 'full'],
+            description: 'hire 或 post_errand 时选档位：care(日常照料工 自动¥12/邻里¥6–9) 或 full(农牧全托管 自动¥20/邻里¥10–15)。',
+          },
+          prefer_neighbor: {
             type: 'boolean',
-            description: 'unrent 时若地里还有未收作物，传 true 确认放弃并退租。',
+            description: 'hire 时是否优先找鱼市街其他真鱼接邻里代管（默认 true，找不到再退预扣并回落自动照料）。',
           },
         },
       },
@@ -3070,7 +3475,35 @@ export class LifeWorld implements World {
             const fit = sd.solarTerms.includes(term.name) ? '★当季+1' : '';
             return `${sd.name}(${sd.price}元/${Math.round(sd.growHours / 24)}天/基础${sd.baseYield}份${fit})`;
           }).join('；')}。`;
-          return { text: `${landLine}\n${plotLines}\n${pantryLine}\n${seedLine}` };
+          const helperLine = this.helperStatusLine(now);
+          return { text: `${landLine}\n${plotLines}\n${pantryLine}\n${helperLine}\n${seedLine}` };
+        }
+
+        if (action === 'hire') {
+          const prefArg = typeof args?.prefer_neighbor === 'boolean' ? args.prefer_neighbor : undefined;
+          const r = await this.runHireAction(String(args?.helper_mode ?? 'care'), prefArg, now, generation, { ledgerPrefix: 'farm-hire' });
+          if (r.cleared) return cleared();
+          if (!r.ok) return { text: r.message };
+          return { text: `${r.message}（手上剩 ${Math.round(r.cash)} 元）` };
+        }
+
+        if (action === 'post_errand') {
+          const mode: Exclude<HelperMode, 'off'> = String(args?.helper_mode ?? '').trim().toLowerCase() === 'full' ? 'full' : 'care';
+          const er = await this.postNeighborFarmErrand(now, mode, generation);
+          if (generation !== this.stateGeneration) return cleared();
+          if (!er.ok) return { text: er.reason ?? '没挂上邻里代管委托。' };
+          return {
+            text: `已在鱼市街挂出邻里代管委托「${er.itemLabel}」（委托 id:${er.stallId}），预扣工钱 ${er.wage} 元，等待街坊真鱼接单（按动植物数量忙活约 ${er.minutes} 分钟；${NEIGHBOR_ERRAND_TTL_HOURS} 小时无人接单自动原路退回）。手上剩 ${Math.round(this.state.money.cash)} 元。`,
+          };
+        }
+
+        if (action === 'unhire') {
+          const r = applyUnhireHelper(this.state, now);
+          if (!r.ok) return { text: r.reason ?? '眼下没雇帮手。' };
+          if (generation !== this.stateGeneration) return cleared();
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return { text: `${this.state.farmHelper.lastSummary} 往后不再扣自动照料工钱。` };
         }
 
         if (isBusy(this.state, now)) {
@@ -3101,7 +3534,7 @@ export class LifeWorld implements World {
         }
 
         if (action === 'unrent') {
-          const r = applyUnrentFarm(this.state, Boolean(args?.force), now);
+          const r = applyUnrentFarm(this.state, false, now);
           if (!r.ok) return { text: r.reason ?? '退租没成功。' };
           if (generation !== this.stateGeneration) return cleared();
           this.saveDeliveredState();
@@ -3152,6 +3585,312 @@ export class LifeWorld implements World {
         }
 
         return { text: `不认识操作「${action}」，可用 status / plant / water / harvest / rent / unrent。` };
+      },
+    };
+  }
+
+  private toolRanch(): ToolDef {
+    return {
+      name: 'life_ranch',
+      description:
+        '打理自家小院与城郊农牧场的鸡舍、牛棚、鱼塘（大肥鱼本体是鲸鱼不算鱼，可放心养草鱼/鲈鱼收鲜鱼，另可养鸡收蛋收鸡肉、养牛挤奶收牛肉）：'
+        + 'action=status 查看鸡/牛/鱼栏位、产蛋产奶倒计时、养成进度与代管状态；'
+        + 'buy 放养幼苗（需对应栏位空位，城中村无栏位、老小区自带1鸡位、新小区1鸡+1鱼、别墅区2鸡+2鱼，签约城郊农牧场再加 +2鸡/+2牛/+2鱼）；'
+        + 'feed 喂饲料（每天每栏限 1 次，扣精力 3 点与少量饲料费，增产 +1）；'
+        + 'collect 收取鲜鸡蛋与鲜牛奶进储物篮；'
+        + 'harvest 起塘收鲜鱼（不传 pen_id 自动收熟鱼塘）或指定鸡/牛 pen_id 出栏收土鸡肉/精选牛肉；'
+        + `rent 签约城郊农牧场（签约费 ${RANCH_SIGNUP_FEE} 元 + 月租 ${RANCH_MONTHLY_RENT} 元按天扣 8 元）；unrent 退租；`
+        + 'hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天，或 full 农牧全托管20元/天；prefer_neighbor 默认 true 优先找鱼市街真鱼代管¥6–15，6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['status', 'buy', 'feed', 'collect', 'harvest', 'rent', 'unrent', 'hire', 'post_errand', 'unhire'],
+            description: '操作类型：status(查看牧场，默认)/buy(放养)/feed(投喂)/collect(收蛋奶)/harvest(起塘或出栏)/rent(租城郊农牧场)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)。',
+          },
+          animal: {
+            type: 'string',
+            description: 'buy 时传养殖品种 id 或名字（散养土鸡/农庄奶牛/塘养草鱼/清江鲈鱼）。',
+          },
+          pen_id: {
+            type: 'string',
+            description: 'feed / collect / harvest 可选：指定栏位 id；出栏鸡舍或牛棚需显式指定 pen_id。',
+          },
+          helper_mode: {
+            type: 'string',
+            enum: ['care', 'full'],
+            description: 'hire 或 post_errand 时选档位：care(日常照料工 自动¥12/邻里¥6–9) 或 full(农牧全托管 自动¥20/邻里¥10–15)。',
+          },
+          prefer_neighbor: {
+            type: 'boolean',
+            description: 'hire 时是否优先找鱼市街其他真鱼接邻里代管（默认 true，找不到再退预扣并回落自动照料）。',
+          },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const now = this.now();
+        await this.settleBeforeTool(now);
+        const generation = this.stateGeneration;
+        const cleared = () => ({ text: '生活档案刚刚被清理，这次农牧场操作已停止。' });
+        const action = String(args?.action ?? 'status').trim() || 'status';
+        const j = readJourney(this.opts.dataDir, now);
+        this.journey = j;
+
+        if (action === 'status') {
+          const s = snapshot(this.state, now);
+          const rn = s.ranch;
+          const capLine = `养殖栏位：鸡舍 ${rn.usedSlots.chicken}/${rn.totalSlots.chicken}、牛棚 ${rn.usedSlots.cow}/${rn.totalSlots.cow}、鱼塘 ${rn.usedSlots.fish}/${rn.totalSlots.fish}`
+            + (rn.leased ? `（已租城郊农牧场，月租 ${rn.leasedMonthly} 元）` : `（尚未签约城郊农牧场；签约需 ${RANCH_SIGNUP_FEE} 元 + 月租 ${RANCH_MONTHLY_RENT} 元）`);
+          const penLines = rn.pens.length
+            ? rn.pens.map((p) => {
+              const colStr = p.collectableQty > 0 ? ` · 【可收 ${p.collectProductName}×${p.collectableQty}】` : '';
+              const matStr = p.mature ? `【已育成可收获 ${p.harvestProductName}×${p.harvestYield}】` : `育成还差 ${p.daysLeft} 天`;
+              return `- ${p.name}[${ANIMAL_GROUP_LABEL[p.group]}](id:${p.id})：${matStr}${colStr} · 照料 ${p.feedCount} 次${p.fedToday ? '[今日已喂]' : ''}`;
+            }).join('\n')
+            : '栏位眼下都空着。';
+          const catalogLine = `可养品类：${ANIMALS.map((a) => `${a.name}(${a.price}元/饲料${a.feedCost}元)`).join('；')}。`;
+          const helperLine = this.helperStatusLine(now);
+          return { text: `${capLine}\n${penLines}\n${helperLine}\n${catalogLine}` };
+        }
+
+        if (action === 'hire') {
+          const prefArg = typeof args?.prefer_neighbor === 'boolean' ? args.prefer_neighbor : undefined;
+          const r = await this.runHireAction(String(args?.helper_mode ?? 'care'), prefArg, now, generation, { ledgerPrefix: 'ranch-hire' });
+          if (r.cleared) return cleared();
+          if (!r.ok) return { text: r.message };
+          return { text: `${r.message}（手上剩 ${Math.round(r.cash)} 元）` };
+        }
+
+        if (action === 'post_errand') {
+          const mode: Exclude<HelperMode, 'off'> = String(args?.helper_mode ?? '').trim().toLowerCase() === 'full' ? 'full' : 'care';
+          const er = await this.postNeighborFarmErrand(now, mode, generation);
+          if (generation !== this.stateGeneration) return cleared();
+          if (!er.ok) return { text: er.reason ?? '没挂上邻里代管委托。' };
+          return {
+            text: `已在鱼市街挂出邻里代管委托「${er.itemLabel}」（委托 id:${er.stallId}），预扣工钱 ${er.wage} 元，等待街坊真鱼接单（按动植物数量忙活约 ${er.minutes} 分钟；${NEIGHBOR_ERRAND_TTL_HOURS} 小时无人接单自动原路退回）。手上剩 ${Math.round(this.state.money.cash)} 元。`,
+          };
+        }
+
+        if (action === 'unhire') {
+          const r = applyUnhireHelper(this.state, now);
+          if (!r.ok) return { text: r.reason ?? '眼下没雇帮手。' };
+          if (generation !== this.stateGeneration) return cleared();
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return { text: `${this.state.farmHelper.lastSummary} 往后不再扣自动照料工钱。` };
+        }
+
+        if (isBusy(this.state, now)) {
+          return { text: busyRefusal(this.state, now, '打理农牧场') };
+        }
+        if ((action === 'buy' || action === 'feed' || action === 'collect' || action === 'harvest') && this.inJourneyTrip(j)) {
+          return { text: `这会儿人在${j.cityName || '外面'}旅行，没法回家喂鸡牛鱼，等回家再照料吧。` };
+        }
+
+        if (action === 'rent') {
+          const r = applyRentRanch(this.state, now);
+          if (!r.ok) return { text: r.reason ?? '没签成城郊农牧场。' };
+          if (generation !== this.stateGeneration) return cleared();
+          appendLedger(this.opts.dataDir, {
+            id: `ranch-rent-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paid,
+            source: 'life_ranch',
+            payee: '城郊农牧场',
+            note: '签约城郊农牧场（+2鸡/+2牛/+2鱼）',
+          });
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return { text: `签下城郊农牧场了！鸡舍、牛棚、鱼塘各多出 2 个栏位（签约费 ${r.paid} 元，往后按天扣月租 ${RANCH_MONTHLY_RENT} 元），手上剩 ${Math.round(r.cash)} 元。` };
+        }
+
+        if (action === 'unrent') {
+          const r = applyUnrentRanch(this.state, false, now);
+          if (!r.ok) return { text: r.reason ?? '退租没成功。' };
+          if (generation !== this.stateGeneration) return cleared();
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return { text: '已经退掉了城郊农牧场租约，往后不再扣农牧场月租。' };
+        }
+
+        if (action === 'buy') {
+          const animalQ = String(args?.animal ?? '').trim();
+          const r = applyBuyAnimal(this.state, animalQ, now);
+          if (!r.ok) return { text: r.reason ?? '没放养成功。' };
+          if (generation !== this.stateGeneration) return cleared();
+          appendLedger(this.opts.dataDir, {
+            id: `ranch-buy-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paid,
+            source: 'life_ranch',
+            payee: '农牧幼苗站',
+            note: `放养：${r.pen?.name ?? animalQ}`,
+          });
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return {
+            text: `放养了「${r.pen?.name}」（栏 id:${r.pen?.id}），花了 ${r.paid} 元，手上剩 ${Math.round(r.cash)} 元。每天来喂一次食（feed）能增产，养鸡养牛还能每天来收蛋奶！`,
+          };
+        }
+
+        if (action === 'feed') {
+          const r = applyFeedAnimal(this.state, String(args?.pen_id ?? '').trim(), now);
+          if (!r.ok) return { text: r.reason ?? '今天喂不上。' };
+          if (generation !== this.stateGeneration) return cleared();
+          appendLedger(this.opts.dataDir, {
+            id: `ranch-feed-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paid,
+            source: 'life_ranch',
+            payee: '牧场饲料',
+            note: '农牧场投喂饲料',
+          });
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return { text: `喂好饲料了（饲料 ${r.paid} 元、耗精力 3，现金剩 ${Math.round(r.cash)} 元），照料得越勤收成越丰。` };
+        }
+
+        if (action === 'collect') {
+          const r = applyCollectRanch(this.state, String(args?.pen_id ?? '').trim(), now);
+          if (!r.ok) return { text: r.reason ?? '暂时还没产出蛋奶。' };
+          if (generation !== this.stateGeneration) return cleared();
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          const gotTxt = r.collected.map((c) => `${c.name}×${c.qty}`).join('、');
+          return { text: `收好了新鲜的 ${gotTxt}，存进家里储物篮（共 ${pantryCount(this.state.pantry)} 份）！可以配菜园蔬菜下厨或挂农产摊卖。` };
+        }
+
+        if (action === 'harvest') {
+          const r = applyHarvestRanch(this.state, String(args?.pen_id ?? '').trim(), now);
+          if (!r.ok) return { text: r.reason ?? '暂时还不能起塘/出栏。' };
+          if (generation !== this.stateGeneration) return cleared();
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          const gotTxt = r.harvested.map((h) => `${h.name}×${h.qty}`).join('、');
+          return { text: `农牧场收获了 ${gotTxt}（共 ${r.totalQty} 份），全数存进储物篮（共 ${pantryCount(this.state.pantry)} 份）！` };
+        }
+
+        return { text: `不认识操作「${action}」，可用 status / buy / feed / collect / harvest / rent / unrent。` };
+      },
+    };
+  }
+
+  private toolCook(): ToolDef {
+    return {
+      name: 'life_cook',
+      description:
+        '对照储物篮里的具体食材按菜谱下厨（家常简食零门槛免厨师证，如炭烤红薯/烤土豆/葱油拌面/番茄鸡蛋汤；厨师招牌菜需厨师证或烹饪≥20，如西红柿炖牛腩/鲜鱼豆腐汤/香菇滑鸡煲）：'
+        + 'action=menu 查看眼下材料齐了能做什么菜、缺什么料与成品菜格余量；'
+        + 'cook 按菜谱下厨，可选 mode=eat(立刻做完趁热吃) 或 mode=store(做出 2 份存进成品菜格，后续可热吃或零原料费上鱼市街摆料理摊)；'
+        + 'eat_dish 加热吃之前存进成品菜格的菜。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['menu', 'cook', 'eat_dish'],
+            description: '操作类型：menu(看可做菜谱与储物篮匹配，默认)/cook(按菜谱下厨)/eat_dish(吃成品菜格里的菜)。',
+          },
+          recipe: {
+            type: 'string',
+            description: 'cook 时传菜谱 id 或菜名（如 炭烤红薯、番茄鸡蛋汤、西红柿炖牛腩、奶白鲜鱼豆腐汤）。',
+          },
+          mode: {
+            type: 'string',
+            enum: ['eat', 'store'],
+            description: 'cook 时可选：eat(做好立刻吃，默认)/store(做出 2 份存入成品菜格，可留吃或摆料理摊)。',
+          },
+          dish: {
+            type: 'string',
+            description: 'eat_dish 时可选：成品菜名或 id（不填则吃第一份成品菜）。',
+          },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const now = this.now();
+        await this.settleBeforeTool(now);
+        const generation = this.stateGeneration;
+        const cleared = () => ({ text: '生活档案刚刚被清理，这次下厨操作已停止。' });
+        const action = String(args?.action ?? 'menu').trim() || 'menu';
+
+        if (action === 'menu') {
+          const evals = evaluateAllRecipes(this.state);
+          const ready = evals.filter((e) => e.canCook);
+          const lockedReady = evals.filter((e) => !e.unlocked && e.missingLabels.length === 0);
+          const panTxt = this.state.pantry.length
+            ? this.state.pantry.map((p) => `${p.name}×${p.qty}`).join('、')
+            : '空着';
+          const dishTxt = (this.state.cookedDishes ?? []).length
+            ? (this.state.cookedDishes ?? []).map((d) => `${d.name}×${d.qty}`).join('、')
+            : '暂无';
+          const readyStr = ready.length
+            ? ready.map((e) => `${e.recipe.name}[${e.recipe.tier === 'simple' ? '免证简食' : '厨师招牌'}](回饱腹+${e.recipe.foodGain}/油盐${e.recipe.fuelCost}元/建议摊价${e.recipe.suggestedPrice}元)`).join('；')
+            : '眼下没有材料齐整的菜';
+          const lackPreview = evals
+            .filter((e) => e.unlocked && e.missingLabels.length > 0)
+            .slice(0, 6)
+            .map((e) => `${e.recipe.name}(缺${e.missingLabels.join('、')})`)
+            .join('；');
+          return {
+            text: `储物篮原料：${panTxt}。\n成品菜格：${dishTxt}。\n现在能开火做：${readyStr}。`
+              + (lockedReady.length ? `\n材料齐但缺厨师资质：${lockedReady.map((e) => `${e.recipe.name}(${e.lockReason})`).join('、')}。` : '')
+              + (lackPreview ? `\n已解锁但缺料示例：${lackPreview}。` : ''),
+          };
+        }
+
+        const j = readJourney(this.opts.dataDir, now);
+        this.journey = j;
+        if (this.inJourneyTrip(j) && !isCampervanJourney(j)) {
+          return { text: `这会儿人在${j.cityName || '外面'}旅行，没法用家里灶台按菜谱下厨（房车在途或回家后再做吧）。` };
+        }
+
+        if (action === 'cook') {
+          const mode = args?.mode === 'store' ? 'store' : 'eat';
+          const r = applyCookRecipe(this.state, String(args?.recipe ?? '').trim(), mode, now);
+          if (!r.ok) return { text: r.reason ?? '这次没做成这道菜。' };
+          if (generation !== this.stateGeneration) return cleared();
+          if (r.paid > 0) {
+            appendLedger(this.opts.dataDir, {
+              id: `cook-store-${now.getTime().toString(36)}`,
+              ts: now.toISOString(),
+              kind: 'expense',
+              amount: r.paid,
+              source: 'life_cook',
+              payee: '油盐炭火',
+              note: `备菜入成品格：${r.recipe?.name ?? ''}`,
+            });
+          }
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          if (mode === 'store') {
+            return {
+              text: `用${r.usedSources.join('、')}做好了 ${r.dishQty} 份「${r.recipe?.name}」存进成品菜格（花油盐炭火 ${r.paid} 元，手上剩 ${Math.round(r.cash)} 元）！`
+                + `现在共备有 ${cookedDishCount(this.state.cookedDishes)} 份成品菜，可以随时 eat_dish 热吃，或去鱼市街摆料理摊只付 2 元打包费！`,
+            };
+          }
+          return {
+            text: `起锅用${r.usedSources.join('、')}做「${r.recipe?.name}」了，预计 ${r.recipe?.minutes} 分钟出锅开吃（回饱腹 +${r.recipe?.foodGain}、娱乐 +${r.recipe?.funGain}）。`,
+          };
+        }
+
+        if (action === 'eat_dish') {
+          const r = applyEatCookedDish(this.state, String(args?.dish ?? '').trim(), now);
+          if (!r.ok) return { text: r.reason ?? '没热成成品菜。' };
+          if (generation !== this.stateGeneration) return cleared();
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return { text: `把成品菜格里的「${r.dishName}」热好端上桌了，大约 ${r.minutes} 分钟吃完，省时又管饱。` };
+        }
+
+        return { text: `不认识操作「${action}」，可用 menu / cook / eat_dish。` };
       },
     };
   }
@@ -3347,10 +4086,29 @@ export class LifeWorld implements World {
       ? `（有 ${readyPlots.length} 块已熟可收：${readyPlots.map((p) => p.name).join('、')}，用 life_farm harvest）`
       : (f.plots.length ? `（在长：${f.plots.map((p) => `${p.name}约${p.daysLeft}天`).join('、')}）` : '（槽位空着）');
     parts.push(`菜园：在用 ${f.usedSlots}/${f.totalSlots} 槽${f.leased ? '（含城郊租地4槽）' : ''}${farmSummary}`);
+    const rn = s.ranch;
+    const ranchTotal = rn.totalSlots.chicken + rn.totalSlots.cow + rn.totalSlots.fish;
+    if (ranchTotal > 0 || rn.pens.length > 0) {
+      const ranchHints: string[] = [];
+      if (rn.collectableCount > 0) ranchHints.push(`${rn.collectableCount} 栏可收蛋奶(life_ranch collect)`);
+      if (rn.readyHarvestCount > 0) ranchHints.push(`${rn.readyHarvestCount} 栏可起塘/出栏`);
+      parts.push(`养殖场：鸡 ${rn.usedSlots.chicken}/${rn.totalSlots.chicken} · 牛 ${rn.usedSlots.cow}/${rn.totalSlots.cow} · 鱼 ${rn.usedSlots.fish}/${rn.totalSlots.fish}${ranchHints.length ? `（${ranchHints.join('，')}）` : ''}`);
+    }
+    if (s.farmHelper.mode !== 'off') {
+      const pe = s.farmHelper.pendingErrand;
+      const peHint = pe ? `，正挂鱼市街邻里委托(¥${pe.wage}/约${pe.minutes}分)` : '';
+      parts.push(`农牧帮手：已雇「${HELPER_PLANS[s.farmHelper.mode].label}」（¥${s.farmHelper.dailyWage}/天${peHint}${s.farmHelper.lastSummary ? `，${s.farmHelper.lastSummary}` : ''}）`);
+    } else if (s.farmHelper.pendingErrand) {
+      const pe = s.farmHelper.pendingErrand;
+      parts.push(`农牧委托：鱼市街正挂着邻里代管单（预扣 ¥${pe.wage}/约 ${pe.minutes} 分钟）等待街坊接单`);
+    }
     if (s.pantry.length) {
-      parts.push(`储物篮：共 ${pantryCount(s.pantry)} 份（${s.pantry.map((x) => `${x.name}×${x.qty}`).join('、')}，下厨/摆料理摊优先消耗省原料钱）`);
+      parts.push(`储物篮：共 ${pantryCount(s.pantry)} 份（${s.pantry.map((x) => `${x.name}×${x.qty}`).join('、')}，可 life_cook 按菜谱下厨或摆摊省料钱）`);
     } else if (s.freshVeg) {
       parts.push('菜篮：刚从早市带回鲜蔬，下厨特别香');
+    }
+    if (s.cookedDishes.length) {
+      parts.push(`成品菜格：共 ${cookedDishCount(s.cookedDishes)} 份（${s.cookedDishes.map((d) => `${d.name}×${d.qty}`).join('、')}，可 eat_dish 热吃或摆料理摊）`);
     }
     const winTxt = s.streetWindow ? ` · 此刻${s.streetWindow.place}${s.streetWindow.label}开着` : '';
     parts.push(`天气与节气：${s.weather.sky} · ${s.weather.seasonNote}${winTxt}`);
@@ -3819,9 +4577,9 @@ export class LifeWorld implements World {
           description: '五条需求、职业手艺与装备、当前状态与搬家。',
         },
         {
-          id: 'day',
-          title: '一天 · 时间轴',
-          description: '今日经历时间轴与当日收支流水。',
+          id: 'career',
+          title: '职业与工坊',
+          description: '当前职业、考证中心与实时通过率、职业能力与厨师/家常菜谱原料对照。',
         },
         {
           id: 'wants',
@@ -3835,13 +4593,13 @@ export class LifeWorld implements World {
         },
         {
           id: 'market',
-          title: '菜园与鱼市街',
-          description: '阳台与城郊租地种菜进度、食材储物篮、五大赛道摆摊成本说明与鱼市街买卖进账。',
+          title: '农牧场与鱼市街',
+          description: '种菜与养殖手动打理（18种种子与鸡/牛/鱼养殖）、储物篮、成品菜格与鱼市街摆摊入账。',
         },
         {
           id: 'diary',
-          title: '生活日记与流水',
-          description: '第一人称生活日记与近期流水。',
+          title: '日记与时间轴',
+          description: '今日经历时间轴、第一人称生活日记与收支流水。',
         },
         {
           id: 'library',
@@ -4086,6 +4844,14 @@ export class LifeWorld implements World {
 
     if (panel === 'diary') {
       if (method === 'list' || method === 'snapshot' || method === '') {
+        const snap = this.panelSnapshot(now);
+        const today = localDateKey(now);
+        const allLedger = readLedger(this.opts.dataDir, 80);
+        const todayLedger = allLedger.filter((e) => localDateKey(new Date(e.ts)) === today);
+        const todayTellable = [...this.state.tellable]
+          .filter((t) => localDateKey(new Date(t.at)) === today)
+          .reverse();
+        const recentTellable = [...this.state.tellable].reverse().slice(0, 20);
         const days = this.diary.recent(60).reverse().map((d) => ({
           dateKey: d.dateKey,
           town: d.townName,
@@ -4095,12 +4861,17 @@ export class LifeWorld implements World {
           body: d.body,
         }));
         return {
+          ...snap,
           days,
           dir: this.diary.current.dir,
           problem: this.diary.current.problem,
           inTrip: this.inJourneyTrip(j),
-          ledger: readLedger(this.opts.dataDir, 40),
-          tellable: [...this.state.tellable].reverse().slice(0, 20),
+          ledger: allLedger.slice(0, 40),
+          tellable: recentTellable,
+          today,
+          todayLedger,
+          todayTellable,
+          recentTellable,
         };
       }
       if (method === 'read') {
@@ -4115,7 +4886,17 @@ export class LifeWorld implements World {
           body: d.body,
         } : null;
       }
-      throw new Error(`生活日记页不认识这个方法：${method}`);
+      throw new Error(`日记与时间轴页不认识这个方法：${method}`);
+    }
+
+    if (panel === 'career') {
+      if (method === 'snapshot' || method === 'list' || method === '') {
+        return {
+          ...this.panelSnapshot(now),
+          career: buildCareerOverview(this.state),
+        };
+      }
+      throw new Error(`职业与工坊页不认识这个方法：${method}`);
     }
 
     if (panel === 'day') {
@@ -4146,6 +4927,43 @@ export class LifeWorld implements World {
     }
 
     if (panel === 'relation' || panel === 'market') {
+      const marketPayload = () => {
+        if (panel !== 'market') return this.panelSnapshot(now);
+        const curMode: Exclude<HelperMode, 'off'> = this.state.farmHelper.mode === 'full' ? 'full' : 'care';
+        const pendingWork = countPendingFarmWork(this.state, curMode, now);
+        const qPlots = pendingWork.total > 0 ? pendingWork.workPlots : this.state.farm.plots.length;
+        const qPens = pendingWork.total > 0 ? pendingWork.workPens : this.state.ranch.pens.length;
+        return {
+          ...this.panelSnapshot(now),
+          seeds: SEEDS,
+          animals: ANIMALS,
+          recipes: RECIPES,
+          stallRules: STALL_RULES_GUIDE,
+          stallCategoryLabels: STALL_CATEGORY_LABEL,
+          leaseConfig: {
+            slots: LEASE_PLOT_COUNT,
+            signupFee: LEASE_SIGNUP_FEE,
+            monthly: LEASE_MONTHLY_RENT,
+          },
+          homeSlotsMap: HOME_FARM_SLOTS,
+          ranchLeaseConfig: {
+            slots: RANCH_LEASE_SLOTS,
+            signupFee: RANCH_SIGNUP_FEE,
+            monthly: RANCH_MONTHLY_RENT,
+          },
+          homeRanchSlotsMap: HOME_RANCH_SLOTS,
+          animalGroupLabels: ANIMAL_GROUP_LABEL,
+          helperPlans: Object.values(HELPER_PLANS),
+          pendingWork,
+          neighborQuotes: {
+            care: calcNeighborErrandQuote(qPlots, qPens, 'care'),
+            full: calcNeighborErrandQuote(qPlots, qPens, 'full'),
+          },
+          errandTtlHours: NEIGHBOR_ERRAND_TTL_HOURS,
+          townConnected: parseTownUrls(this.cfg.townUrl).length > 0,
+        };
+      };
+
       if (method === 'snapshot' || method === 'list' || method === '') {
         if (parseTownUrls(this.cfg.townUrl).length > 0) {
           const emptyCache = !this.otherStallsCache.length && !this.myStallsCache.length && !this.townBulletin.length;
@@ -4153,26 +4971,187 @@ export class LifeWorld implements World {
             await this.refreshTownMarket(this.stateGeneration);
           }
         }
-        const snap = this.panelSnapshot(now);
-        const marketExtras = panel === 'market'
-          ? {
-            seeds: SEEDS,
-            stallRules: STALL_RULES_GUIDE,
-            stallCategoryLabels: STALL_CATEGORY_LABEL,
-            leaseConfig: {
-              slots: LEASE_PLOT_COUNT,
-              signupFee: LEASE_SIGNUP_FEE,
-              monthly: LEASE_MONTHLY_RENT,
-            },
-            homeSlotsMap: HOME_FARM_SLOTS,
-          }
-          : {};
-        return {
-          ...snap,
-          ...marketExtras,
-        };
+        return marketPayload();
       }
-      throw new Error(`${panel === 'market' ? '菜园与鱼市街' : '你和它'}页不认识这个方法：${method}`);
+
+      if (panel === 'market') {
+        await this.settleBeforeTool(now);
+        const raw = (Array.isArray(args) ? args[0] : args) as any;
+        const term = solarTermOf(now);
+
+        if (method === 'plant') {
+          const seedQ = String(raw?.seed ?? '').trim();
+          const r = applyPlant(this.state, seedQ, now, term.name, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '没种下去。', ...marketPayload() };
+          appendLedger(this.opts.dataDir, {
+            id: `farm-seed-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paid,
+            source: 'life_farm',
+            payee: '种子摊',
+            note: `面板买种子：${r.plot?.name ?? seedQ}`,
+          });
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          await this.push('life.farm', `他刚刚在面板上帮你播下了「${r.plot?.name}」（种子 ¥${r.paid}）。`, 'debounce');
+          return { ok: true, message: `已种下「${r.plot?.name}」（-¥${r.paid}）`, ...marketPayload() };
+        }
+        if (method === 'water') {
+          const r = applyWater(this.state, String(raw?.plotId ?? '').trim(), now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '浇水没成功。', ...marketPayload() };
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return { ok: true, message: '已帮忙浇水 ✓', ...marketPayload() };
+        }
+        if (method === 'harvest') {
+          const r = applyHarvest(this.state, String(raw?.plotId ?? '').trim(), now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '还没熟呢。', ...marketPayload() };
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          const gotTxt = r.harvested.map((h) => `${h.name}×${h.qty}`).join('、');
+          await this.push('life.farm', `他刚刚在面板上帮你收成了 ${gotTxt}，已存入储物篮。`, 'debounce');
+          return { ok: true, message: `已收成 ${gotTxt} 入储物篮 ✓`, ...marketPayload() };
+        }
+        if (method === 'rentFarm') {
+          const r = applyRentFarm(this.state, now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '没租成城郊菜地。', ...marketPayload() };
+          appendLedger(this.opts.dataDir, {
+            id: `farm-rent-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paid,
+            source: 'life_farm',
+            payee: '城郊菜地',
+            note: `面板签约 ${LEASE_PLOT_COUNT} 槽城郊菜地`,
+          });
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          await this.push('life.farm', `他刚刚在面板上替你签下 ${LEASE_PLOT_COUNT} 槽城郊菜地（签约费 ¥${r.paid}）。`, 'debounce');
+          return { ok: true, message: `已签约城郊菜地（+${LEASE_PLOT_COUNT}槽，-¥${r.paid}）`, ...marketPayload() };
+        }
+        if (method === 'unrentFarm') {
+          const r = applyUnrentFarm(this.state, Boolean(raw?.force), now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '退租没成功。', ...marketPayload() };
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return { ok: true, message: '已退掉城郊菜地租约', ...marketPayload() };
+        }
+        if (method === 'ranchBuy') {
+          const animalQ = String(raw?.animal ?? '').trim();
+          const r = applyBuyAnimal(this.state, animalQ, now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '放养没成功。', ...marketPayload() };
+          appendLedger(this.opts.dataDir, {
+            id: `ranch-buy-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paid,
+            source: 'life_ranch',
+            payee: '农牧幼苗站',
+            note: `面板放养：${r.pen?.name ?? animalQ}`,
+          });
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          await this.push('life.farm', `他刚刚在面板上帮你放养了「${r.pen?.name}」（-¥${r.paid}）。`, 'debounce');
+          return { ok: true, message: `已放养「${r.pen?.name}」（-¥${r.paid}）`, ...marketPayload() };
+        }
+        if (method === 'ranchFeed') {
+          const r = applyFeedAnimal(this.state, String(raw?.penId ?? '').trim(), now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '喂食没成功。', ...marketPayload() };
+          appendLedger(this.opts.dataDir, {
+            id: `ranch-feed-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paid,
+            source: 'life_ranch',
+            payee: '牧场饲料',
+            note: '面板农牧场喂食',
+          });
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return { ok: true, message: `已喂食（饲料 -¥${r.paid}）✓`, ...marketPayload() };
+        }
+        if (method === 'ranchCollect') {
+          const r = applyCollectRanch(this.state, String(raw?.penId ?? '').trim(), now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '暂无可收蛋奶。', ...marketPayload() };
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          const gotTxt = r.collected.map((c) => `${c.name}×${c.qty}`).join('、');
+          await this.push('life.farm', `他刚刚在面板上帮你收好了 ${gotTxt}，放进储物篮。`, 'debounce');
+          return { ok: true, message: `已收集 ${gotTxt} ✓`, ...marketPayload() };
+        }
+        if (method === 'ranchHarvest') {
+          const r = applyHarvestRanch(this.state, String(raw?.penId ?? '').trim(), now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '暂不可起塘/出栏。', ...marketPayload() };
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          const gotTxt = r.harvested.map((h) => `${h.name}×${h.qty}`).join('、');
+          await this.push('life.farm', `他刚刚在面板上帮你收获了 ${gotTxt}，存入储物篮。`, 'debounce');
+          return { ok: true, message: `已收获 ${gotTxt} ✓`, ...marketPayload() };
+        }
+        if (method === 'rentRanch') {
+          const r = applyRentRanch(this.state, now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '没签成城郊农牧场。', ...marketPayload() };
+          appendLedger(this.opts.dataDir, {
+            id: `ranch-rent-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paid,
+            source: 'life_ranch',
+            payee: '城郊农牧场',
+            note: '面板签约城郊农牧场（+2鸡/+2牛/+2鱼）',
+          });
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          await this.push('life.farm', `他刚刚在面板上签下了城郊农牧场（+2鸡/+2牛/+2鱼，签约费 ¥${r.paid}）。`, 'debounce');
+          return { ok: true, message: `已签约城郊农牧场（-¥${r.paid}）`, ...marketPayload() };
+        }
+        if (method === 'unrentRanch') {
+          const r = applyUnrentRanch(this.state, Boolean(raw?.force), now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '退租没成功。', ...marketPayload() };
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return { ok: true, message: '已退掉城郊农牧场租约', ...marketPayload() };
+        }
+        if (method === 'hireHelper') {
+          const generation = this.stateGeneration;
+          const prefArg = typeof raw?.preferNeighbor === 'boolean' ? raw.preferNeighbor : undefined;
+          const r = await this.runHireAction(String(raw?.mode ?? 'care'), prefArg, now, generation, { byUser: true, ledgerPrefix: 'panel-hire' });
+          if (!r.ok) return { ok: false, reason: r.message || '雇用没成功。', ...marketPayload() };
+          await this.push('life.farm', `他在面板上雇了「${HELPER_PLANS[r.mode === 'off' ? 'care' : r.mode].label}」帮忙照看农牧场（${this.state.farmHelper.preferNeighbor ? '优先找街坊真鱼代管' : '自动照料'}）。`, 'debounce');
+          return { ok: true, message: r.message, ...marketPayload() };
+        }
+        if (method === 'postErrand') {
+          const generation = this.stateGeneration;
+          const mode: Exclude<HelperMode, 'off'> = String(raw?.mode ?? '').trim() === 'full' ? 'full' : 'care';
+          const er = await this.postNeighborFarmErrand(now, mode, generation);
+          if (!er.ok) return { ok: false, reason: er.reason || '没挂上邻里代管单。', ...marketPayload() };
+          await this.push('life.farm', `他在面板上替你发了一条鱼市街邻里农牧代管委托（${er.itemLabel}，预扣 ¥${er.wage}）。`, 'debounce');
+          return { ok: true, message: `已挂出「${er.itemLabel}」（-¥${er.wage} 托管，等街坊接单）`, ...marketPayload() };
+        }
+        if (method === 'setHelperPref') {
+          const pref = Boolean(raw?.preferNeighbor);
+          this.state.farmHelper.preferNeighbor = pref;
+          this.state.updatedAt = now.toISOString();
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return {
+            ok: true,
+            message: pref ? '已设为：优先发邻里真鱼代管，无人接再回落自动照料' : '已设为：直接走系统自动照料',
+            ...marketPayload(),
+          };
+        }
+        if (method === 'unhireHelper') {
+          const r = applyUnhireHelper(this.state, now, { byUser: true });
+          if (!r.ok) return { ok: false, reason: r.reason || '眼下没雇帮手。', ...marketPayload() };
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          await this.push('life.farm', '他刚刚在面板上停雇了农牧帮手。', 'debounce');
+          return { ok: true, message: '已辞退农牧帮手', ...marketPayload() };
+        }
+      }
+
+      throw new Error(`${panel === 'market' ? '农牧场与鱼市街' : '你和它'}页不认识这个方法：${method}`);
     }
 
     if (method === 'move') {
@@ -4390,14 +5369,18 @@ export class LifeWorld implements World {
         streetWindow: s.streetWindow,
         freshVeg: s.freshVeg,
         farm: s.farm,
+        ranch: s.ranch,
+        farmHelper: s.farmHelper,
         pantry: s.pantry,
+        cookedDishes: s.cookedDishes,
         stallRecords: s.stallRecords,
         bulletin: [...this.townBulletin],
         myStalls: [...this.myStallsCache],
         otherStalls: [...this.otherStallsCache],
         deals: this.myDealsCache.map((d) => {
-          const up = this.resolveDealPrice(d);
-          return { ...d, unitPrice: up, income: up * Math.max(1, d.qty) };
+          const isErrand = this.isMyFarmErrandDeal(d);
+          const up = isErrand ? 0 : this.resolveDealPrice(d);
+          return { ...d, isErrand, unitPrice: up, income: isErrand ? 0 : up * Math.max(1, d.qty) };
         }),
         unseenDeals: this.unseenDealsCount,
         recovered: this.recovered,

@@ -934,7 +934,7 @@ export async function fetchTownStalls(
   if (!roots.length) return { ok: false, stalls: [], bulletin: [] };
   const { res } = await tryTownFetch(
     roots,
-    '/town/stalls',
+    '/town/stalls?include_errands=1',
     { headers: { accept: 'application/json' } },
     opts.timeoutMs ?? 2500,
   );
@@ -976,7 +976,7 @@ export async function buyTownStall(
   stallId: string,
   buyer: string,
   opts: { timeoutMs?: number; buyerUid?: string; note?: string } = {},
-): Promise<{ ok: boolean; item?: string; price?: number; seller?: string; freshVeg?: boolean; category?: StallCategory; effects?: StallEffects; reason?: string }> {
+): Promise<{ ok: boolean; kind?: 'goods' | 'errand'; item?: string; price?: number; seller?: string; freshVeg?: boolean; category?: StallCategory; effects?: StallEffects; reason?: string }> {
   const roots = parseTownUrls(townUrl);
   if (!roots.length) return { ok: false, reason: '没配城服务器地址' };
   const { res } = await tryTownFetch(
@@ -1010,8 +1010,10 @@ export async function buyTownStall(
     const effects = normStallEffects(j?.effects, price || 15);
     const rawCat = typeof j?.category === 'string' ? j.category : '';
     const category = rawCat in STALL_CATEGORY_LABEL ? (rawCat as StallCategory) : undefined;
+    const kind = j?.kind === 'errand' ? 'errand' : undefined;
     return {
       ok: true,
+      ...(kind ? { kind } : {}),
       item: typeof j?.item === 'string' ? j.item : '一份吃食',
       price,
       seller: typeof j?.seller === 'string' ? j.seller : '街坊',

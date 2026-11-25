@@ -46,25 +46,61 @@ import {
 import {
   HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_SIGNUP_FEE, LEASE_MONTHLY_RENT,
   SEEDS, STALL_CATEGORY_LABEL, STALL_RULES_GUIDE,
-  freshFarm, normFarm, normPantry, normStallRecords, normSettledDeals,
-  homeFarmSlots, totalFarmSlots, findSeed, farmPlotView, addPantryItem, pantryCount, consumePantry,
+  freshFarm, normFarm, normPantry, normCookedDishes, addCookedDish, cookedDishCount, consumeCookedDish,
+  normStallRecords, normSettledDeals,
+  homeFarmSlots, totalFarmSlots, findSeed, farmPlotView, addPantryItem, pantryCount, pantryCountByIds,
+  consumePantry, consumePantryByIngredient, inferIngredientId,
   applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm,
   inferStallCategory, evaluateStallPlan,
-  type FarmState, type FarmPlot, type FarmPlotView, type PantryItem,
-  type StallCategory, type StallRecord, type StallPlanResult, type SeedDef,
+  type FarmState, type FarmPlot, type FarmPlotView, type PantryItem, type CookedDishItem,
+  type IngredientKind, type StallCategory, type StallRecord, type StallPlanResult, type SeedDef,
 } from './farm.ts';
+import {
+  ANIMAL_GROUP_LABEL, HOME_RANCH_SLOTS, RANCH_LEASE_SLOTS, RANCH_SIGNUP_FEE, RANCH_MONTHLY_RENT,
+  ANIMALS, HELPER_PLANS, NEIGHBOR_ERRAND_TTL_HOURS,
+  freshRanch, normRanch, findAnimal, homeRanchSlots, totalRanchSlots, ranchPenView,
+  applyRentRanch, applyUnrentRanch, applyBuyAnimal, applyFeedAnimal, applyCollectRanch, applyHarvestRanch,
+  calcCycleProductUnitCost, calcHarvestProductUnitCost,
+  freshFarmHelper, normFarmHelper, countPendingFarmWork, calcNeighborErrandQuote, parseErrandMinutes,
+  recordPostedNeighborErrand, applyNeighborErrandCompleted, refundExpiredErrand,
+  runFarmHelperCatchup, applyHireHelper, applyUnhireHelper,
+  type AnimalGroup, type AnimalDef, type RanchPen, type RanchState, type RanchPenView,
+  type HelperMode, type FarmHelperState, type HelperRunSummary,
+  type PendingFarmErrand, type NeighborErrandQuote, type PendingFarmWork,
+} from './ranch.ts';
+import {
+  RECIPES,
+  findRecipe, evaluateRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
+  type RecipeDef, type RecipeIngredientReq, type RecipeEvalResult, type CareerOverview,
+} from './recipes.ts';
 
 export type {
   SkillDomain, SolarTermInfo, StreetWindow, MarketItem,
-  FarmState, FarmPlot, FarmPlotView, PantryItem, StallCategory, StallRecord, StallPlanResult, SeedDef,
+  FarmState, FarmPlot, FarmPlotView, PantryItem, CookedDishItem, IngredientKind,
+  StallCategory, StallRecord, StallPlanResult, SeedDef,
+  AnimalGroup, AnimalDef, RanchPen, RanchState, RanchPenView,
+  HelperMode, FarmHelperState, HelperRunSummary,
+  PendingFarmErrand, NeighborErrandQuote, PendingFarmWork,
+  RecipeDef, RecipeIngredientReq, RecipeEvalResult, CareerOverview,
 };
 export {
   SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, solarTermOf, streetWindowOf, rollWorkGrade,
   HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_SIGNUP_FEE, LEASE_MONTHLY_RENT,
   SEEDS, STALL_CATEGORY_LABEL, STALL_RULES_GUIDE,
-  homeFarmSlots, totalFarmSlots, findSeed, farmPlotView, addPantryItem, pantryCount, consumePantry,
+  homeFarmSlots, totalFarmSlots, findSeed, farmPlotView, addPantryItem, pantryCount, pantryCountByIds,
+  consumePantry, consumePantryByIngredient, inferIngredientId, addCookedDish, cookedDishCount, consumeCookedDish,
   applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm,
   inferStallCategory, evaluateStallPlan,
+  ANIMAL_GROUP_LABEL, HOME_RANCH_SLOTS, RANCH_LEASE_SLOTS, RANCH_SIGNUP_FEE, RANCH_MONTHLY_RENT,
+  ANIMALS, HELPER_PLANS, NEIGHBOR_ERRAND_TTL_HOURS,
+  freshRanch, normRanch, findAnimal, homeRanchSlots, totalRanchSlots, ranchPenView,
+  applyRentRanch, applyUnrentRanch, applyBuyAnimal, applyFeedAnimal, applyCollectRanch, applyHarvestRanch,
+  calcCycleProductUnitCost, calcHarvestProductUnitCost,
+  freshFarmHelper, normFarmHelper, countPendingFarmWork, calcNeighborErrandQuote, parseErrandMinutes,
+  recordPostedNeighborErrand, applyNeighborErrandCompleted, refundExpiredErrand,
+  runFarmHelperCatchup, applyHireHelper, applyUnhireHelper,
+  RECIPES,
+  findRecipe, evaluateRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
 };
 
 /* ------------------------------------------------------------------ */
@@ -405,6 +441,9 @@ export interface ActiveTask {
   /** 仅 work 用：干满应得工资与档位。 */
   workPay?: number;
   workTier?: 'odd' | 'skilled' | 'certified' | 'professional';
+  /** 仅接单真鱼邻里代管用：完工零花钱与雇主名字（不占当日正式打工额度）。 */
+  errandPay?: number;
+  errandEmployer?: string;
   mood?: { text: string; kind: 'good' | 'bad'; hours: number };
   /** 覆盖动作默认场景（例如旅途住店洗澡时为「酒店浴室」而非「家里浴室」）。 */
   scene?: string;
@@ -535,8 +574,14 @@ export interface LifeState {
   lastJoinedTownAt?: string;
   /** 菜园土地与种植槽状态（自带随住处升级 + 城郊租地）。 */
   farm: FarmState;
-  /** 食材储物篮（自产收成与买回来的鲜蔬，下厨/摆摊共用）。 */
+  /** 动物养殖栏位状态（鸡舍 / 牛棚 / 鱼塘：自带轻量位 + 城郊农牧场）。 */
+  ranch: RanchState;
+  /** 农牧帮手雇佣与离线/旅行代管记录。 */
+  farmHelper: FarmHelperState;
+  /** 食材储物篮（自产收成、养殖肉蛋奶鱼与买回来的鲜蔬，下厨/摆摊共用）。 */
   pantry: PantryItem[];
+  /** 已做好的成品菜格（可直接热吃或挂鱼市街料理摊）。 */
+  cookedDishes: CookedDishItem[];
   /** 本地摆摊台账（记录挂摊单价与已扣成本，用于成交入账兜底与面板展示）。 */
   stallRecords: StallRecord[];
   /** 已结算入账的成交回执 id 列表（防重复入账）。 */
@@ -1101,7 +1146,10 @@ export function freshState(now: Date = new Date()): LifeState {
     freshVegUntil: '',
     lastJoinedTownAt: '',
     farm: freshFarm(),
+    ranch: freshRanch(),
+    farmHelper: freshFarmHelper(),
     pantry: [],
+    cookedDishes: [],
     stallRecords: [],
     settledDeals: [],
   };
@@ -1313,7 +1361,10 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     freshVegUntil: typeof s.freshVegUntil === 'string' ? s.freshVegUntil : '',
     lastJoinedTownAt: typeof s.lastJoinedTownAt === 'string' ? s.lastJoinedTownAt : '',
     farm: normFarm(s.farm),
+    ranch: normRanch(s.ranch),
+    farmHelper: normFarmHelper(s.farmHelper),
     pantry: normPantry(s.pantry),
+    cookedDishes: normCookedDishes(s.cookedDishes),
     stallRecords: normStallRecords(s.stallRecords),
     settledDeals: normSettledDeals(s.settledDeals),
   };
@@ -1377,6 +1428,10 @@ function normActivity(a: unknown, now: Date): ActiveTask | null {
     costPaid: Number.isFinite(Number(o.costPaid)) ? Number(o.costPaid) : 0,
     workPay: Number.isFinite(Number(o.workPay)) ? Number(o.workPay) : 0,
     workTier: o.workTier,
+    ...(Number.isFinite(Number(o.errandPay)) && Number(o.errandPay) > 0
+      ? { errandPay: Math.round(Number(o.errandPay)) }
+      : {}),
+    ...(typeof o.errandEmployer === 'string' && o.errandEmployer ? { errandEmployer: o.errandEmployer } : {}),
     mood: o.mood,
     ...(typeof o.scene === 'string' && o.scene ? { scene: o.scene } : {}),
   };
@@ -1484,6 +1539,7 @@ export interface CompletedTask {
   gradeLabel?: string;
   gradeText?: string;
   shiftSummary?: string;
+  errandEmployer?: string;
 }
 
 export interface AdvanceResult {
@@ -1508,6 +1564,8 @@ export interface AdvanceResult {
   sleptHours: number;
   /** 这一段时间里刚自然完成（或因缺钱停下）的活动/工作。 */
   completed: CompletedTask[];
+  /** 农牧帮手本次追补代管汇总（如有雇佣且跨自然日）。 */
+  helperRun?: HelperRunSummary | null;
 }
 
 /** 她刚醒。`hours` 是这一觉**真的睡了**几个钟点。 */
@@ -1767,35 +1825,49 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
               expiresAt: new Date(endAt.getTime() + actTask.mood.hours * 3_600_000).toISOString(),
             });
           }
-          const actDef = ACTS[actTask.id];
-          if (!outOfCash) {
-            const fitGain = actDef?.fit ?? 0;
-            if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain);
-            const craftGain = actDef?.craft ?? 0;
-            if (craftGain > 0) {
-              state.skills = state.skills ?? {};
-              state.skills.craft = Math.min(100, (state.skills.craft ?? 0) + craftGain);
+          let errandEarned = 0;
+          if (!outOfCash && actTask.errandPay && actTask.errandPay > 0) {
+            errandEarned = Math.round(actTask.errandPay);
+            state.money.cash += errandEarned;
+            state.money.earned += errandEarned;
+            state.fitness = Math.min(FITNESS_MAX, state.fitness + 0.3);
+            remember(
+              state,
+              `帮街坊${actTask.errandEmployer || '邻居'}照料农牧场完工，挣了 ${errandEarned} 元零花钱。`,
+              endAt,
+            );
+          } else {
+            const actDef = ACTS[actTask.id];
+            if (!outOfCash) {
+              const fitGain = actDef?.fit ?? 0;
+              if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain);
+              const craftGain = actDef?.craft ?? 0;
+              if (craftGain > 0) {
+                state.skills = state.skills ?? {};
+                state.skills.craft = Math.min(100, (state.skills.craft ?? 0) + craftGain);
+              }
             }
+            const fallbackScene = !actTask.scene
+              ? resolveActScene(actTask.id, { phase: ext?.phase, modeId: ext?.modeId, cityName: ext?.journeyCity, seatId: ext?.seatId, seat: ext?.seat }, state.street)
+              : undefined;
+            const finalScene = actTask.scene ?? fallbackScene ?? actDef?.scene;
+            const sceneBit = finalScene ? `在${finalScene}` : '';
+            const propBit = actDef?.props ? `（${actDef.props}）` : '';
+            remember(
+              state,
+              outOfCash
+                ? `钱花光了，「${actTask.label}」只好先停下来。`
+                : `${sceneBit}${actTask.label}了${propBit}。`,
+              endAt,
+            );
           }
-          const fallbackScene = !actTask.scene
-            ? resolveActScene(actTask.id, { phase: ext?.phase, modeId: ext?.modeId, cityName: ext?.journeyCity, seatId: ext?.seatId, seat: ext?.seat }, state.street)
-            : undefined;
-          const finalScene = actTask.scene ?? fallbackScene ?? actDef?.scene;
-          const sceneBit = finalScene ? `在${finalScene}` : '';
-          const propBit = actDef?.props ? `（${actDef.props}）` : '';
-          remember(
-            state,
-            outOfCash
-              ? `钱花光了，「${actTask.label}」只好先停下来。`
-              : `${sceneBit}${actTask.label}了${propBit}。`,
-            endAt,
-          );
           completed.push({
             kind: 'act',
             id: actTask.id,
             label: actTask.label,
             costPaid: totalPaid,
-            workEarned: 0,
+            workEarned: errandEarned,
+            ...(actTask.errandEmployer ? { errandEmployer: actTask.errandEmployer } : {}),
             stoppedEarly: outOfCash,
             reason: outOfCash ? '钱花光了' : undefined,
           });
@@ -1950,6 +2022,20 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
       }
     }
   }
+  if (state.ranch.leased && state.ranch.leasedMonthly > 0) {
+    const ranchRent = Math.round((state.ranch.leasedMonthly / 30) * hours / 24);
+    if (ranchRent > 0) {
+      const paidRanch = Math.min(ranchRent, state.money.cash);
+      state.money.cash -= paidRanch;
+      state.money.spent += paidRanch;
+      if (paidRanch < ranchRent) {
+        remember(state, '城郊农牧场的月租没凑够。', now);
+      }
+    }
+  }
+  const helperRun = (state.farmHelper.mode !== 'off' || Boolean(state.farmHelper.pendingErrand))
+    ? runFarmHelperCatchup(state, now)
+    : null;
 
   /*
    * 醒了。
@@ -2092,7 +2178,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   state.updatedAt = iso;
   return {
     hours, crossed, critical, bottomed, recovered, caught, rentMissed, rent,
-    woke, sleptHours: sleepHours, completed,
+    woke, sleptHours: sleepHours, completed, helperRun,
   };
 }
 
@@ -3725,8 +3811,24 @@ export interface Snapshot {
     readyCount: number;
     plots: FarmPlotView[];
   };
+  /** 动物养殖栏位（鸡舍/牛棚/鱼塘）、农牧场租约与各栏进度。 */
+  ranch: {
+    homeSlots: Record<AnimalGroup, number>;
+    leased: boolean;
+    leasedSlots: Record<AnimalGroup, number>;
+    leasedMonthly: number;
+    totalSlots: Record<AnimalGroup, number>;
+    usedSlots: Record<AnimalGroup, number>;
+    collectableCount: number;
+    readyHarvestCount: number;
+    pens: RanchPenView[];
+  };
+  /** 农牧帮手雇佣状态与最近代管报告。 */
+  farmHelper: FarmHelperState;
   /** 食材储物篮囤货明细。 */
   pantry: PantryItem[];
+  /** 已做好的成品菜格明细。 */
+  cookedDishes: CookedDishItem[];
   /** 本地摆摊本钱与单价台账。 */
   stallRecords: StallRecord[];
 }
@@ -3913,6 +4015,16 @@ export function snapshot(
   const homeSlots = homeFarmSlots(state.home.tier);
   const leasedSlots = state.farm.leased ? LEASE_PLOT_COUNT : 0;
 
+  const penViews = state.ranch.pens.map((p) => ranchPenView(p, now));
+  const rHomeSlots = homeRanchSlots(state.home.tier);
+  const rLeasedSlots = state.ranch.leased ? { ...RANCH_LEASE_SLOTS } : { chicken: 0, cow: 0, fish: 0 };
+  const rTotalSlots = totalRanchSlots(state);
+  const rUsedSlots: Record<AnimalGroup, number> = {
+    chicken: penViews.filter((p) => p.group === 'chicken').length,
+    cow: penViews.filter((p) => p.group === 'cow').length,
+    fish: penViews.filter((p) => p.group === 'fish').length,
+  };
+
   return {
     vitals: state.vitals,
     home: state.home,
@@ -3955,7 +4067,20 @@ export function snapshot(
       readyCount: plotViews.filter((p) => p.ready).length,
       plots: plotViews,
     },
+    ranch: {
+      homeSlots: rHomeSlots,
+      leased: state.ranch.leased,
+      leasedSlots: rLeasedSlots,
+      leasedMonthly: state.ranch.leasedMonthly,
+      totalSlots: rTotalSlots,
+      usedSlots: rUsedSlots,
+      collectableCount: penViews.filter((p) => p.collectableQty > 0).length,
+      readyHarvestCount: penViews.filter((p) => p.mature).length,
+      pens: penViews,
+    },
+    farmHelper: state.farmHelper,
     pantry: state.pantry,
+    cookedDishes: state.cookedDishes,
     stallRecords: state.stallRecords,
   };
 }
