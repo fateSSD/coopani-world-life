@@ -1227,6 +1227,40 @@ export class StateStore {
 }
 
 /**
+ * 归一化情绪胶囊列表：过滤缺字段脏数据，并按「语义 source」与「同文案+正负性」合并重复项，
+ * 保留过期时间最晚的那一条（清理老存档里因旅行随机 id 攒出来的重复好饭胶囊）。
+ */
+function dedupeMoodlets(raw: readonly unknown[]): Moodlet[] {
+  const out: Moodlet[] = [];
+  for (const item of raw) {
+    const m = item as Partial<Moodlet> | null;
+    if (!m || typeof m.id !== 'string' || typeof m.expiresAt !== 'string') continue;
+    const kind: 'good' | 'bad' = m.kind === 'bad' ? 'bad' : 'good';
+    const text = typeof m.text === 'string' ? m.text : '';
+    const source = typeof m.source === 'string' ? m.source : '';
+    const normalized: Moodlet = { id: m.id, source, text, kind, expiresAt: m.expiresAt };
+    const isLegacyRandomJourney = source.startsWith('journey:sp-');
+    const dupIdx = out.findIndex((prev) => (
+      (text.trim() !== '' && prev.text === text && prev.kind === kind)
+      || (!isLegacyRandomJourney && source !== '' && prev.source === source)
+    ));
+    if (dupIdx < 0) {
+      out.push(normalized);
+      continue;
+    }
+    const prevExp = Date.parse(out[dupIdx].expiresAt);
+    const curExp = Date.parse(normalized.expiresAt);
+    const curValid = Number.isFinite(curExp);
+    const prevValid = Number.isFinite(prevExp);
+    if ((curValid && !prevValid) || (curValid && prevValid && curExp >= prevExp) || (!curValid && !prevValid)) {
+      out.splice(dupIdx, 1);
+      out.push(normalized);
+    }
+  }
+  return out;
+}
+
+/**
  * 把读进来的东西补齐、夹到合法范围。
  *
  * **必须做**：文件可能是上一版写的（少几个字段），也可能被手工改过。
@@ -1304,7 +1338,7 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
       fun: num(v.fun, base.vitals.fun),
       social: num(v.social, base.vitals.social),
     },
-    moodlets: arr(s.moodlets).filter((m) => m && typeof m.id === 'string' && typeof m.expiresAt === 'string'),
+    moodlets: dedupeMoodlets(arr(s.moodlets)),
     conditions: arr(s.conditions).filter((c) => c && typeof c.id === 'string'),
     habits: arr(s.habits).filter((h) => h && typeof h.id === 'string'),
     watches: arr(s.watches).filter((w) => w && typeof w.id === 'string'),
@@ -3478,12 +3512,17 @@ export function applySpend(
     }
     if (r?.moodlet && r.moodlet.text) {
       const hrs = Number.isFinite(r.moodlet.hours) && r.moodlet.hours > 0 ? r.moodlet.hours : 3;
-      state.moodlets = state.moodlets.filter((m) => m.source !== `journey:${id}`);
+      const kind: 'good' | 'bad' = r.moodlet.kind === 'bad' ? 'bad' : 'good';
+      const noteKey = String(r.note ?? '').trim().slice(0, 30);
+      const src = `journey:${noteKey || r.moodlet.text.slice(0, 30)}`;
+      state.moodlets = state.moodlets.filter(
+        (m) => m.source !== src && !(m.text === r.moodlet!.text && m.kind === kind),
+      );
       state.moodlets.push({
         id: `m-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        source: `journey:${id}`,
+        source: src,
         text: r.moodlet.text,
-        kind: r.moodlet.kind === 'bad' ? 'bad' : 'good',
+        kind,
         expiresAt: new Date(now.getTime() + hrs * 3_600_000).toISOString(),
       });
     }

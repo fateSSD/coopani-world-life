@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 const { LifeWorld } = await import('../src/world.ts');
 const { LIFE_DEFAULTS, parseTownUrls } = await import('../src/config.ts');
 const {
-  freshState, advance, applyAct, applyWork, applyCert, applyLearn,
+  freshState, advance, applyAct, applySpend, applyWork, applyCert, applyLearn, normalize,
   snapshot, weatherOf, fullMarketPrices, localDateKey, StateStore,
 } = await import('../src/state.ts');
 const { JOBS } = await import('../src/jobs.ts');
@@ -1890,4 +1890,65 @@ test('1.4.3 鱼市街邻里代管接单修复：带 id: 前缀/全角括号/短�
     if (!stopped) await new Promise((resolve) => srv.close(resolve));
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('旅行反哺情绪去重：连续多顿旅途正餐只留最新一条，老存档已攒重复胶囊读档自动合并', () => {
+  const baseTime = Date.parse('2026-11-25T12:00:00.000+08:00');
+  const st = freshState(new Date(baseTime));
+  for (let i = 1; i <= 5; i++) {
+    const t = new Date(baseTime + i * 20 * 60_000);
+    applySpend(
+      st,
+      [{
+        id: `sp-${i}`,
+        amount: 0,
+        note: '旅途正餐',
+        moodlet: { text: '在当地吃了顿顺口的好饭', kind: 'good', hours: 3 },
+      }],
+      t,
+    );
+  }
+  const shipAt = new Date(baseTime + 110 * 60_000);
+  applySpend(
+    st,
+    [{
+      id: 'sp-ship-1',
+      amount: 0,
+      note: '抵达（ship）',
+      moodlet: { text: '海景阳台房伴着浪声睡了一觉，晨起吹海风很清醒', kind: 'good', hours: 4 },
+    }],
+    shipAt,
+  );
+
+  const mealMoods = st.moodlets.filter((m) => m.text === '在当地吃了顿顺口的好饭');
+  assert.equal(mealMoods.length, 1);
+  assert.equal(mealMoods[0].expiresAt, new Date(baseTime + 5 * 20 * 60_000 + 3 * 3_600_000).toISOString());
+  assert.equal(st.moodlets.length, 2);
+
+  // 老存档里已攒成串的 9 条重复随机 source 情绪，经 normalize() 自动合并只留最晚一条
+  const legacyRaw = {
+    ...freshState(new Date(baseTime)),
+    moodlets: [
+      {
+        id: 'm-study-1',
+        source: 'study',
+        text: '看进去一段，脑子亮了一下',
+        kind: 'good',
+        expiresAt: new Date(baseTime + 2 * 3_600_000).toISOString(),
+      },
+      ...Array.from({ length: 9 }, (_, i) => ({
+        id: `m-old-${i + 1}`,
+        source: `journey:sp-old-${i + 1}`,
+        text: '在当地吃了顿顺口的好饭',
+        kind: 'good',
+        expiresAt: new Date(baseTime + (i + 1) * 30 * 60_000).toISOString(),
+      })),
+    ],
+  };
+  const normed = normalize(legacyRaw, new Date(baseTime));
+  const normedMeals = normed.moodlets.filter((m) => m.text === '在当地吃了顿顺口的好饭');
+  assert.equal(normedMeals.length, 1);
+  assert.equal(normedMeals[0].expiresAt, new Date(baseTime + 9 * 30 * 60_000).toISOString());
+  assert.equal(normed.moodlets.some((m) => m.text === '看进去一段，脑子亮了一下'), true);
+  assert.equal(normed.moodlets.length, 2);
 });
