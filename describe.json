@@ -887,8 +887,8 @@
     {
       "type": "life.farm",
       "description": {
-        "zh": "用户在面板上打理菜园或农牧场（播种、收成、放养、签约）。",
-        "en": "User tended the garden or ranch from the web panel."
+        "zh": "在家且农牧场有新鲜蛋奶、熟货待收或当日待浇水/待喂食，或用户在面板上打理菜园与农牧场（播种、收成、放养、签约）。",
+        "en": "Fresh eggs/milk, mature crops/fish, or daily watering/feeding due at home, or user tended the garden/ranch from the web panel."
       },
       "trigger": "debounce"
     },

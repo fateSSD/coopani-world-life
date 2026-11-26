@@ -19,9 +19,9 @@ import {
   ANIMAL_GROUP_LABEL, HOME_RANCH_SLOTS, RANCH_LEASE_SLOTS, RANCH_SIGNUP_FEE, RANCH_MONTHLY_RENT, ANIMALS, HELPER_PLANS, NEIGHBOR_ERRAND_TTL_HOURS,
   RECIPES,
   advance, applyAct, applyMove, applyStreetMove, applySpend, applyWork, applyCert, applyLearn, applyGift, asleepRefusal, busyRefusal, freshState, isAsleep, isBusy, isCruiseJourney, isThemeCruiseJourney, isRiverCruiseJourney, isScenicTrainJourney, isCampervanJourney,
-  applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm, addPantryItem, consumePantry, pantryCount, evaluateStallPlan, solarTermOf,
+  applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm, farmPlotView, addPantryItem, consumePantry, pantryCount, evaluateStallPlan, solarTermOf,
   consumeCookedDish, cookedDishCount,
-  applyRentRanch, applyUnrentRanch, applyBuyAnimal, applyFeedAnimal, applyCollectRanch, applyHarvestRanch,
+  applyRentRanch, applyUnrentRanch, applyBuyAnimal, applyFeedAnimal, applyCollectRanch, applyHarvestRanch, ranchPenView,
   countPendingFarmWork, calcNeighborErrandQuote, parseErrandMinutes, recordPostedNeighborErrand,
   applyNeighborErrandCompleted, refundExpiredErrand, applyHireHelper, applyUnhireHelper,
   findRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
@@ -64,7 +64,7 @@ const DAY_WORK_QUEUE_LEASE_MS = 60_000;
 interface DeliveryAttempt {
   id: string;
   generation: number;
-  kind: 'notice' | 'crossed' | 'day' | 'goal';
+  kind: 'notice' | 'crossed' | 'day' | 'goal' | 'farm';
   acceptedAt: number;
   cursor?: number;
   noticeId?: string;
@@ -364,7 +364,7 @@ export class LifeWorld implements World {
     for (const a of this.deliveryAttempts.values()) {
       if (a.generation !== this.stateGeneration || a.kind !== kind) continue;
       if (kind === 'notice' && a.noticeId === key) return true;
-      if ((kind === 'crossed' || kind === 'goal') && a.nagKey === key) return true;
+      if ((kind === 'crossed' || kind === 'goal' || kind === 'farm') && a.nagKey === key) return true;
     }
     return false;
   }
@@ -1136,7 +1136,7 @@ export class LifeWorld implements World {
       const q = this.state.pendingNotices ?? [];
       this.state.pendingNotices = q.filter((n) => n.id !== attempt.noticeId);
       dirty = true;
-    } else if ((attempt.kind === 'crossed' || attempt.kind === 'goal') && attempt.nagKey && attempt.date) {
+    } else if ((attempt.kind === 'crossed' || attempt.kind === 'goal' || attempt.kind === 'farm') && attempt.nagKey && attempt.date) {
       this.state.nagged[attempt.nagKey] = attempt.date;
       dirty = true;
       if (attempt.kind === 'crossed' && attempt.vital && attempt.level) {
@@ -1362,6 +1362,8 @@ export class LifeWorld implements World {
 
     this.stateCleared = false;
     await this.settleAdvanceEffects(r, now, generation);
+    if (generation !== this.stateGeneration) return;
+    await this.checkHomeFarmReminders(now, generation);
     if (generation !== this.stateGeneration) return;
     let dirty = true;
 
@@ -1724,6 +1726,108 @@ export class LifeWorld implements World {
       if (!sent) this.forgetAttempt(attempt);
     }
     await this.flushCrossed(r, now, generation);
+  }
+
+  /** 收掉蛋奶或收完熟货后，若已无待收项则释放当日农牧提醒额度，避免后续再产出或再熟被静音。 */
+  private syncFarmReminderNags(now: Date): void {
+    if (!this.state.ranch.pens.some((p) => ranchPenView(p, now).collectableQty > 0)) {
+      delete this.state.nagged['farm:ranch-collect'];
+    }
+    const stillHarvestable = this.state.farm.plots.some((p) => farmPlotView(p, now).ready)
+      || this.state.ranch.pens.some((p) => p.group === 'fish' && ranchPenView(p, now).mature);
+    if (!stillHarvestable) {
+      delete this.state.nagged['farm:harvest'];
+    }
+  }
+
+  /** 在家且醒着闲着时，主动提醒已产出的鲜鸡蛋/鲜牛奶，以及已成熟的菜地与鱼塘（每天每类各一次，delivered 后才扣额度）。 */
+  private async checkHomeFarmReminders(now: Date, generation = this.stateGeneration): Promise<void> {
+    if (
+      this.stateCleared
+      || this.cfg.notify === 'off'
+      || this.inJourneyTrip(this.journey)
+      || isAsleep(this.state, now)
+      || isBusy(this.state, now)
+    ) {
+      return;
+    }
+    const today = localDateKey(now);
+
+    const collectReady = this.state.ranch.pens
+      .map((pen) => ({ pen, view: ranchPenView(pen, now) }))
+      .filter(({ view }) => view.collectableQty > 0);
+    if (
+      collectReady.length > 0
+      && !this.hasAttempt('farm', 'farm:ranch-collect')
+      && this.shouldNag('farm:ranch-collect', now)
+    ) {
+      const detail = collectReady
+        .map(({ pen, view }) => `${pen.name}（可收 ${view.collectProductName}×${view.collectableQty}）`)
+        .join('、');
+      const msg = `家里的养殖场有新鲜蛋奶可以收了：${detail}。眼下你在家，有空可以调 life_ranch(action="collect") 收进储物篮，拿来做菜或摆摊都用得上。`;
+      const attempt = this.newAttempt('farm', { nagKey: 'farm:ranch-collect', date: today });
+      const sent = await this.push('life.farm', msg, 'debounce', { attempt });
+      if (generation !== this.stateGeneration) return;
+      if (!sent) this.forgetAttempt(attempt);
+    }
+
+    const readyPlots = this.state.farm.plots
+      .map((plot) => farmPlotView(plot, now))
+      .filter((v) => v.ready);
+    const readyFish = this.state.ranch.pens
+      .filter((pen) => pen.group === 'fish')
+      .map((pen) => ({ pen, view: ranchPenView(pen, now) }))
+      .filter(({ view }) => view.mature);
+    if (
+      (readyPlots.length > 0 || readyFish.length > 0)
+      && !this.hasAttempt('farm', 'farm:harvest')
+      && this.shouldNag('farm:harvest', now)
+    ) {
+      const segs: string[] = [];
+      if (readyPlots.length > 0) {
+        segs.push(`菜地里 ${readyPlots.map((p) => `${p.name}(预计${p.expectedYield}份)`).join('、')} 已经熟了，可调 life_farm(action="harvest") 收割`);
+      }
+      if (readyFish.length > 0) {
+        segs.push(`鱼塘里 ${readyFish.map(({ pen, view }) => `${pen.name}(${view.harvestProductName}×${view.harvestYield})`).join('、')} 已经养成，可调 life_ranch(action="harvest") 起塘`);
+      }
+      const msg = `家里的农牧场有熟货待收：${segs.join('；')}，收进储物篮就能做菜或摆摊。`;
+      const attempt = this.newAttempt('farm', { nagKey: 'farm:harvest', date: today });
+      const sent = await this.push('life.farm', msg, 'debounce', { attempt });
+      if (generation !== this.stateGeneration) return;
+      if (!sent) this.forgetAttempt(attempt);
+    }
+
+    const hr = herNow(this.journey, now).getHours();
+    const pe = this.state.farmHelper.pendingErrand;
+    const hasActiveErrand = Boolean(pe && pe.day === today && Date.parse(pe.expiresAt) > now.getTime());
+    if (
+      hr >= 8 && hr <= 22
+      && this.state.vitals.energy >= 10
+      && !hasActiveErrand
+      && !this.hasAttempt('farm', 'farm:care')
+      && this.shouldNag('farm:care', now)
+    ) {
+      const unwateredPlots = this.state.farm.plots
+        .map((plot) => farmPlotView(plot, now))
+        .filter((v) => !v.ready && !v.wateredToday);
+      const unfedPens = this.state.ranch.pens
+        .map((pen) => ({ pen, view: ranchPenView(pen, now) }))
+        .filter(({ view }) => !view.fedToday && this.state.money.cash >= view.feedCost);
+      if (unwateredPlots.length > 0 || unfedPens.length > 0) {
+        const careSegs: string[] = [];
+        if (unwateredPlots.length > 0) {
+          careSegs.push(`菜地里「${unwateredPlots.map((p) => p.name).join('、')}」今天还没浇水（可调 life_farm(action="water")，每块耗 3 精力，累计满 2 次丰产+1）`);
+        }
+        if (unfedPens.length > 0) {
+          careSegs.push(`养殖场里「${unfedPens.map(({ pen, view }) => `${pen.name}(饲料¥${view.feedCost})`).join('、')}」今天还没喂食（可调 life_ranch(action="feed")，每栏耗 3 精力，喂过增产+1）`);
+        }
+        const msg = `家里农牧场今天还没打理：${careSegs.join('；')}。眼下你在家精力也够，有空顺手照料一下吧。`;
+        const attempt = this.newAttempt('farm', { nagKey: 'farm:care', date: today });
+        const sent = await this.push('life.farm', msg, 'debounce', { attempt });
+        if (generation !== this.stateGeneration) return;
+        if (!sent) this.forgetAttempt(attempt);
+      }
+    }
   }
 
   private async settleBeforeTool(now: Date): Promise<void> {
@@ -3835,6 +3939,7 @@ export class LifeWorld implements World {
           const r = applyHarvest(this.state, String(args?.plot_id ?? '').trim(), now);
           if (!r.ok) return { text: r.reason ?? '暂时还不能收成。' };
           if (generation !== this.stateGeneration) return cleared();
+          this.syncFarmReminderNags(now);
           this.saveDeliveredState();
           this.broadcastLife(now);
           const gotTxt = r.harvested.map((h) => `${h.name}×${h.qty}`).join('、');
@@ -4028,6 +4133,7 @@ export class LifeWorld implements World {
           const r = applyCollectRanch(this.state, String(args?.pen_id ?? '').trim(), now);
           if (!r.ok) return { text: r.reason ?? '暂时还没产出蛋奶。' };
           if (generation !== this.stateGeneration) return cleared();
+          this.syncFarmReminderNags(now);
           this.saveDeliveredState();
           this.broadcastLife(now);
           const gotTxt = r.collected.map((c) => `${c.name}×${c.qty}`).join('、');
@@ -4038,6 +4144,7 @@ export class LifeWorld implements World {
           const r = applyHarvestRanch(this.state, String(args?.pen_id ?? '').trim(), now);
           if (!r.ok) return { text: r.reason ?? '暂时还不能起塘/出栏。' };
           if (generation !== this.stateGeneration) return cleared();
+          this.syncFarmReminderNags(now);
           this.saveDeliveredState();
           this.broadcastLife(now);
           const gotTxt = r.harvested.map((h) => `${h.name}×${h.qty}`).join('、');
@@ -4350,16 +4457,26 @@ export class LifeWorld implements World {
     }
     const f = s.farm;
     const readyPlots = f.plots.filter((p) => p.ready);
-    const farmSummary = readyPlots.length
-      ? `（有 ${readyPlots.length} 块已熟可收：${readyPlots.map((p) => p.name).join('、')}，用 life_farm harvest）`
+    const unwateredPlots = f.plots.filter((p) => !p.ready && !p.wateredToday);
+    const farmNotes: string[] = [];
+    if (readyPlots.length) {
+      farmNotes.push(`有 ${readyPlots.length} 块已熟可收：${readyPlots.map((p) => p.name).join('、')}，用 life_farm harvest`);
+    }
+    if (unwateredPlots.length) {
+      farmNotes.push(`今日待浇水 ${unwateredPlots.length} 块（${unwateredPlots.map((p) => p.name).join('、')}，用 life_farm water）`);
+    }
+    const farmSummary = farmNotes.length
+      ? `（${farmNotes.join('；')}）`
       : (f.plots.length ? `（在长：${f.plots.map((p) => `${p.name}约${p.daysLeft}天`).join('、')}）` : '（槽位空着）');
     parts.push(`菜园：在用 ${f.usedSlots}/${f.totalSlots} 槽${f.leased ? '（含城郊租地4槽）' : ''}${farmSummary}`);
     const rn = s.ranch;
     const ranchTotal = rn.totalSlots.chicken + rn.totalSlots.cow + rn.totalSlots.fish;
     if (ranchTotal > 0 || rn.pens.length > 0) {
       const ranchHints: string[] = [];
+      const unfedPens = rn.pens.filter((p) => !p.fedToday);
       if (rn.collectableCount > 0) ranchHints.push(`${rn.collectableCount} 栏可收蛋奶(life_ranch collect)`);
       if (rn.readyHarvestCount > 0) ranchHints.push(`${rn.readyHarvestCount} 栏可起塘/出栏`);
+      if (unfedPens.length > 0) ranchHints.push(`${unfedPens.length} 栏今日待喂食(life_ranch feed)`);
       parts.push(`养殖场：鸡 ${rn.usedSlots.chicken}/${rn.totalSlots.chicken} · 牛 ${rn.usedSlots.cow}/${rn.totalSlots.cow} · 鱼 ${rn.usedSlots.fish}/${rn.totalSlots.fish}${ranchHints.length ? `（${ranchHints.join('，')}）` : ''}`);
     }
     if (s.farmHelper.mode !== 'off') {
@@ -4668,7 +4785,22 @@ export class LifeWorld implements World {
         `住：${this.lodgingText(j)}　${HOME_TIER_LABEL[s.home.tier]}（${s.home.tenure === 'own' ? '买下的' : '租的'}）`,
         `钱：手上 ${s.money.cash} 元（进 ${s.money.earned} / 出 ${s.money.spent}）`,
         `见识：${s.knowledge}`,
-        `菜园与储物篮：${s.farm.usedSlots}/${s.farm.totalSlots}槽${s.farm.readyCount ? `(可收${s.farm.readyCount})` : ''} · 囤菜${pantryCount(s.pantry)}份`,
+        (() => {
+          const unwateredCount = s.farm.plots.filter((p) => !p.ready && !p.wateredToday).length;
+          const farmTags: string[] = [];
+          if (s.farm.readyCount > 0) farmTags.push(`可收${s.farm.readyCount}`);
+          if (unwateredCount > 0) farmTags.push(`待浇水${unwateredCount}`);
+          return `菜园与储物篮：${s.farm.usedSlots}/${s.farm.totalSlots}槽${farmTags.length ? `(${farmTags.join('/')})` : ''} · 囤菜${pantryCount(s.pantry)}份`;
+        })(),
+        ...(s.ranch.pens.length > 0 ? [(() => {
+          const rn = s.ranch;
+          const unfedCount = rn.pens.filter((p) => !p.fedToday).length;
+          const tags: string[] = [];
+          if (rn.collectableCount > 0) tags.push(`可收蛋奶${rn.collectableCount}栏`);
+          if (rn.readyHarvestCount > 0) tags.push(`可起塘出栏${rn.readyHarvestCount}栏`);
+          if (unfedCount > 0) tags.push(`待喂食${unfedCount}栏`);
+          return `养殖场：鸡${rn.usedSlots.chicken}牛${rn.usedSlots.cow}鱼${rn.usedSlots.fish}${tags.length ? `(${tags.join('/')})` : ''}`;
+        })()] : []),
       ].join('　·　'),
       'life.diary': this.diaryLine(j, now),
       'life.library': this.library.summaryLine(),
@@ -5275,6 +5407,7 @@ export class LifeWorld implements World {
         if (method === 'harvest') {
           const r = applyHarvest(this.state, String(raw?.plotId ?? '').trim(), now, { byUser: true });
           if (!r.ok) return { ok: false, reason: r.reason || '还没熟呢。', ...marketPayload() };
+          this.syncFarmReminderNags(now);
           this.saveDeliveredState();
           this.broadcastLife(now);
           const gotTxt = r.harvested.map((h) => `${h.name}×${h.qty}`).join('、');
@@ -5342,6 +5475,7 @@ export class LifeWorld implements World {
         if (method === 'ranchCollect') {
           const r = applyCollectRanch(this.state, String(raw?.penId ?? '').trim(), now, { byUser: true });
           if (!r.ok) return { ok: false, reason: r.reason || '暂无可收蛋奶。', ...marketPayload() };
+          this.syncFarmReminderNags(now);
           this.saveDeliveredState();
           this.broadcastLife(now);
           const gotTxt = r.collected.map((c) => `${c.name}×${c.qty}`).join('、');
@@ -5351,6 +5485,7 @@ export class LifeWorld implements World {
         if (method === 'ranchHarvest') {
           const r = applyHarvestRanch(this.state, String(raw?.penId ?? '').trim(), now, { byUser: true });
           if (!r.ok) return { ok: false, reason: r.reason || '暂不可起塘/出栏。', ...marketPayload() };
+          this.syncFarmReminderNags(now);
           this.saveDeliveredState();
           this.broadcastLife(now);
           const gotTxt = r.harvested.map((h) => `${h.name}×${h.qty}`).join('、');

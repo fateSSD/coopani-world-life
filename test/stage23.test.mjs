@@ -1952,3 +1952,277 @@ test('旅行反哺情绪去重：连续多顿旅途正餐只留最新一条，�
   assert.equal(normed.moodlets.some((m) => m.text === '看进去一段，脑子亮了一下'), true);
   assert.equal(normed.moodlets.length, 2);
 });
+
+test('1.4.5 在家醒着产蛋/熟货主动提醒（life.farm + life.who）、旅途/睡眠静默、收取清零与面板浇水文案消歧', async () => {
+  const dir = mkDir();
+  const prevDoc = globalThis.document;
+  try {
+    let curNow = new Date('2026-11-26T10:00:00.000+08:00');
+    new StateStore(dir).save(freshState(curNow));
+    const pushed = [];
+    const host = {
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => {
+        const env = { ...e, cursor: pushed.length + 1 };
+        pushed.push(env);
+        return env;
+      },
+      store: {},
+      drainPendingEvents: async () => [],
+    };
+    const world = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => curNow,
+    });
+    await world.start(host);
+
+    // 1) 升老小区解锁鸡舍并放养土鸡（记昨天的起始时间使其满 24h 可收蛋）
+    world.state.home.tier = 'old';
+    world.state.money.cash = 500;
+    const plantedAt = new Date(curNow.getTime() - 25 * 3_600_000).toISOString();
+    world.state.ranch.pens.push({
+      id: 'pen-hen-1',
+      animalId: 'hen',
+      name: '散养土鸡',
+      group: 'chicken',
+      startedAt: plantedAt,
+      matureAt: new Date(curNow.getTime() + 95 * 3_600_000).toISOString(),
+      lastCollectedAt: plantedAt,
+      fedAt: '',
+      fedDay: '',
+      feedCount: 0,
+      fedCycleBonus: false,
+      source: 'home',
+    });
+
+    // 2) 外出旅行期间（staying）和睡着时，不应推送在家收蛋提醒
+    writeFileSync(join(dir, 'journey-public.json'), JSON.stringify({
+      schema: 'coopani-journey-public/v1',
+      phase: 'staying',
+      city: { id: 'chengdu', name: '成都', tz: 'Asia/Shanghai' },
+      updatedAt: curNow.toISOString(),
+    }), 'utf8');
+    curNow = new Date(curNow.getTime() + 10 * 60_000);
+    await world.tick();
+    assert.equal(pushed.some((e) => e.type === 'life.farm'), false, '外出旅行时不推在家收蛋提醒');
+
+    writeFileSync(join(dir, 'journey-public.json'), JSON.stringify({
+      schema: 'coopani-journey-public/v1',
+      phase: 'home',
+      city: { id: 'lanzhou', name: '兰州', tz: 'Asia/Shanghai' },
+      updatedAt: curNow.toISOString(),
+    }), 'utf8');
+    world.state.asleepFrom = curNow.toISOString();
+    world.state.asleepUntil = new Date(curNow.getTime() + 4 * 3_600_000).toISOString();
+    curNow = new Date(curNow.getTime() + 10 * 60_000);
+    await world.tick();
+    assert.equal(pushed.some((e) => e.type === 'life.farm'), false, '睡着时不推在家收蛋提醒');
+
+    // 3) 回到家且醒着闲着：tick 应主动推 life.farm 收蛋提醒 + 当日喂食提醒，且 envPromptVars()['life.who'] 与 life_status 带出待收与待喂食
+    world.state.asleepFrom = '';
+    world.state.asleepUntil = '';
+    curNow = new Date(curNow.getTime() + 10 * 60_000);
+    await world.tick();
+    const eggEvents = pushed.filter((e) => e.type === 'life.farm' && e.text.includes('新鲜蛋奶'));
+    assert.equal(eggEvents.length, 1, '在家醒着应推送一次鸡下蛋提醒');
+    assert.match(eggEvents[0].text, /鲜鸡蛋/);
+    assert.match(eggEvents[0].text, /life_ranch/);
+    const careEventsDay1 = pushed.filter((e) => e.type === 'life.farm' && e.text.includes('还没打理'));
+    assert.equal(careEventsDay1.length, 1, '在家醒着 08:00-22:00 精力充足应推送一次每日喂食提醒');
+    assert.match(careEventsDay1[0].text, /散养土鸡.*还没喂食/);
+    assert.match(world.envPromptVars()['life.who'], /养殖场：鸡1牛0鱼0\(可收蛋奶1栏\/待喂食1栏\)/);
+
+    const statusTool = world.tools().find((t) => t.name === 'life_status');
+    const stInit = await statusTool.handler({});
+    assert.match(stInit.text, /1 栏今日待喂食/);
+
+    // 同一天再 tick 不重复推送；调 life_ranch(collect) 收掉后清除 nagged['farm:ranch-collect']
+    curNow = new Date(curNow.getTime() + 10 * 60_000);
+    await world.tick();
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('新鲜蛋奶')).length, 1);
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('还没打理')).length, 1);
+
+    const ranchTool = world.tools().find((t) => t.name === 'life_ranch');
+    const colRes = await ranchTool.handler({ action: 'collect' });
+    assert.match(colRes.text, /鲜鸡蛋/);
+    assert.equal(world.state.nagged['farm:ranch-collect'], undefined);
+
+    // 4) 成熟菜地提醒与收割清零
+    world.state.farm.plots.push({
+      id: 'plot-ready-1',
+      seedId: 'scallion',
+      name: '香葱与罗勒',
+      plantedAt: new Date(curNow.getTime() - 96 * 3_600_000).toISOString(),
+      matureAt: new Date(curNow.getTime() - 60_000).toISOString(),
+      wateredAt: new Date(curNow.getTime() - 24 * 3_600_000).toISOString(),
+      wateredDay: '2026-11-25',
+      waterCount: 3,
+      baseYield: 2,
+      solarBonus: false,
+      source: 'home',
+    });
+    curNow = new Date(curNow.getTime() + 10 * 60_000);
+    await world.tick();
+    const harvestEv = pushed.find((e) => e.type === 'life.farm' && e.text.includes('熟货待收') && e.text.includes('香葱与罗勒'));
+    assert.ok(harvestEv, '在家醒着有成熟蔬菜时应推送熟货待收提醒');
+    assert.match(harvestEv.text, /life_farm/);
+
+    const farmTool = world.tools().find((t) => t.name === 'life_farm');
+    await farmTool.handler({ action: 'harvest' });
+    assert.equal(world.state.nagged['farm:harvest'], undefined);
+
+    // 4b) 次日每日浇水 + 喂食门控与汇总提醒验证
+    world.state.farm.plots.push({
+      id: 'plot-grow-1',
+      seedId: 'mushroom',
+      name: '椴木鲜香菇',
+      plantedAt: curNow.toISOString(),
+      matureAt: new Date(curNow.getTime() + 96 * 3_600_000).toISOString(),
+      wateredAt: '',
+      wateredDay: '',
+      waterCount: 0,
+      baseYield: 3,
+      solarBonus: false,
+      source: 'home',
+    });
+    // 凌晨 02:00 不触发 farm:care
+    curNow = new Date('2026-11-27T02:00:00.000+08:00');
+    await world.tick();
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('还没打理')).length, 1, '凌晨不消耗当天照料提醒');
+
+    // 先推进到 08:50（避免 02:00→09:00 跨夜触发离线补睡把精力拉回 85），再测精力不足（< 10）不触发；补足精力但挂着今日未过期邻里委托也不触发
+    curNow = new Date('2026-11-27T08:50:00.000+08:00');
+    await world.tick();
+    world.state.nagged = {};
+    const careBase = pushed.filter((e) => e.type === 'life.farm' && e.text.includes('还没打理')).length;
+
+    curNow = new Date('2026-11-27T08:55:00.000+08:00');
+    world.state.vitals.energy = 8;
+    await world.tick();
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('还没打理')).length, careBase, '精力不足时不推照料提醒');
+
+    world.state.vitals.energy = 80;
+    world.state.farmHelper.pendingErrand = {
+      stallId: 'err-today-1',
+      mode: 'care',
+      wage: 7,
+      minutes: 25,
+      day: '2026-11-27',
+      postedAt: curNow.toISOString(),
+      expiresAt: new Date(curNow.getTime() + 5 * 3_600_000).toISOString(),
+    };
+    curNow = new Date(curNow.getTime() + 5 * 60_000);
+    await world.tick();
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('还没打理')).length, careBase, '已发今日邻里代管委托时不重复提醒自己浇水喂食');
+
+    // 撤销委托后同一天白天应汇总推送一次「待浇水 + 待喂食」，且 life.who 与 life_status 同步曝光
+    world.state.farmHelper.pendingErrand = null;
+    curNow = new Date(curNow.getTime() + 5 * 60_000);
+    await world.tick();
+    const careDay2 = pushed.filter((e) => e.type === 'life.farm' && e.text.includes('还没打理'));
+    assert.equal(careDay2.length, careBase + 1, '次日白天在家精力充足应合并推送浇水与喂食提醒');
+    assert.match(careDay2.at(-1).text, /椴木鲜香菇.*还没浇水/);
+    assert.match(careDay2.at(-1).text, /散养土鸡.*还没喂食/);
+    assert.match(world.envPromptVars()['life.who'], /待浇水1/);
+    assert.match(world.envPromptVars()['life.who'], /待喂食1栏/);
+    const stDay2 = await statusTool.handler({});
+    assert.match(stDay2.text, /今日待浇水 1 块（椴木鲜香菇/);
+    assert.match(stDay2.text, /1 栏今日待喂食/);
+
+    // 5) 面板浇水文案验证：waterCount=3, wateredToday=true 显示「累计浇 3次(已+1产) · 今日✓」绝不出现「3/2」；waterCount=1 显示「1/2(满2+1产) · 今日待浇」
+    class MiniEl {
+      constructor(tag) {
+        this.tagName = String(tag).toUpperCase();
+        this.children = [];
+        this.style = {};
+        this.dataset = {};
+        this.className = '';
+        this.id = '';
+        this._text = '';
+      }
+      set textContent(v) { this._text = String(v ?? ''); this.children = []; }
+      get textContent() { return this._text + this.children.map((c) => c.textContent).join(''); }
+      append(...args) {
+        for (const a of args) {
+          if (a == null) continue;
+          this.children.push(typeof a === 'string' ? { textContent: a, children: [] } : a);
+        }
+      }
+      set innerHTML(v) { if (v === '') { this.children = []; this._text = ''; } }
+      addEventListener() {}
+      setAttribute() {}
+    }
+    const fakeDoc = {
+      head: new MiniEl('head'),
+      body: new MiniEl('body'),
+      createElement: (t) => new MiniEl(t),
+      createTextNode: (txt) => ({ textContent: String(txt ?? ''), children: [] }),
+      getElementById: () => null,
+      execCommand: () => true,
+    };
+    globalThis.document = fakeDoc;
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const panelMod = await import(`../${pkg.cortico.webUiClient}?water=${Date.now()}`);
+    const root = new MiniEl('div');
+    const mockSnap = {
+      ...(await world.webUi().invoke('market', 'snapshot')),
+      farm: {
+        homeSlots: 2,
+        leased: false,
+        leasedSlots: 0,
+        leasedMonthly: 150,
+        totalSlots: 2,
+        usedSlots: 2,
+        readyCount: 0,
+        plots: [
+          {
+            id: 'p3',
+            seedId: 'scallion',
+            name: '香葱与罗勒',
+            source: 'home',
+            waterCount: 3,
+            wateredToday: true,
+            expectedYield: 3,
+            daysLeft: 2.1,
+            progress: 0.48,
+            ready: false,
+            solarBonus: false,
+            matureAt: new Date(curNow.getTime() + 50 * 3_600_000).toISOString(),
+          },
+          {
+            id: 'p1',
+            seedId: 'mushroom',
+            name: '椴木鲜香菇',
+            source: 'home',
+            waterCount: 1,
+            wateredToday: false,
+            expectedYield: 3,
+            daysLeft: 4.1,
+            progress: 0.3,
+            ready: false,
+            solarBonus: false,
+            matureAt: new Date(curNow.getTime() + 98 * 3_600_000).toISOString(),
+          },
+        ],
+      },
+    };
+    await panelMod.default.panels.market.mount({
+      root,
+      language: 'zh',
+      invoke: async () => mockSnap,
+      timeout: () => 0,
+    });
+    const renderedText = root.textContent;
+    assert.match(renderedText, /累计浇 3次\(已\+1产\) · 今日✓/);
+    assert.match(renderedText, /累计浇 1\/2\(满2\+1产\) · 今日待浇/);
+    assert.doesNotMatch(renderedText, /浇水 3\/2/);
+
+    await world.stop();
+  } finally {
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

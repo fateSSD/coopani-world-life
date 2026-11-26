@@ -1,6 +1,6 @@
 {
   "name": "coopani-world-life",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "type": "module",
   "description": "模拟鱼生 · 给桌宠过日子的真实小生活：五条需求、18种节气菜园与鸡牛鱼养殖（面板可直接点击操作）、菜谱联动与职业工坊、鱼市街摆摊与日记时间轴。（需 Coopani 0.2.22+｜QQ 群 284525159）",
   "author": {
@@ -38,7 +38,7 @@
     "api": 6,
     "displayName": "模拟鱼生",
     "describe": "describe.json",
-    "webUiClient": "web/panel-1.4.4.js",
+    "webUiClient": "web/panel-1.4.5.js",
     "tags": [
       "companion",
       "internal-state"

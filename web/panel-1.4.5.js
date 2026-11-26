@@ -1702,7 +1702,13 @@ export default {
             const meta1 = el('div', 'pmeta');
             meta1.append(
               el('span', null, `${p.source === 'leased' ? '城郊租地' : '住处槽'} · 预产 ${p.expectedYield} 份`),
-              el('span', null, `浇水 ${p.waterCount}/2${p.wateredToday ? ' ✓今' : ''}`),
+              el(
+                'span',
+                null,
+                p.waterCount >= 2
+                  ? `累计浇 ${p.waterCount}次(已+1产)${p.wateredToday ? ' · 今日✓' : ' · 今日待浇'}`
+                  : `累计浇 ${p.waterCount}/2(满2+1产)${p.wateredToday ? ' · 今日✓' : ' · 今日待浇'}`,
+              ),
             );
             const track = el('div', 'ptrack');
             const fill = el('div', 'pfill');
@@ -1846,7 +1852,7 @@ export default {
             top.append(el('span', 'ptag', pen.mature ? '已育成' : `剩 ${pen.daysLeft}天`));
             const m1 = el('div', 'pmeta');
             m1.append(
-              el('span', null, `${pen.source === 'leased' ? '城郊牧场' : '自家小院'} · 喂食 ${pen.feedCount}次${pen.fedToday ? ' ✓今' : ''}`),
+              el('span', null, `${pen.source === 'leased' ? '城郊牧场' : '自家小院'} · 累计喂 ${pen.feedCount}次${pen.fedToday ? ' · 今日✓' : ' · 今日待喂'}`),
               el('span', null, pen.collectableQty > 0 ? `可收 ${pen.collectProductName}×${pen.collectableQty}` : `出栏/起塘：${pen.harvestProductName}×${pen.harvestYield}`),
             );
             const track = el('div', 'ptrack');
