@@ -1,5 +1,17 @@
 # 变更记录
 
+## 1.6.0 — 2026-11-27（芦花塘信用社微息借贷 + 用户零花钱赠与 + 农牧省略 id 批量照料与傍晚提醒）
+
+- **芦花塘信用社单机微息借贷闭环**（`src/loan.ts`、`src/state.ts`、`src/world.ts`、`describe.json`、`ENV_PROMPT.md`、`web/panel-1.6.0.js`）：
+  - 新增 `life_loan` 工具（`status` / `borrow` / `repay`，全扩展增至 24 个工具）与三档产品：7 天小额应急金（`0.15%/天`）、14 天进修农牧贷（`0.12%/天`）、30 天置业安居贷（`0.10%/天`）；引入 `interestCarry` 零头结转精确按天算息，小额借款不会虚高扣成至少 1 元/天。
+  - 动态授信随住处基数（`300 / 800 / 1800 / 3000`）+ 持证（每证 `+250`）+ 累计工龄（`min(1200, days×30)`）成长，硬封顶 `5000` 元，最多同时背 `2` 笔；`normLoans()` 截断保留 40 笔时优先剔除最早的已结清记录，绝不切掉仍在背的未结清欠条。
+  - 到期自动划扣保留 `80` 元生活底钱；不够转 `overdue` 并冻结新借、`travelAllowance` 归 0，此后打工与鱼市街卖摊进账自动抽 `50%` 先抵债直至清零解冻；主动 `repay` 省略 `amount` 且不够清零时同样预留 `80` 元生活底钱尽量先还（显式传 `amount` 则尊重指令按手头现金上限实扣）。
+  - 防套利联动：`broadcastLife()` 向 `life-public.json` 写入 `travelAllowance` 时先扣除未还本息；面板保持「芦花塘信用社（只读）」，借还全由她自主决策。
+- **用户现金赠与（「给点零花钱」）**（`src/config.ts`、`src/loan.ts`、`src/world.ts`、`web/panel-1.6.0.js`）：
+  - 新增热配置 `worlds.life.dailyGiftCap`（默认每日软上限 `500` 元，`0` 不限）与面板 `now` 页签可折叠「给点零花钱」快捷栏；只递钱和留言、绝不代花，单独记入 `money.giftedTotal` 与 `life-ledger.jsonl`（`source: 'user_gift'`），不混入自己挣的 `earned`。
+- **农牧场省略 `id` 一键批量照料与傍晚提醒**（`src/farm.ts`、`src/ranch.ts`、`src/world.ts`、`test/stage23.test.mjs`）：
+  - `life_farm(action="water")` 与 `life_ranch(action="feed")` 省略 `plot_id` / `pen_id` 时依次为所有待照料地块/栏舍批量浇水喂食；新增傍晚 `farm:care:pm` 兜底提醒与 `life.day` 白天农牧待办提示；同步三同步升级至 `web/panel-1.6.0.js`。
+
 ## 1.5.0 — 2026-11-27（接入 Coopanion Hub v1.1 多城联机 + 全新七页签手账 UI + 鱼间私信与扩充文档）
 
 - **Coopanion Hub v1.1 双轨接入**（`src/hub-client.ts`、`src/config.ts`、`src/bridge.ts`、`src/world.ts`）：

@@ -1,5 +1,5 @@
 /*
- * 模拟鱼生面板（1.5.0，手账视觉焕新 + Hub v1.1 多城联机适配，原生 ES module 零打包直跑）。
+ * 模拟鱼生面板（1.6.0，手账视觉焕新 + 芦花塘信用社/零花钱 + Hub v1.1 多城联机适配，原生 ES module 零打包直跑）。
  */
 
 /** 作者的 QQ 群。反馈栏那一行和简介里写的是同一个号，改这里一处就够。 */
@@ -598,6 +598,13 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-btn:hover:not(:disabled) { background: #f1f5f9; border-color: #94a3b8; }
 .lf-btn:disabled { opacity: .55; cursor: not-allowed; }
 .lf-btn.sm { font-size: 11.5px; padding: 3px 8px; }
+.lf-gift-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.lf-gift-in { font: inherit; font-size: 12px; padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: #0f172a; min-width: 0; }
+.lf-gift-amt { width: 92px; }
+.lf-gift-note { flex: 1 1 160px; }
+.lf-loan-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px dashed #f1f5f9; font-size: 12px; }
+.lf-loan-row:last-child { border-bottom: 0; }
+.lf-loan-row .meta { font-size: 11px; color: #64748b; }
 .lf-btn.primary { border-color: #93c5fd; background: #eff6ff; color: #1d4ed8; font-weight: 600; }
 .lf-btn.primary:hover:not(:disabled) { background: #dbeafe; }
 .lf-btn.danger { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
@@ -796,6 +803,15 @@ export default {
         const moveBody = el('div', null);
         moveFold.append(moveSum, moveBody);
 
+        const giftFold = el('details', 'lf-card lf-fold');
+        const giftSum = el('summary', null, lang === 'en' ? 'Pocket Money' : '给点零花钱');
+        const giftHint = el('span', 'hint', '');
+        giftSum.append(giftHint);
+        const giftBody = el('div', null);
+        giftFold.append(giftSum, giftBody);
+
+        const loanCard = el('div', 'lf-card');
+
         const toolsRow = el('div', 'lf-tools-row');
         const helpBox = el('details', 'lf-help');
         const fbBox = el('details', 'lf-help');
@@ -807,9 +823,10 @@ export default {
         const msg = el('span', 'lf-msg', '');
         foot.append(reload, msg);
 
-        app.append(hero, alertBox, note, whoCard, vitalsCard, twoCol, moveFold, toolsRow, foot);
+        app.append(hero, alertBox, note, whoCard, vitalsCard, twoCol, moveFold, giftFold, loanCard, toolsRow, foot);
 
         let moveTip = null;
+        let giftTip = null;
         const MOD_SHORT = { food: '饱', energy: '精', clean: '洁', fun: '娱', social: '社', know: '识', work: '钱' };
         const MOD_FULL = { food: '饱腹', energy: '精力', clean: '清爽', fun: '娱乐', social: '社交', know: '见识', work: '工钱' };
 
@@ -834,7 +851,8 @@ export default {
           const moneyCell = el('div', 'lf-stat money');
           moneyCell.append(el('span', 'lab', t(lang, 'money')));
           moneyCell.append(el('div', 'val', `¥ ${Number(money.cash || 0).toLocaleString('zh-CN')}`));
-          moneyCell.append(el('div', 'sub2', `进${Number(money.earned || 0).toLocaleString('zh-CN')} / 出${Number(money.spent || 0).toLocaleString('zh-CN')}`));
+          const gTot = Number(money.giftedTotal || 0);
+          moneyCell.append(el('div', 'sub2', `进${Number(money.earned || 0).toLocaleString('zh-CN')}${gTot > 0 ? ` · 赠${gTot.toLocaleString('zh-CN')}` : ''} / 出${Number(money.spent || 0).toLocaleString('zh-CN')}`));
 
           const visitCell = el('div', 'lf-stat');
           visitCell.append(el('span', 'lab', t(lang, 'visits')));
@@ -1228,7 +1246,139 @@ export default {
           drawGoals(d);
           drawMindBody(d);
           drawMoves(d);
+          drawGift(d);
+          drawLoan(d);
         };
+
+        const drawGift = (d) => {
+          const gc = d.giftCash || { todayTotal: 0, dailyCap: 500, remainingToday: 500, recent: [] };
+          const capTxt = gc.dailyCap > 0
+            ? (lang === 'en' ? `Today ¥${gc.todayTotal} / cap ¥${gc.dailyCap}` : `今日已赠 ¥${gc.todayTotal} / 软上限 ¥${gc.dailyCap}（点击展开）`)
+            : (lang === 'en' ? `Today ¥${gc.todayTotal} / no cap` : `今日已赠 ¥${gc.todayTotal} / 不限上限（点击展开）`);
+          giftHint.textContent = capTxt;
+          giftBody.innerHTML = '';
+
+          const quickRow = el('div', 'lf-gift-bar');
+          for (const [amt, label] of [[50, '¥50 买顿好的'], [200, '¥200 日用种子'], [500, '¥500 应急周转']]) {
+            const qb = el('button', 'lf-btn sm', label);
+            qb.type = 'button';
+            qb.setAttribute('data-gift-quick', String(amt));
+            quickRow.append(qb);
+          }
+          giftBody.append(quickRow);
+
+          const formRow = el('div', 'lf-gift-bar');
+          const amtInput = el('input', 'lf-gift-in lf-gift-amt');
+          amtInput.type = 'number';
+          amtInput.min = '1';
+          amtInput.placeholder = lang === 'en' ? 'Amount' : '金额（元）';
+          amtInput.value = '50';
+          amtInput.setAttribute('data-gift-amt', '1');
+
+          const noteInput = el('input', 'lf-gift-in lf-gift-note');
+          noteInput.type = 'text';
+          noteInput.maxLength = 60;
+          noteInput.placeholder = lang === 'en' ? 'Note (e.g. go eat braised fish)' : '附言（如：拿去吃顿好的、添点饲料）';
+          noteInput.setAttribute('data-gift-note', '1');
+
+          const sendBtn = el('button', 'lf-btn primary', lang === 'en' ? 'Send' : '递给她');
+          sendBtn.type = 'button';
+          sendBtn.setAttribute('data-gift-send', '1');
+
+          formRow.append(amtInput, noteInput, sendBtn);
+          giftBody.append(formRow);
+
+          if (giftTip && giftTip.until > Date.now()) {
+            const p = el('p', 'lf-note-line', giftTip.text);
+            p.style.color = giftTip.err ? '#b91c1c' : '#15803d';
+            p.style.fontWeight = '600';
+            giftBody.append(p);
+          }
+
+          if (Array.isArray(gc.recent) && gc.recent.length) {
+            const ul = el('ul', 'lf-list');
+            ul.style.marginTop = '6px';
+            for (const r of gc.recent.slice(0, 4)) {
+              const li = el('li', null, `${r.dateKey || ''} 转入 ¥${r.amount}${r.note ? ` · 「${r.note}」` : ''}`);
+              ul.append(li);
+            }
+            giftBody.append(ul);
+          }
+
+          giftBody.append(el('p', 'lf-note-line', lang === 'en'
+            ? 'You decide whether to give; how she spends it stays completely her own choice.'
+            : '只负责把零花钱和留言交到她手上，怎么花（攒着搬家还是买吃的）完全由她自己决定。'));
+        };
+
+        const drawLoan = (d) => {
+          const ls = d.loan;
+          loanCard.hidden = !ls;
+          if (!ls) return;
+          loanCard.innerHTML = '';
+          loanCard.append(el('h3', null, lang === 'en' ? 'Reedpond Credit Union (Read-only)' : '芦花塘信用社 · 信用与借贷（只读）'));
+
+          const topChips = el('div', 'lf-chips');
+          topChips.style.marginBottom = '8px';
+          topChips.append(
+            el('span', 'lf-chip info', `授信上限 ¥${ls.creditLimit}（硬顶 ¥${ls.hardCap}）`),
+            el('span', 'lf-chip ' + (ls.creditFrozen ? 'bad' : 'good'), ls.creditFrozen ? '状态：逾期冻结新借' : `当前可借 ¥${ls.availableCredit}`),
+            el('span', 'lf-chip' + (ls.totalDue > 0 ? ' warn' : ''), `在贷 ${ls.activeCount}/${ls.maxActive} 笔 · 待还 ¥${ls.totalDue}`),
+          );
+          loanCard.append(topChips);
+
+          if (ls.active && ls.active.length) {
+            for (const ln of ls.active) {
+              const row = el('div', 'lf-loan-row');
+              const left = el('div');
+              left.append(
+                el('div', null, `${ln.productName}（¥${ln.principal}）· ${ln.purpose || '生活周转'}`),
+                el('div', 'meta', `日息 ${(Number(ln.ratePerDay || 0) * 100).toFixed(2)}% · 到期 ${ln.dueDay} · ${ln.id}`),
+              );
+              const right = el('div', null);
+              right.style.textAlign = 'right';
+              right.append(
+                el('span', 'lf-chip ' + (ln.status === 'overdue' ? 'bad' : 'warn'), ln.status === 'overdue' ? '已逾期' : '计息中'),
+                el('div', 'meta', `待还 ¥${ln.remainingTotal}（本${ln.remainingPrincipal}+息${ln.remainingInterest}）`),
+              );
+              row.append(left, right);
+              loanCard.append(row);
+            }
+          } else {
+            loanCard.append(el('p', 'lf-muted', '名下暂无未结清借款。手头急需周转、考证或凑搬家押金时，她会自己决定要不要借。'));
+          }
+          loanCard.append(el('p', 'lf-note-line', '借不借、借多少、什么时候提前还清全部由她自己拍板，面板仅作只读展示（保底留 ¥80 过日子，逾期进账自动抵一半）。'));
+        };
+
+        giftBody.addEventListener('click', (ev) => {
+          const qb = ev.target && ev.target.closest ? ev.target.closest('button[data-gift-quick]') : null;
+          if (qb) {
+            const amtEl = giftBody.querySelector('input[data-gift-amt]');
+            if (amtEl) amtEl.value = qb.getAttribute('data-gift-quick') || '50';
+            return;
+          }
+          const sb = ev.target && ev.target.closest ? ev.target.closest('button[data-gift-send]') : null;
+          if (!sb || sb.disabled) return;
+          const amtEl = giftBody.querySelector('input[data-gift-amt]');
+          const noteEl = giftBody.querySelector('input[data-gift-note]');
+          const amount = Number(amtEl ? amtEl.value : 0);
+          const noteTxt = String(noteEl ? noteEl.value : '').trim();
+          sb.disabled = true;
+          sb.textContent = lang === 'en' ? 'Sending...' : '转入中…';
+          ctx.invoke('giftCash', [{ amount, note: noteTxt }])
+            .then((r) => {
+              giftTip = (r && r.ok === false)
+                ? { text: r.reason || '没转成', err: true, until: Date.now() + 6000 }
+                : { text: (r && r.message) || `已转入 ¥${amount}`, err: false, until: Date.now() + 5000 };
+              if (giftTip.err) msg.textContent = giftTip.text;
+              render(r);
+            })
+            .catch((e) => {
+              giftTip = { text: (e && e.message) || '发送失败', err: true, until: Date.now() + 6000 };
+              msg.textContent = giftTip.text;
+              sb.disabled = false;
+              sb.textContent = lang === 'en' ? 'Send' : '递给她';
+            });
+        });
 
         const load = () => ctx.invoke('snapshot').then(render).catch((e) => {
           sub.textContent = t(lang, 'empty');

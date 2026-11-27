@@ -1688,6 +1688,76 @@ test('1.4.2 面板自动化回归：无头 DOM 桩挂载全部 7 个页签无异
   }
 });
 
+test('1.5.1 省略 id 一次浇完多块菜/喂完多栏动物 + 傍晚 farm:care:pm 兜底提醒与 life.day 农牧待办提示', async () => {
+  const dir = mkDir();
+  try {
+    let curNow = new Date('2026-11-27T10:00:00.000+08:00');
+    const st = freshState(curNow);
+    st.home.tier = 'new';
+    st.money.cash = 1000;
+    st.vitals.energy = 80;
+    const tPlus = new Date(curNow.getTime() + 72 * 3_600_000).toISOString();
+    st.farm.plots.push(
+      { id: 'p-1', seedId: 'scallion', name: '香葱与罗勒', plantedAt: curNow.toISOString(), matureAt: tPlus, wateredAt: '', wateredDay: '', waterCount: 0, baseYield: 2, solarBonus: false, source: 'home' },
+      { id: 'p-2', seedId: 'mushroom', name: '椴木鲜香菇', plantedAt: curNow.toISOString(), matureAt: tPlus, wateredAt: '', wateredDay: '', waterCount: 0, baseYield: 3, solarBonus: false, source: 'home' },
+    );
+    st.ranch.pens.push(
+      { id: 'r-1', animalId: 'hen', name: '散养土鸡', group: 'chicken', startedAt: curNow.toISOString(), matureAt: tPlus, lastCollectedAt: curNow.toISOString(), fedAt: '', fedDay: '', feedCount: 0, fedCycleBonus: false, source: 'home' },
+      { id: 'r-2', animalId: 'carp', name: '塘养草鱼', group: 'fish', startedAt: curNow.toISOString(), matureAt: tPlus, lastCollectedAt: curNow.toISOString(), fedAt: '', fedDay: '', feedCount: 0, fedCycleBonus: false, source: 'home' },
+    );
+    new StateStore(dir).save(st);
+
+    const pushed = [];
+    const host = {
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => {
+        const env = { ...e, cursor: pushed.length + 1 };
+        pushed.push(env);
+        return env;
+      },
+      store: {},
+      drainPendingEvents: async () => [],
+    };
+    const world = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => curNow,
+    });
+    await world.start(host);
+
+    // 1) 上午 10:10 推进：触发上午 farm:care + life.day（life.day 应附带农牧待办提示）
+    curNow = new Date('2026-11-27T10:10:00.000+08:00');
+    await world.tick();
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('还没打理')).length, 1);
+    const dayEv = pushed.find((e) => e.type === 'life.day');
+    assert.ok(dayEv && dayEv.text.includes('农牧场') && dayEv.text.includes('待浇水') && dayEv.text.includes('待喂食'));
+
+    // 2) 若白天没打理，傍晚 18:00 触发 farm:care:pm 二次兜底提醒（仅一次）
+    curNow = new Date('2026-11-27T18:00:00.000+08:00');
+    await world.tick();
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('快入夜了')).length, 1);
+    curNow = new Date('2026-11-27T18:10:00.000+08:00');
+    await world.tick();
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('快入夜了')).length, 1);
+
+    // 3) 省略 plot_id / pen_id 调 life_farm(water) 与 life_ranch(feed) 一次性照料全部
+    const farmTool = world.tools().find((t) => t.name === 'life_farm');
+    const wRes = await farmTool.handler({ action: 'water' });
+    assert.match(wRes.text, /2 块菜/);
+    assert.ok(world.state.farm.plots.every((p) => p.wateredDay === '2026-11-27'));
+
+    const ranchTool = world.tools().find((t) => t.name === 'life_ranch');
+    const fRes = await ranchTool.handler({ action: 'feed' });
+    assert.match(fRes.text, /2 栏/);
+    assert.ok(world.state.ranch.pens.every((p) => p.fedDay === '2026-11-27'));
+
+    await world.stop();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('1.4.3 鱼市街邻里代管接单修复：带 id: 前缀/全角括号/短前缀/最短单/双入口/防落早市/专用报错/同名鱼可见性', async () => {
   const dir = mkDir();
   const fakeUid = '0123456789abcdef0123456789abcdef';
@@ -2223,6 +2293,76 @@ test('1.4.5 在家醒着产蛋/熟货主动提醒（life.farm + life.who）、�
   } finally {
     if (prevDoc === undefined) delete globalThis.document;
     else globalThis.document = prevDoc;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('1.5.1 省略 id 一次浇完多块菜/喂完多栏动物 + 傍晚 farm:care:pm 兜底提醒与 life.day 农牧待办提示', async () => {
+  const dir = mkDir();
+  try {
+    let curNow = new Date('2026-11-27T10:00:00.000+08:00');
+    const st = freshState(curNow);
+    st.home.tier = 'new';
+    st.money.cash = 1000;
+    st.vitals.energy = 80;
+    const tPlus = new Date(curNow.getTime() + 72 * 3_600_000).toISOString();
+    st.farm.plots.push(
+      { id: 'p-1', seedId: 'scallion', name: '香葱与罗勒', plantedAt: curNow.toISOString(), matureAt: tPlus, wateredAt: '', wateredDay: '', waterCount: 0, baseYield: 2, solarBonus: false, source: 'home' },
+      { id: 'p-2', seedId: 'mushroom', name: '椴木鲜香菇', plantedAt: curNow.toISOString(), matureAt: tPlus, wateredAt: '', wateredDay: '', waterCount: 0, baseYield: 3, solarBonus: false, source: 'home' },
+    );
+    st.ranch.pens.push(
+      { id: 'r-1', animalId: 'hen', name: '散养土鸡', group: 'chicken', startedAt: curNow.toISOString(), matureAt: tPlus, lastCollectedAt: curNow.toISOString(), fedAt: '', fedDay: '', feedCount: 0, fedCycleBonus: false, source: 'home' },
+      { id: 'r-2', animalId: 'carp', name: '塘养草鱼', group: 'fish', startedAt: curNow.toISOString(), matureAt: tPlus, lastCollectedAt: curNow.toISOString(), fedAt: '', fedDay: '', feedCount: 0, fedCycleBonus: false, source: 'home' },
+    );
+    new StateStore(dir).save(st);
+
+    const pushed = [];
+    const host = {
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => {
+        const env = { ...e, cursor: pushed.length + 1 };
+        pushed.push(env);
+        return env;
+      },
+      store: {},
+      drainPendingEvents: async () => [],
+    };
+    const world = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => curNow,
+    });
+    await world.start(host);
+
+    // 1) 上午 10:10 推进：触发上午 farm:care + life.day（life.day 应附带农牧待办提示）
+    curNow = new Date('2026-11-27T10:10:00.000+08:00');
+    await world.tick();
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('还没打理')).length, 1);
+    const dayEv = pushed.find((e) => e.type === 'life.day');
+    assert.ok(dayEv && dayEv.text.includes('农牧场') && dayEv.text.includes('待浇水') && dayEv.text.includes('待喂食'));
+
+    // 2) 若白天没打理，傍晚 18:00 触发 farm:care:pm 二次兜底提醒（仅一次）
+    curNow = new Date('2026-11-27T18:00:00.000+08:00');
+    await world.tick();
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('快入夜了')).length, 1);
+    curNow = new Date('2026-11-27T18:10:00.000+08:00');
+    await world.tick();
+    assert.equal(pushed.filter((e) => e.type === 'life.farm' && e.text.includes('快入夜了')).length, 1);
+
+    // 3) 省略 plot_id / pen_id 调 life_farm(water) 与 life_ranch(feed) 一次性照料全部
+    const farmTool = world.tools().find((t) => t.name === 'life_farm');
+    const wRes = await farmTool.handler({ action: 'water' });
+    assert.match(wRes.text, /2 块菜/);
+    assert.ok(world.state.farm.plots.every((p) => p.wateredDay === '2026-11-27'));
+
+    const ranchTool = world.tools().find((t) => t.name === 'life_ranch');
+    const fRes = await ranchTool.handler({ action: 'feed' });
+    assert.match(fRes.text, /2 栏/);
+    assert.ok(world.state.ranch.pens.every((p) => p.fedDay === '2026-11-27'));
+
+    await world.stop();
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -78,6 +78,8 @@ export interface LifeConfigSection extends WorldSection {
   diaryDir: string;
   /** 四分类参考素材库保存目录。留空 = 存在本机 dataDir/image-library；填了 = 存到指定目录。 */
   libraryDir: string;
+  /** 面板每日零花钱赠与软上限（元/天；0 = 不限，默认 500）。 */
+  dailyGiftCap: number;
 }
 
 export function parseTownUrls(raw: string | readonly string[] | undefined | null): string[] {
@@ -110,6 +112,7 @@ export const LIFE_DEFAULTS = (): LifeConfigSection => ({
   notify: 'once',
   diaryDir: '',
   libraryDir: '',
+  dailyGiftCap: 500,
 });
 
 export function lifeConfigGroups(): ConfigGroup[] {
@@ -205,6 +208,16 @@ export function lifeConfigGroups(): ConfigGroup[] {
           type: 'string',
           title: '素材库目录',
           description: '留空存在本机默认目录（image-library）；填写路径可指定四分类外观参考图的存储位置，不会删除旧目录原文件。',
+          'x-hot': true,
+        },
+        'worlds.life.dailyGiftCap': {
+          type: 'integer',
+          title: '每日零花钱赠与上限',
+          description: '面板「给点零花钱」的每日软上限（元/天）。默认 500，调高可放宽，设为 0 则不限制。',
+          minimum: 0,
+          maximum: 100000,
+          default: 500,
+          'x-suffix': '元/天',
           'x-hot': true,
         },
       },

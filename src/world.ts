@@ -26,6 +26,9 @@ import {
   applyNeighborErrandCompleted, refundExpiredErrand, applyHireHelper, applyUnhireHelper,
   findRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
   jobGate, localDateKey, noteVisit, quoteMove, readyGoals,
+  DEFAULT_DAILY_GIFT_CAP, LOAN_PRODUCTS, LOAN_RESERVE_CASH,
+  activeLoansTotalDue, applyBorrowLoan, applyRepayLoan, applyUserCashGift,
+  availableCredit, computeCreditLimit, garnishOverdueFromIncome, hasOverdueLoan, loanRemaining, loanSummary,
   recentVisits, remember, snapshot, streetDecayFactor, SLEEP_ENERGY_PER_HOUR,
   appendLedger, readLedger, fullMarketPrices, weatherOf,
   type AdvanceResult, type HelperMode, type HomeTier, type LifeState, type PendingBlock, type PendingNotice, type Snapshot, type VitalKey, type SkillDomain, type StallCategory, type WeatherInfo,
@@ -1373,6 +1376,20 @@ export class LifeWorld implements World {
       this.state.settledDeals.push(d.id);
       this.state.money.cash += income;
       this.state.money.earned += income;
+      if (hasOverdueLoan(this.state)) {
+        const g = garnishOverdueFromIncome(this.state, income, now);
+        if (g.deductedTotal > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `loan-garnish-deal-${d.id}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: g.deductedTotal,
+            source: 'life_loan_repay',
+            payee: '芦花塘信用社',
+            note: `逾期自动抵债（鱼市街售出 ${income} 元 50% 划扣：本 ${g.deductedPrincipal} + 息 ${g.deductedInterest}）`,
+          });
+        }
+      }
       newCount += 1;
       newIncome += income;
       changed = true;
@@ -1914,6 +1931,10 @@ export class LifeWorld implements World {
         if (generation !== this.stateGeneration) return;
         this.stateSaveDirty = true;
       }
+      if (!this.stateCleared) {
+        await this.checkHomeFarmReminders(now, generation);
+        if (generation !== this.stateGeneration) return;
+      }
       if (this.stateSaveDirty && !this.stateCleared) {
         try {
           this.store.save(this.state);
@@ -1994,10 +2015,11 @@ export class LifeWorld implements World {
         const marketHint = !this.inJourneyTrip(this.journey) && this.otherStallsCache.length
           ? ` 鱼市街这会儿还有街坊摆着摊：${this.marketShowcaseLine(2)}，去逛逛买一份既顶用又攒好心情；手头有巧思也能上鱼市街摆一摊。`
           : '';
+        const farmHint = !this.inJourneyTrip(curJ) ? this.buildDayFarmSummary(cur) : '';
         return `现在是白天（${DAYPART_LABEL[dayPart(curAt)]}），精力 ${Math.round(this.state.vitals.energy)}，今天还没出过工。`
           + `${jobHint}；手上 ${cash} 元`
           + (goalGap ? `（${goalGap}）` : '')
-          + `${tightHint}${marketHint}怎么安排你自己定。`;
+          + `${tightHint}${farmHint}${marketHint}怎么安排你自己定。`;
       };
       this.dayWorkPending = { id: dayAttempt.id, date: today, generation };
       const sent = await this.push(
@@ -2185,6 +2207,17 @@ export class LifeWorld implements World {
                 ? `${c.label}（${c.gradeLabel}）`
                 : c.label,
         });
+        if (c.loanGarnished && c.loanGarnished.deductedTotal > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `loan-garnish-work-${c.id}-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: c.loanGarnished.deductedTotal,
+            source: 'life_loan_repay',
+            payee: '芦花塘信用社',
+            note: `逾期自动抵债（${c.label}工钱 50% 划扣：本 ${c.loanGarnished.deductedPrincipal} + 息 ${c.loanGarnished.deductedInterest}）`,
+          });
+        }
       } else if (c.kind === 'act' && c.workEarned > 0) {
         appendLedger(this.opts.dataDir, {
           id: `errand-earn-${c.id}-${now.getTime().toString(36)}`,
@@ -2250,6 +2283,17 @@ export class LifeWorld implements World {
         note: '邻里农牧委托超时无人接单，预扣工钱原路退回',
       });
     }
+    if (r.loanSettlement && r.loanSettlement.autoRepaidTotal > 0) {
+      appendLedger(this.opts.dataDir, {
+        id: `loan-auto-${now.getTime().toString(36)}`,
+        ts: now.toISOString(),
+        kind: 'expense',
+        amount: r.loanSettlement.autoRepaidTotal,
+        source: 'life_loan_repay',
+        payee: '芦花塘信用社',
+        note: `到期自动扣还借款（本 ${r.loanSettlement.autoRepaidPrincipal} + 息 ${r.loanSettlement.autoRepaidInterest}，保底留存 ${LOAN_RESERVE_CASH} 元）`,
+      });
+    }
     for (const c of r.caught) {
       remember(this.state, c.text, now);
       this.enqueueNotice({
@@ -2290,6 +2334,41 @@ export class LifeWorld implements World {
       if (generation !== this.stateGeneration) return;
       if (!sent) this.forgetAttempt(attempt);
     }
+    if (r.loanSettlement?.newlyOverdue?.length) {
+      /*
+       * 睡眠静默：睡着时不推，也不点当天的 nagged 额度 —— 否则既把人吵醒，
+       * 又让醒来后本该补的那条（见下面 hasOverdue 分支）被静默掉。
+       * 醒来第一拍会走 else-if 补齐。
+       */
+      if (!isAsleep(this.state, now)) {
+        const sumOd = r.loanSettlement.newlyOverdue.reduce((s, l) => s + loanRemaining(l).total, 0);
+        await this.push(
+          'life.loan',
+          `芦花塘信用社有 ${r.loanSettlement.newlyOverdue.length} 笔借款到期没凑够（尚欠 ${sumOd} 元，已保留 ${LOAN_RESERVE_CASH} 元过日子）。`
+          + '逾期期间新借已冻结、远行旅费额度暂归 0，且打工和摆摊进账会自动抽一半抵债；手头松动了记得用 `life_loan(action="repay")` 主动还清。',
+          'flush',
+        );
+        if (generation !== this.stateGeneration) return;
+        this.state.nagged['loan:overdue'] = today;
+      }
+    } else if (r.loanSettlement?.paidOff?.length) {
+      const names = r.loanSettlement.paidOff.map((l) => l.productName).join('、');
+      await this.push(
+        'life.loan',
+        `「${names}」今天到期已经自动扣还清了，信用良好。`,
+        'debounce',
+      );
+      if (generation !== this.stateGeneration) return;
+    } else if (r.loanSettlement?.hasOverdue && !isAsleep(this.state, now) && this.state.nagged['loan:overdue'] !== today) {
+      const ls = loanSummary(this.state, now);
+      await this.push(
+        'life.loan',
+        `提醒一下，你在芦花塘信用社还有逾期欠款共 ${ls.totalDue} 元未清（现在现金 ${Math.round(this.state.money.cash)} 元）。可随时调 \`life_loan(action="repay")\` 还一笔或全清。`,
+        'debounce',
+      );
+      if (generation !== this.stateGeneration) return;
+      this.state.nagged['loan:overdue'] = today;
+    }
     await this.flushCrossed(r, now, generation);
   }
 
@@ -2303,6 +2382,24 @@ export class LifeWorld implements World {
     if (!stillHarvestable) {
       delete this.state.nagged['farm:harvest'];
     }
+  }
+
+  /** 为白天例行提醒组装简明农牧待办（仅在家时附加）。 */
+  private buildDayFarmSummary(now: Date): string {
+    const collectN = this.state.ranch.pens.filter((p) => ranchPenView(p, now).collectableQty > 0).length;
+    const harvestN = this.state.farm.plots.filter((p) => farmPlotView(p, now).ready).length
+      + this.state.ranch.pens.filter((p) => p.group === 'fish' && ranchPenView(p, now).mature).length;
+    const unwateredN = this.state.farm.plots.filter((p) => {
+      const v = farmPlotView(p, now);
+      return !v.ready && !v.wateredToday;
+    }).length;
+    const unfedN = this.state.ranch.pens.filter((p) => !ranchPenView(p, now).fedToday).length;
+    const items: string[] = [];
+    if (collectN > 0) items.push(`${collectN}栏可收蛋奶(life_ranch collect)`);
+    if (harvestN > 0) items.push(`${harvestN}处熟货待收(life_farm/life_ranch harvest)`);
+    if (unwateredN > 0) items.push(`${unwateredN}块菜待浇水(life_farm water)`);
+    if (unfedN > 0) items.push(`${unfedN}栏待喂食(life_ranch feed)`);
+    return items.length > 0 ? ` 家里的农牧场这会儿有事要做：${items.join('、')}。` : '';
   }
 
   /** 在家且醒着闲着时，主动提醒已产出的鲜鸡蛋/鲜牛奶，以及已成熟的菜地与鱼塘（每天每类各一次，delivered 后才扣额度）。 */
@@ -2329,9 +2426,9 @@ export class LifeWorld implements World {
       const detail = collectReady
         .map(({ pen, view }) => `${pen.name}（可收 ${view.collectProductName}×${view.collectableQty}）`)
         .join('、');
-      const msg = `家里的养殖场有新鲜蛋奶可以收了：${detail}。眼下你在家，有空可以调 life_ranch(action="collect") 收进储物篮，拿来做菜或摆摊都用得上。`;
+      const msg = `家里的养殖场有新鲜蛋奶可以收了：${detail}（满 3 天会溢出浪费）。眼下你在家，直接调 life_ranch(action="collect")（省略 pen_id 即可一次全收）存进储物篮吧。`;
       const attempt = this.newAttempt('farm', { nagKey: 'farm:ranch-collect', date: today });
-      const sent = await this.push('life.farm', msg, 'debounce', { attempt });
+      const sent = await this.push('life.farm', msg, 'flush', { attempt });
       if (generation !== this.stateGeneration) return;
       if (!sent) this.forgetAttempt(attempt);
     }
@@ -2350,14 +2447,14 @@ export class LifeWorld implements World {
     ) {
       const segs: string[] = [];
       if (readyPlots.length > 0) {
-        segs.push(`菜地里 ${readyPlots.map((p) => `${p.name}(预计${p.expectedYield}份)`).join('、')} 已经熟了，可调 life_farm(action="harvest") 收割`);
+        segs.push(`菜地里 ${readyPlots.map((p) => `${p.name}(预计${p.expectedYield}份)`).join('、')} 已经熟了，调 life_farm(action="harvest") 收割`);
       }
       if (readyFish.length > 0) {
-        segs.push(`鱼塘里 ${readyFish.map(({ pen, view }) => `${pen.name}(${view.harvestProductName}×${view.harvestYield})`).join('、')} 已经养成，可调 life_ranch(action="harvest") 起塘`);
+        segs.push(`鱼塘里 ${readyFish.map(({ pen, view }) => `${pen.name}(${view.harvestProductName}×${view.harvestYield})`).join('、')} 已经养成，调 life_ranch(action="harvest") 起塘`);
       }
-      const msg = `家里的农牧场有熟货待收：${segs.join('；')}，收进储物篮就能做菜或摆摊。`;
+      const msg = `家里的农牧场有熟货待收：${segs.join('；')}，趁新鲜收进储物篮就能做菜或摆摊。`;
       const attempt = this.newAttempt('farm', { nagKey: 'farm:harvest', date: today });
-      const sent = await this.push('life.farm', msg, 'debounce', { attempt });
+      const sent = await this.push('life.farm', msg, 'flush', { attempt });
       if (generation !== this.stateGeneration) return;
       if (!sent) this.forgetAttempt(attempt);
     }
@@ -2369,8 +2466,6 @@ export class LifeWorld implements World {
       hr >= 8 && hr <= 22
       && this.state.vitals.energy >= 10
       && !hasActiveErrand
-      && !this.hasAttempt('farm', 'farm:care')
-      && this.shouldNag('farm:care', now)
     ) {
       const unwateredPlots = this.state.farm.plots
         .map((plot) => farmPlotView(plot, now))
@@ -2381,16 +2476,27 @@ export class LifeWorld implements World {
       if (unwateredPlots.length > 0 || unfedPens.length > 0) {
         const careSegs: string[] = [];
         if (unwateredPlots.length > 0) {
-          careSegs.push(`菜地里「${unwateredPlots.map((p) => p.name).join('、')}」今天还没浇水（可调 life_farm(action="water")，每块耗 3 精力，累计满 2 次丰产+1）`);
+          careSegs.push(`菜地里「${unwateredPlots.map((p) => p.name).join('、')}」今天还没浇水（调 life_farm(action="water") 省略 plot_id 一次全浇，每块耗 3 精力，满 2 次丰产+1）`);
         }
         if (unfedPens.length > 0) {
-          careSegs.push(`养殖场里「${unfedPens.map(({ pen, view }) => `${pen.name}(饲料¥${view.feedCost})`).join('、')}」今天还没喂食（可调 life_ranch(action="feed")，每栏耗 3 精力，喂过增产+1）`);
+          careSegs.push(`养殖场里「${unfedPens.map(({ pen, view }) => `${pen.name}(饲料¥${view.feedCost})`).join('、')}」今天还没喂食（调 life_ranch(action="feed") 省略 pen_id 一次全喂，每栏耗 3 精力，喂过增产+1）`);
         }
-        const msg = `家里农牧场今天还没打理：${careSegs.join('；')}。眼下你在家精力也够，有空顺手照料一下吧。`;
-        const attempt = this.newAttempt('farm', { nagKey: 'farm:care', date: today });
-        const sent = await this.push('life.farm', msg, 'debounce', { attempt });
-        if (generation !== this.stateGeneration) return;
-        if (!sent) this.forgetAttempt(attempt);
+        const needPmFallback = this.state.nagged['farm:care'] === today
+          && hr >= 17
+          && !this.hasAttempt('farm', 'farm:care:pm')
+          && this.shouldNag('farm:care:pm', now);
+        const nagKey = (!this.hasAttempt('farm', 'farm:care') && this.shouldNag('farm:care', now))
+          ? 'farm:care'
+          : (needPmFallback ? 'farm:care:pm' : '');
+        if (nagKey) {
+          const msg = nagKey === 'farm:care:pm'
+            ? `眼看快入夜了，家里农牧场今天还有活没打理：${careSegs.join('；')}。现在就动手浇水喂食吧，别错过今天的增产。`
+            : `家里农牧场今天还没打理：${careSegs.join('；')}。眼下你在家精力也够，现在就动手照料一下吧。`;
+          const attempt = this.newAttempt('farm', { nagKey, date: today });
+          const sent = await this.push('life.farm', msg, 'flush', { attempt });
+          if (generation !== this.stateGeneration) return;
+          if (!sent) this.forgetAttempt(attempt);
+        }
       }
     }
   }
@@ -2488,7 +2594,10 @@ export class LifeWorld implements World {
        * 70% 的账：留三成在家吃饭交房租（一天 60，够二十天），
        * 剩下的才是真能拿去走远的。仍然是「能动用的」，不是「全部」。
        */
-      const allowance = Math.max(0, Math.round(this.state.money.cash * .7));
+      const unpaidDebt = activeLoansTotalDue(this.state);
+      const overdue = hasOverdueLoan(this.state);
+      const freeCash = Math.max(0, this.state.money.cash - unpaidDebt);
+      const allowance = overdue ? 0 : Math.max(0, Math.round(freeCash * .7));
       const w = this.currentWeather(now, this.journey);
       writeFileSync(tmp, JSON.stringify({
         schema: 2,
@@ -2497,6 +2606,8 @@ export class LifeWorld implements World {
         ledger: {
           cash: this.state.money.cash,
           travelAllowance: allowance,
+          unpaidDebt,
+          hasOverdueLoan: overdue,
         },
         vitals: {
           food: Math.round(this.state.vitals.food),
@@ -2909,6 +3020,7 @@ export class LifeWorld implements World {
       this.toolDiaryRead(),
       this.toolLibrary(),
       this.toolMail(),
+      this.toolLoan(),
     ];
   }
 
@@ -3002,6 +3114,17 @@ export class LifeWorld implements World {
             payee: '自己',
             note: `${r.interruptedLabel ?? '出工'}（早退）`,
           });
+          if (r.loanGarnished && r.loanGarnished.deductedTotal > 0) {
+            appendLedger(this.opts.dataDir, {
+              id: `loan-garnish-early-${now.getTime().toString(36)}`,
+              ts: now.toISOString(),
+              kind: 'expense',
+              amount: r.loanGarnished.deductedTotal,
+              source: 'life_loan_repay',
+              payee: '芦花塘信用社',
+              note: `逾期自动抵债（早退工钱 50% 划扣：本 ${r.loanGarnished.deductedPrincipal} + 息 ${r.loanGarnished.deductedInterest}）`,
+            });
+          }
         }
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
         this.broadcastLife(now);
@@ -4767,7 +4890,9 @@ export class LifeWorld implements World {
           if (generation !== this.stateGeneration) return cleared();
           this.saveDeliveredState();
           this.broadcastLife(now);
-          return { text: `提水浇了一遍菜（耗精力 3，还剩 ${Math.round(r.energy)}），泥土湿润润的，满 2 次浇水成熟会多收 1 份。` };
+          const countTxt = r.watered > 1 ? ` ${r.watered} 块菜（${r.names?.join('、')}）` : '一遍菜';
+          const tail = r.remaining ? `（精力不够停下了，还剩 ${r.remaining} 块待浇）` : '，满 2 次浇水成熟会多收 1 份';
+          return { text: `提水浇了${countTxt}（精力还剩 ${Math.round(r.energy)}），泥土湿润润的${tail}。` };
         }
 
         if (action === 'harvest') {
@@ -4961,7 +5086,9 @@ export class LifeWorld implements World {
           });
           this.saveDeliveredState();
           this.broadcastLife(now);
-          return { text: `喂好饲料了（饲料 ${r.paid} 元、耗精力 3，现金剩 ${Math.round(r.cash)} 元），照料得越勤收成越丰。` };
+          const countTxt = r.fed > 1 ? ` ${r.fed} 栏（${r.names?.join('、')}）` : '好饲料了';
+          const tail = r.remaining ? `（${r.reason}，还剩 ${r.remaining} 栏待喂）` : '，照料得越勤收成越丰';
+          return { text: `喂${countTxt}（饲料 ${r.paid} 元、精力剩 ${Math.round(r.energy)}，现金剩 ${Math.round(r.cash)} 元）${tail}。` };
         }
 
         if (action === 'collect') {
@@ -5105,6 +5232,133 @@ export class LifeWorld implements World {
     };
   }
 
+  private toolLoan(): ToolDef {
+    return {
+      name: 'life_loan',
+      description:
+        '去芦花塘信用社看一眼信用额度、在贷借款或自己决定要不要借一笔 / 还一笔。'
+        + '有三档微息借款：7天小额应急金(日息0.15%)、14天进修农牧贷(日息0.12%)、30天置业安居贷(日息0.10%)；'
+        + '提前还款只按实际占用天数算微息，不收违约金；最多同时背 2 笔，总额度随住处档位、考证数和累计工龄成长（硬上限 5000 元）。'
+        + '注意：到期自动划扣会留出 80 元吃饭底钱；若仍不够会转逾期并冻结新借、远行旅费额度暂归 0，且此后打工/摆摊进账会自动抽一半先抵债。'
+        + '缺钱买菜饲料或差一点房租/押金/考证报名费时自己算清楚再用，平时宽裕就别硬借。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['action'],
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['status', 'borrow', 'repay'],
+            description: 'status 查看信用额度与待还明细；borrow 申请微息借款；repay 主动还一笔或还清。',
+          },
+          amount: {
+            type: 'integer',
+            description: 'borrow 或 repay 的整数金额（元）；repay 时省略则默认全额还清选中借款（钱不够一次清零时会自动预留 80 元生活底钱把多余部分先还上），显式传 amount 则按指定金额或手上现有现金上限实扣。',
+          },
+          term_days: {
+            type: 'integer',
+            enum: [7, 14, 30],
+            description: 'borrow 借款期限（天）：7 小额应急(0.15%/天)、14 进修农牧(0.12%/天)、30 置业安居(0.10%/天)，默认 7。',
+          },
+          purpose: {
+            type: 'string',
+            description: 'borrow 借款用途简述（如「凑老小区搬家押金」「报名考电工证」「买鸡饲料周转」）。',
+          },
+          loan_id: {
+            type: 'string',
+            description: 'repay 时可选指定哪笔在贷编号（省略时按逾期优先、到期早优先自动冲抵）。',
+          },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const now = this.now();
+        await this.settleBeforeTool(now);
+        const action = String(args?.action ?? 'status').trim() || 'status';
+
+        if (action === 'status') {
+          const s = loanSummary(this.state, now);
+          const prodTxt = LOAN_PRODUCTS.map((p) => `${p.name}(${p.termDays}天·日息${(p.ratePerDay * 100).toFixed(2)}%)`).join('、');
+          if (!s.active.length) {
+            return {
+              text: `当前手上现金 ${Math.round(this.state.money.cash)} 元，名下没有未还借款。`
+                + `芦花塘信用社当前授信上限 ${s.creditLimit} 元（硬顶 ${s.hardCap} 元），可用额度 ${s.availableCredit} 元。`
+                + `\n可选档位：${prodTxt}。`,
+            };
+          }
+          const lines = s.active.map((l) => (
+            `[${l.status === 'overdue' ? '已逾期' : '计息中'}] ${l.id} · ${l.productName}（${l.purpose || '周转'}）：`
+            + `待还 ${l.remainingTotal} 元（本 ${l.remainingPrincipal} + 息 ${l.remainingInterest}），到期日 ${l.dueDay}`
+          ));
+          return {
+            text: `芦花塘信用社明细（授信 ${s.creditLimit} 元 / 可用 ${s.availableCredit} 元${s.creditFrozen ? ' · 逾期冻结新借' : ''}，待还合计 ${s.totalDue} 元）：\n`
+              + lines.join('\n'),
+          };
+        }
+
+        if (action === 'borrow') {
+          const amount = Number(args?.amount ?? 0);
+          const termDays = args?.term_days !== undefined ? Number(args.term_days) : undefined;
+          const purpose = String(args?.purpose ?? '').trim();
+          const r = applyBorrowLoan(this.state, { amount, termDays, purpose }, now);
+          if (!r.ok || !r.loan) return { text: r.reason ?? '这笔借款没批下来。' };
+
+          appendLedger(this.opts.dataDir, {
+            id: `loan-in-${r.loan.id}`,
+            ts: now.toISOString(),
+            kind: 'income',
+            amount: r.loan.principal,
+            source: 'life_loan_in',
+            payee: '芦花塘信用社',
+            note: `借入「${r.loan.productName}」${r.loan.termDays}天（${r.loan.purpose}）`,
+          });
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          return {
+            text: `向芦花塘信用社借了 ${r.loan.principal} 元「${r.loan.productName}」（编号 ${r.loan.id}，日息 ${(r.loan.ratePerDay * 100).toFixed(2)}%，到期日 ${r.loan.dueDay}，用途：${r.loan.purpose}）。`
+              + `手上现在现金 ${Math.round(this.state.money.cash)} 元，剩余可借额度 ${r.availCredit} 元。记得按时挣钱还上。`,
+          };
+        }
+
+        if (action === 'repay') {
+          const loanId = args?.loan_id ? String(args.loan_id).trim() : undefined;
+          const amount = args?.amount !== undefined ? Number(args.amount) : undefined;
+          const r = applyRepayLoan(this.state, { loanId, amount }, now);
+          if (!r.ok) return { text: r.reason ?? '这次没还成。' };
+
+          appendLedger(this.opts.dataDir, {
+            id: `loan-repay-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: r.paidTotal,
+            source: 'life_loan_repay',
+            payee: '芦花塘信用社',
+            note: `主动还款（本金 ${r.paidPrincipal} + 微息 ${r.paidInterest}）`,
+          });
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          const summaryTxt = r.repaidLoans
+            .map((x) => `${x.productName}(还${x.paidTotal}元${x.paidOff ? '·已结清' : `·还剩${x.remaining}元`})`)
+            .join('、');
+          const dueLeft = activeLoansTotalDue(this.state);
+          const shortNote = r.shortByCash > 0
+            ? (r.reservedLivingCash
+              ? `手头现金不够一次清零，已预留 ${LOAN_RESERVE_CASH} 元生活底钱把多余部分先还上了（如需动用底钱可指定 amount）。`
+              : `本次原本计划还 ${r.wantedTotal} 元，按手头现金先还了 ${r.paidTotal} 元。`)
+            : '';
+          return {
+            text: `已向信用社还款 ${r.paidTotal} 元（其中本金 ${r.paidPrincipal} 元、微息 ${r.paidInterest} 元）：${summaryTxt}。`
+              + `${r.clearedOverdue ? '逾期状态已解除，信用恢复正常。' : ''}`
+              + shortNote
+              + `现在手上现金 ${Math.round(this.state.money.cash)} 元，名下还剩待还 ${dueLeft} 元。`,
+          };
+        }
+
+        return { text: `不认识操作「${action}」，可用 status / borrow / repay。` };
+      },
+    };
+  }
+
   /* ---------------- 读数拼装 ---------------- */
 
   private vitalsLine(v: Snapshot['vitals']): string {
@@ -5186,15 +5440,26 @@ export class LifeWorld implements World {
     const moneyMood = s.money.cash < dailyBase * 5
       ? '手头偏紧，每天还有房租和吃饭开销'
       : '手头还算宽裕，够挑顿好的犒劳自己或留着出门';
-    parts.push(`钱：手上 ${s.money.cash} 元（累计进 ${s.money.earned} / 出 ${s.money.spent}；${moneyMood}）`);
-    /*
-     * 出门能用多少（2026-11-17）。
-     *
-     * 和 `broadcastLife` 里的 `travelAllowance` 是**同一个数**（现金七成）——
-     * 她这头看到的数必须和旅行那头扣的是同一个，不然「我想去洛杉矶」
-     * 会变成一个她自己都对不上账的念头。
-     */
-    parts.push(`出门能动用的：${Math.round(s.money.cash * .7)} 元（现金的七成，攒得越多能走得越远；剩下三成留作日常安稳过日子）`);
+    const giftedTotal = Math.round(s.money.giftedTotal ?? 0);
+    const giftPiece = giftedTotal > 0 ? ` / 他给 ${giftedTotal}` : '';
+    parts.push(`钱：手上 ${s.money.cash} 元（自己挣 ${s.money.earned}${giftPiece} / 花出 ${s.money.spent}；${moneyMood}）`);
+    const ls = loanSummary(this.state, now);
+    if (ls.active.length > 0 || ls.creditFrozen) {
+      parts.push(
+        `信用社借款：待还 ${ls.totalDue} 元（${ls.active.map((l) => `${l.productName}${l.status === 'overdue' ? '[已逾期]' : ''} 欠${l.remainingTotal}元·到期${l.dueDay}`).join('；')}）；`
+        + (ls.creditFrozen ? '目前逾期冻结新借，进账自动扣半抵债' : `还可借 ${ls.availableCredit} 元（总额度 ${ls.creditLimit} 元）`),
+      );
+    } else {
+      parts.push(`信用社额度：可用 ${ls.availableCredit} / ${ls.creditLimit} 元（无在贷）`);
+    }
+    const unpaidDebt = activeLoansTotalDue(this.state);
+    const overdueLoan = hasOverdueLoan(this.state);
+    const travelAvail = overdueLoan ? 0 : Math.max(0, Math.round(Math.max(0, s.money.cash - unpaidDebt) * .7));
+    parts.push(
+      overdueLoan
+        ? `出门能动用的：0 元（手头有逾期借款未清，先把本地的账理顺再远行）`
+        : `出门能动用的：${travelAvail} 元（扣除在贷欠款后净现金七成，攒得越多能走得越远；剩下三成留作日常安稳过日子）`,
+    );
     if (j.installed && j.moneyOn) {
       parts.push(`旅行那边记账着：这一趟花了 ${j.spent} 元、挣了 ${j.earned} 元，都从上面这本账里走。`);
     } else if (j.installed) {
@@ -6256,7 +6521,7 @@ export class LifeWorld implements World {
    * 三条缺一条，这个口就该关掉。
    */
   private async panelInvoke(panel: string, method: string, args?: unknown): Promise<unknown> {
-    const now = new Date();
+    const now = this.now();
     const j = readJourney(this.opts.dataDir, now);
     this.journey = j;
 
@@ -6506,7 +6771,7 @@ export class LifeWorld implements World {
           if (!r.ok) return { ok: false, reason: r.reason || '浇水没成功。', ...marketPayload() };
           this.saveDeliveredState();
           this.broadcastLife(now);
-          return { ok: true, message: '已帮忙浇水 ✓', ...marketPayload() };
+          return { ok: true, message: r.watered > 1 ? `已帮忙浇完 ${r.watered} 块地 ✓` : '已帮忙浇水 ✓', ...marketPayload() };
         }
         if (method === 'harvest') {
           const r = applyHarvest(this.state, String(raw?.plotId ?? '').trim(), now, { byUser: true });
@@ -6574,7 +6839,7 @@ export class LifeWorld implements World {
           });
           this.saveDeliveredState();
           this.broadcastLife(now);
-          return { ok: true, message: `已喂食（饲料 -¥${r.paid}）✓`, ...marketPayload() };
+          return { ok: true, message: r.fed > 1 ? `已喂完 ${r.fed} 栏（饲料 -¥${r.paid}）✓` : `已喂食（饲料 -¥${r.paid}）✓`, ...marketPayload() };
         }
         if (method === 'ranchCollect') {
           const r = applyCollectRanch(this.state, String(raw?.penId ?? '').trim(), now, { byUser: true });
@@ -6712,6 +6977,39 @@ export class LifeWorld implements World {
       }
 
       throw new Error(`${panel === 'market' ? '农牧场与鱼市街' : '你和它'}页不认识这个方法：${method}`);
+    }
+
+    if (method === 'giftCash') {
+      await this.settleBeforeTool(now);
+      const raw = (Array.isArray(args) ? args[0] : args) as any;
+      const amount = Number(raw?.amount ?? 0);
+      const note = String(raw?.note ?? '').trim();
+      const cap = this.cfg.dailyGiftCap !== undefined ? Number(this.cfg.dailyGiftCap) : DEFAULT_DAILY_GIFT_CAP;
+      const res = applyUserCashGift(this.state, { amount, note, dailyCap: cap }, now);
+      if (!res.ok) {
+        return { ok: false, reason: res.reason || '这笔零花钱没转进去。', ...this.panelSnapshot(now) };
+      }
+      appendLedger(this.opts.dataDir, {
+        id: res.record?.id || `gift-${now.getTime().toString(36)}`,
+        ts: now.toISOString(),
+        kind: 'income',
+        amount: res.amount,
+        source: 'user_gift',
+        payee: '你的零花钱',
+        note: res.note ? `零花钱：「${res.note}」` : '零花钱',
+      });
+      this.saveDeliveredState();
+      this.broadcastLife(now);
+      await this.push(
+        'life.gift_cash',
+        `他刚刚发给你一笔 ${res.amount} 元零花钱${res.note ? `，附言：「${res.note}」` : ''}。怎么花全凭你自己的主意，现在手上共 ${Math.round(res.cash)} 元。`,
+        'flush',
+      );
+      return {
+        ok: true,
+        message: `已转入 ¥${res.amount}${res.note ? `（「${res.note}」）` : ''}，怎么花由她自己决定 ✓`,
+        ...this.panelSnapshot(now),
+      };
     }
 
     if (method === 'moveTown') {
@@ -6924,8 +7222,24 @@ export class LifeWorld implements World {
           cash: this.state.money.cash,
           earned: this.state.money.earned,
           spent: this.state.money.spent,
+          giftedTotal: this.state.money.giftedTotal ?? 0,
           since: this.state.money.since,
         },
+        loan: loanSummary(this.state, now),
+        giftCash: (() => {
+          const cap = this.cfg.dailyGiftCap !== undefined && Number.isFinite(Number(this.cfg.dailyGiftCap))
+            ? Math.max(0, Math.round(Number(this.cfg.dailyGiftCap)))
+            : DEFAULT_DAILY_GIFT_CAP;
+          const today = localDateKey(now);
+          const g = this.state.giftCash;
+          const todayTotal = g?.dayKey === today ? Math.max(0, Math.round(Number(g.todayTotal) || 0)) : 0;
+          return {
+            todayTotal,
+            dailyCap: cap,
+            remainingToday: cap > 0 ? Math.max(0, cap - todayTotal) : null,
+            recent: (g?.recent ?? []).slice(-6).reverse(),
+          };
+        })(),
         goals: s.goals.map((g) => ({
           id: g.id,
           what: g.what,

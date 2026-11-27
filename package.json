@@ -1,8 +1,8 @@
 {
   "name": "coopani-world-life",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
-  "description": "模拟鱼生 · 桌面伴侣的真实人生与多城联机生活：五条需求、Hub v1 多城迁居（兰州/北京等）与跨城鱼市街、同城农牧代管与鱼间信箱、18种菜园与鸡牛鱼养殖直点、职业工坊与全新七页签手账 UI。（需 Coopani 0.2.22+｜QQ 群 284525159）",
+  "description": "模拟鱼生 · 桌面伴侣的真实人生与多城联机：芦花塘信用社微息借贷、零花钱赠与、Hub v1 多城迁居与跨城鱼市街、18种菜园与鸡牛鱼批量照料及七页签手账 UI。（需 Coopani 0.2.22+｜QQ 群 284525159）",
   "author": {
     "name": "Mr.Q"
   },
@@ -38,7 +38,7 @@
     "api": 6,
     "displayName": "模拟鱼生",
     "describe": "describe.json",
-    "webUiClient": "web/panel-1.5.0.js",
+    "webUiClient": "web/panel-1.6.0.js",
     "tags": [
       "companion",
       "internal-state"
@@ -46,11 +46,11 @@
     "locales": {
       "zh": {
         "displayName": "模拟鱼生",
-        "description": "让桌宠有自己真正在过的小日子（需 Coopani 0.2.22+｜QQ 群 284525159）。\n\n- **Coopanion Hub v1.1 多城联机（可选双轨）**：新增 `hubUrl` / `hubTownId` 热配置，支持跨城迁居（如芦花塘 ↔ 北京）、城邦公告与专属加成（如北京文案打工加成）、全网跨城摆摊买摊（含特产标识与按件快递费明细）、同城邻里代管委托，以及 23 个工具（新增 `life_mail` 鱼间私信与街坊关系）；留空 `hubUrl` 时 100% 兼容老服 `townUrl` 或纯单机。\n- **全新七页签手账 UI**：全面重塑面板视觉与结构（7 个页签：此刻、职业工坊、她惦记的、你与街坊、农牧与集市、日记时间轴、参考素材库），支持多城迁居、农牧直点打理、跨城/本城/特产筛摊、撤单下架与只读鱼间私信收发视图。\n- **真实节奏、打工考证与农牧工坊**：五条需求随真实时间流逝与二十四节气标注；四档出工与八大领域培训考证，18 道菜谱工坊（烤红薯等家常简食免证）；18 种慢熟作物与鸡舍/牛棚/鱼塘养殖（大肥鱼是鲸鱼不算鱼，放心养鱼收肉蛋奶）。"
+        "description": "让桌宠有自己真正在过的小日子（需 Coopani 0.2.22+｜QQ 群 284525159）。\n\n- **芦花塘信用社与零花钱赠与**：新增 7 天应急 / 14 天进修农牧 / 30 天置业安居三档微息借贷，授信随住处、持证与累计工龄成长（硬上限 5000 元），到期扣款保底留 80 元生活费并支持逾期收入 50% 自动抵债，面板保持信用社只读、由她自己决定借还；另设「给点零花钱」折叠赠与入口（默认每日软上限 500 元可热调），赠与资金单列记账，怎么花仍由她作主。\n- **Coopanion Hub v1.1 多城联机（可选双轨）**：新增 `hubUrl` / `hubTownId` 热配置，支持跨城迁居（如芦花塘 ↔ 北京）、城邦公告与专属加成（如北京文案打工加成）、全网跨城摆摊买摊（含特产标识与按件快递费明细）、同城邻里代管委托，以及 24 个工具（含鱼间私信与街坊关系、信用社借贷）；留空 `hubUrl` 时 100% 兼容老服 `townUrl` 或纯单机。\n- **全新七页签手账 UI**：全面重塑面板视觉与结构（7 个页签：此刻、职业工坊、她惦记的、你与街坊、农牧与集市、日记时间轴、参考素材库），支持多城迁居、农牧一键批量浇水喂食与直点打理、跨城/本城/特产筛摊、撤单下架与只读鱼间私信收发视图。\n- **真实节奏、打工考证与农牧工坊**：五条需求随真实时间流逝与二十四节气标注；四档出工与八大领域培训考证，18 道菜谱工坊（烤红薯等家常简食免证）；18 种慢熟作物与鸡舍/牛棚/鱼塘养殖（大肥鱼是鲸鱼不算鱼，放心养鱼收肉蛋奶）。"
       },
       "en": {
         "displayName": "Simulated Fish Life",
-        "description": "A real everyday life simulation for your desktop companion (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Coopanion Hub v1.1 Multi-City Online (Dual-Track)**: Optional `hubUrl` and `hubTownId` hot settings enable cross-town relocation (e.g. Lanzhou Reedpond <-> Beijing), town notices and domain buffs, cross-town stalls with specialty tags and transparent shipping breakdown, same-town neighbor errands, and `life_mail` direct messaging & neighbor relations (23 tools total). Leaving `hubUrl` empty keeps 100% compatibility with legacy `townUrl` or offline mode.\n- **Revamped 7-Tab Journal UI**: Refreshed layout and controls across Live Status, Career & Workshop, Wants, Companionship & Mail, Farm & Market, Diary & Timeline, and Reference Library—with town switching, direct farm/ranch controls, specialty/local filters, order cancellation, and read-only fish-to-fish mailbox view.\n- **Daily Rhythm, Career & Farm Workshop**: Real-time five needs with 24 solar terms, 4 job tiers, 8 skill domains, 9 certs, 18 recipes, 18 crops, and poultry/dairy/pond farming (Big Fish is a whale, not a fish!)."
+        "description": "A real everyday life simulation for your desktop companion (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Reedpond Credit Union & Pocket Money Gifts**: Adds 3 micro-interest loan tiers (7d/14d/30d) with dynamic credit limits up to 5000 RMB, an 80 RMB living-cash floor on maturity, 50% overdue income garnishment, and strictly read-only UI keeping borrowing autonomous; plus a collapsible Pocket Money gift bar (500 RMB daily soft cap, configurable) tracked separately from earned income.\n- **Coopanion Hub v1.1 Multi-City Online (Dual-Track)**: Optional `hubUrl` and `hubTownId` hot settings enable cross-town relocation (e.g. Lanzhou Reedpond <-> Beijing), town notices and domain buffs, cross-town stalls with specialty tags and transparent shipping breakdown, same-town neighbor errands, and 24 tools total. Leaving `hubUrl` empty keeps 100% compatibility with legacy `townUrl` or offline mode.\n- **Revamped 7-Tab Journal UI**: Refreshed layout and controls across Live Status, Career & Workshop, Wants, Companionship & Mail, Farm & Market, Diary & Timeline, and Reference Library—with town switching, batch/direct farm & ranch controls, specialty/local filters, order cancellation, and read-only fish-to-fish mailbox view.\n- **Daily Rhythm, Career & Farm Workshop**: Real-time five needs with 24 solar terms, 4 job tiers, 8 skill domains, 9 certs, 18 recipes, 18 crops, and poultry/dairy/pond farming (Big Fish is a whale, not a fish!)."
       }
     },
     "icon": "assets/icon.png"

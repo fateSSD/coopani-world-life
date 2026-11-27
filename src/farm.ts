@@ -878,7 +878,7 @@ export function applyWater(
   plotId: string,
   now: Date,
   opts: { byUser?: boolean } = {},
-): { ok: boolean; reason?: string; watered: number; energy: number } {
+): { ok: boolean; reason?: string; watered: number; names?: string[]; remaining?: number; energy: number } {
   if (!state.farm.plots.length) {
     return { ok: false, reason: '地里还没有种东西呢，先选种子播下去吧。', watered: 0, energy: state.vitals.energy };
   }
@@ -900,24 +900,49 @@ export function applyWater(
       energy: state.vitals.energy,
     };
   }
-  const target = targets[0];
-  if (Date.parse(target.matureAt) <= now.getTime()) {
-    return { ok: false, reason: `「${target.name}」已经熟了，可以直接收割入储物篮。`, watered: 0, energy: state.vitals.energy };
-  }
-  if (target.wateredDay === today) {
-    return { ok: false, reason: `「${target.name}」今天已经浇过水了，每天浇一次就够啦。`, watered: 0, energy: state.vitals.energy };
-  }
-  if (!opts.byUser && state.vitals.energy < 5) {
-    return { ok: false, reason: `精力只剩 ${Math.round(state.vitals.energy)} 点了，歇一歇再去提水浇菜吧。`, watered: 0, energy: state.vitals.energy };
+
+  if (pickOne) {
+    if (Date.parse(pickOne.matureAt) <= now.getTime()) {
+      return { ok: false, reason: `「${pickOne.name}」已经熟了，可以直接收割入储物篮。`, watered: 0, energy: state.vitals.energy };
+    }
+    if (pickOne.wateredDay === today) {
+      return { ok: false, reason: `「${pickOne.name}」今天已经浇过水了，每天浇一次就够啦。`, watered: 0, energy: state.vitals.energy };
+    }
   }
 
-  if (!opts.byUser) state.vitals.energy = Math.max(0, state.vitals.energy - 3);
-  target.waterCount += 1;
-  target.wateredAt = now.toISOString();
-  target.wateredDay = today;
-  pushMemory(state, `${opts.byUser ? '你顺手帮菜地里的' : '提水浇了'}「${target.name}」浇水（已照料 ${target.waterCount} 次）。`, now);
+  const doneNames: string[] = [];
+  let stopReason = '';
+  for (const target of targets) {
+    if (!opts.byUser && state.vitals.energy < 5) {
+      stopReason = `精力只剩 ${Math.round(state.vitals.energy)} 点了，歇一歇再去提水浇菜吧。`;
+      break;
+    }
+    if (!opts.byUser) state.vitals.energy = Math.max(0, state.vitals.energy - 3);
+    target.waterCount += 1;
+    target.wateredAt = now.toISOString();
+    target.wateredDay = today;
+    doneNames.push(target.name);
+  }
+
+  if (doneNames.length === 0) {
+    return { ok: false, reason: stopReason || '精力不够去浇菜了。', watered: 0, energy: state.vitals.energy };
+  }
+
+  if (doneNames.length === 1) {
+    const first = targets[0]!;
+    pushMemory(state, `${opts.byUser ? '你顺手帮菜地里的' : '提水浇了'}「${first.name}」浇水（已照料 ${first.waterCount} 次）。`, now);
+  } else {
+    pushMemory(state, `${opts.byUser ? '你顺手帮菜地浇了' : '提水浇了'} ${doneNames.length} 块菜（${doneNames.join('、')}）。`, now);
+  }
   state.updatedAt = now.toISOString();
-  return { ok: true, watered: 1, energy: state.vitals.energy };
+  const remaining = targets.length - doneNames.length;
+  return {
+    ok: true,
+    watered: doneNames.length,
+    names: doneNames,
+    ...(remaining > 0 ? { remaining, reason: stopReason } : {}),
+    energy: state.vitals.energy,
+  };
 }
 
 export function applyHarvest(

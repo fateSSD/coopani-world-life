@@ -459,7 +459,7 @@ export function applyFeedAnimal(
   penId: string,
   now: Date,
   opts: { byUser?: boolean } = {},
-): { ok: boolean; reason?: string; fed: number; paid: number; cash: number; energy: number } {
+): { ok: boolean; reason?: string; fed: number; names?: string[]; remaining?: number; paid: number; cash: number; energy: number } {
   if (!state.ranch.pens.length) {
     return { ok: false, reason: '牧场和鱼塘里还空着，先添几只小鸡、奶牛或鱼苗吧。', fed: 0, paid: 0, cash: state.money.cash, energy: state.vitals.energy };
   }
@@ -472,28 +472,55 @@ export function applyFeedAnimal(
   if (!targets.length) {
     return { ok: false, reason: '在养的鸡牛鱼今天都已经喂过饲料啦，明天再来照料。', fed: 0, paid: 0, cash: state.money.cash, energy: state.vitals.energy };
   }
-  const target = targets[0];
-  if (target.fedDay === today) {
-    return { ok: false, reason: `「${target.name}」今天已经喂过食了，每天一次就够。`, fed: 0, paid: 0, cash: state.money.cash, energy: state.vitals.energy };
-  }
-  const def = findAnimal(target.animalId) ?? ANIMALS[0];
-  if (state.money.cash < def.feedCost) {
-    return { ok: false, reason: `给「${target.name}」买饲料要 ${def.feedCost} 元，手上现金不够了。`, fed: 0, paid: 0, cash: state.money.cash, energy: state.vitals.energy };
-  }
-  if (!opts.byUser && state.vitals.energy < 5) {
-    return { ok: false, reason: `精力只剩 ${Math.round(state.vitals.energy)} 点了，歇一歇再去喂食吧。`, fed: 0, paid: 0, cash: state.money.cash, energy: state.vitals.energy };
+  if (pickOne && pickOne.fedDay === today) {
+    return { ok: false, reason: `「${pickOne.name}」今天已经喂过食了，每天一次就够。`, fed: 0, paid: 0, cash: state.money.cash, energy: state.vitals.energy };
   }
 
-  state.money.cash -= def.feedCost;
-  state.money.spent += def.feedCost;
-  if (!opts.byUser) state.vitals.energy = Math.max(0, state.vitals.energy - 3);
-  target.feedCount += 1;
-  target.fedAt = now.toISOString();
-  target.fedDay = today;
-  target.fedCycleBonus = true;
-  pushMemory(state, `${opts.byUser ? '你在面板上顺手帮我喂了' : '提着饲料喂了'}「${target.name}」（饲料 ${def.feedCost} 元，已照料 ${target.feedCount} 次）。`, now);
+  const doneNames: string[] = [];
+  let totalPaid = 0;
+  let stopReason = '';
+  for (const target of targets) {
+    const def = findAnimal(target.animalId) ?? ANIMALS[0];
+    if (state.money.cash < def.feedCost) {
+      stopReason = `给「${target.name}」买饲料要 ${def.feedCost} 元，手上现金不够了。`;
+      break;
+    }
+    if (!opts.byUser && state.vitals.energy < 5) {
+      stopReason = `精力只剩 ${Math.round(state.vitals.energy)} 点了，歇一歇再去喂食吧。`;
+      break;
+    }
+    state.money.cash -= def.feedCost;
+    state.money.spent += def.feedCost;
+    totalPaid += def.feedCost;
+    if (!opts.byUser) state.vitals.energy = Math.max(0, state.vitals.energy - 3);
+    target.feedCount += 1;
+    target.fedAt = now.toISOString();
+    target.fedDay = today;
+    target.fedCycleBonus = true;
+    doneNames.push(target.name);
+  }
+
+  if (doneNames.length === 0) {
+    return { ok: false, reason: stopReason || '没喂上饲料。', fed: 0, paid: 0, cash: state.money.cash, energy: state.vitals.energy };
+  }
+
+  if (doneNames.length === 1) {
+    const first = targets[0]!;
+    pushMemory(state, `${opts.byUser ? '你在面板上顺手帮我喂了' : '提着饲料喂了'}「${first.name}」（饲料 ${totalPaid} 元，已照料 ${first.feedCount} 次）。`, now);
+  } else {
+    pushMemory(state, `${opts.byUser ? '你在面板上顺手帮我喂了' : '提着饲料喂了'} ${doneNames.length} 栏（${doneNames.join('、')}，共花饲料 ${totalPaid} 元）。`, now);
+  }
   state.updatedAt = now.toISOString();
-  return { ok: true, fed: 1, paid: def.feedCost, cash: state.money.cash, energy: state.vitals.energy };
+  const remaining = targets.length - doneNames.length;
+  return {
+    ok: true,
+    fed: doneNames.length,
+    names: doneNames,
+    ...(remaining > 0 ? { remaining, reason: stopReason } : {}),
+    paid: totalPaid,
+    cash: state.money.cash,
+    energy: state.vitals.energy,
+  };
 }
 
 export function applyCollectRanch(

@@ -36,6 +36,41 @@ import { dirname, join } from 'node:path';
 import { skyFromExternal, type ExternalWeatherOverride, type WeatherSky } from './config.ts';
 import { type JobDef, findJob, certOf, CERTS, jobAllowedAt } from './jobs.ts';
 import { type StreetMods, type StreetProfile, formatStreetMods } from './bridge.ts';
+import {
+  DEFAULT_DAILY_GIFT_CAP,
+  freshGiftCash,
+  garnishOverdueFromIncome,
+  hasOverdueLoan,
+  normGiftCash,
+  normLoans,
+  settleLoansOnAdvance,
+  type GiftCashState,
+  type LoanAdvanceSettlement,
+  type LoanGarnishResult,
+  type LoanRecord,
+} from './loan.ts';
+export {
+  DEFAULT_DAILY_GIFT_CAP,
+  LOAN_HARD_CAP,
+  LOAN_MAX_ACTIVE,
+  LOAN_MIN_AMOUNT,
+  LOAN_PRODUCTS,
+  LOAN_RESERVE_CASH,
+  activeLoansTotalDue,
+  applyBorrowLoan,
+  applyRepayLoan,
+  applyUserCashGift,
+  availableCredit,
+  computeCreditLimit,
+  garnishOverdueFromIncome,
+  hasOverdueLoan,
+  loanRemaining,
+  loanSummary,
+  type GiftCashState,
+  type LoanAdvanceSettlement,
+  type LoanGarnishResult,
+  type LoanRecord,
+} from './loan.ts';
 
 export { skyFromExternal, type ExternalWeatherOverride, type WeatherSky };
 import {
@@ -330,9 +365,11 @@ export interface Job {
  */
 export interface Money {
   cash: number;
-  /** 进账合计（不按自然月清，从 `since` 起累加）。 */
+  /** 进账合计（自己挣的，不含贷款与用户零花钱，从 `since` 起累加）。 */
   earned: number;
   spent: number;
+  /** 用户赠与零花钱累计（不混入 `earned`）。 */
+  giftedTotal?: number;
   since: string;
 }
 
@@ -590,6 +627,10 @@ export interface LifeState {
   stallRecords: StallRecord[];
   /** 已结算入账的成交回执 id 列表（防重复入账）。 */
   settledDeals: string[];
+  /** 芦花塘信用社借贷台账。 */
+  loans: LoanRecord[];
+  /** 用户日常零花钱赠与记录与今日累计。 */
+  giftCash: GiftCashState;
 }
 
 export interface PendingNotice {
@@ -1116,7 +1157,7 @@ export function freshState(now: Date = new Date()): LifeState {
      * 3000 大约是**城中村两个月的总开销**：够她把日子过起来，不够她躺平。
      * 给多了「挣钱」不要紧，给少了第一周就得靠「将就吃一口」活着。
      */
-    money: { cash: 3000, earned: 0, spent: 0, since: now.toISOString() },
+    money: { cash: 3000, earned: 0, spent: 0, giftedTotal: 0, since: now.toISOString() },
     /*
      * 初始目标。
      *
@@ -1158,6 +1199,8 @@ export function freshState(now: Date = new Date()): LifeState {
     cookedDishes: [],
     stallRecords: [],
     settledDeals: [],
+    loans: [],
+    giftCash: freshGiftCash(now),
   };
 }
 
@@ -1409,6 +1452,8 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     cookedDishes: normCookedDishes(s.cookedDishes),
     stallRecords: normStallRecords(s.stallRecords),
     settledDeals: normSettledDeals(s.settledDeals),
+    loans: normLoans(s.loans, now),
+    giftCash: normGiftCash(s.giftCash, now),
   };
 }
 
@@ -1562,6 +1607,7 @@ function normMoney(v: unknown, now: Date): Money {
     cash: Math.max(0, n(o.cash, 3000)),
     earned: Math.max(0, n(o.earned, 0)),
     spent: Math.max(0, n(o.spent, 0)),
+    giftedTotal: Math.max(0, n(o.giftedTotal, 0)),
     since: typeof o.since === 'string' ? o.since : now.toISOString(),
   };
 }
@@ -1582,6 +1628,7 @@ export interface CompletedTask {
   gradeText?: string;
   shiftSummary?: string;
   errandEmployer?: string;
+  loanGarnished?: LoanGarnishResult;
 }
 
 export interface AdvanceResult {
@@ -1608,6 +1655,8 @@ export interface AdvanceResult {
   completed: CompletedTask[];
   /** 农牧帮手本次追补代管汇总（如有雇佣且跨自然日）。 */
   helperRun?: HelperRunSummary | null;
+  /** 贷款按日计息、到期扣款与逾期结算。 */
+  loanSettlement?: LoanAdvanceSettlement | null;
 }
 
 /** 她刚醒。`hours` 是这一觉**真的睡了**几个钟点。 */
@@ -1813,9 +1862,14 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             earned = Math.max(0, Math.round(earned * streetGainFactor(sMods, 'work')));
           }
 
+          let loanGarnished: LoanGarnishResult | undefined;
           if (earned > 0) {
             state.money.cash += earned;
             state.money.earned += earned;
+            if (hasOverdueLoan(state)) {
+              const g = garnishOverdueFromIncome(state, earned, endAt);
+              if (g.deductedTotal > 0) loanGarnished = g;
+            }
           }
           if (!outOfCash) {
             state.job.days += 1;
@@ -1855,6 +1909,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             gradeLabel,
             gradeText,
             shiftSummary,
+            ...(loanGarnished ? { loanGarnished } : {}),
           });
         } else {
           if (actTask.mood && !outOfCash) {
@@ -2078,6 +2133,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   const helperRun = (state.farmHelper.mode !== 'off' || Boolean(state.farmHelper.pendingErrand))
     ? runFarmHelperCatchup(state, now)
     : null;
+  const loanSettlement = settleLoansOnAdvance(state, now);
 
   /*
    * 醒了。
@@ -2220,7 +2276,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   state.updatedAt = iso;
   return {
     hours, crossed, critical, bottomed, recovered, caught, rentMissed, rent,
-    woke, sleptHours: sleepHours, completed, helperRun,
+    woke, sleptHours: sleepHours, completed, helperRun, loanSettlement,
   };
 }
 
@@ -2249,6 +2305,8 @@ export interface ActResult {
   interruptedLabel?: string;
   /** cancel/wake 内部 advance() 返回的推进结算（供外部继续处理一次性事实）。 */
   advanced?: AdvanceResult;
+  /** cancel 早退结算工钱时被逾期贷款自动划扣的部分。 */
+  loanGarnished?: LoanGarnishResult;
 }
 
 export function isAsleep(state: LifeState, now: Date): boolean {
@@ -2628,6 +2686,7 @@ export function applyAct(
     const doneMins = Math.max(0, Math.round((now.getTime() - Date.parse(cur.from)) / 60_000));
     const paid = cur.costPaid ?? 0;
     let workEarned = 0;
+    let loanGarnished: LoanGarnishResult | undefined;
     let mood: Moodlet;
     if (cur.kind === 'work') {
       /* 上班早退：不满 30 分钟白干，满 30 分钟按完成比例打六折；不计工龄天数。 */
@@ -2637,6 +2696,10 @@ export function applyAct(
         if (workEarned > 0) {
           state.money.cash += workEarned;
           state.money.earned += workEarned;
+          if (hasOverdueLoan(state)) {
+            const g = garnishOverdueFromIncome(state, workEarned, now);
+            if (g.deductedTotal > 0) loanGarnished = g;
+          }
         }
       }
       mood = {
@@ -2671,6 +2734,7 @@ export function applyAct(
       workEarned,
       interruptedLabel: cur.label,
       advanced: adv,
+      ...(loanGarnished ? { loanGarnished } : {}),
     };
   }
 
