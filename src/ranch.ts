@@ -1209,22 +1209,24 @@ export function applyNeighborErrandCompleted(
   return { ok: true, feedPaid: step.feedPaid, summary };
 }
 
-/** 若鱼市街挂着的邻里代管单已超 6h 无人接或已跨日，原路退还预扣工钱到雇主钱包。 */
+/** 若鱼市街挂着的邻里代管单已超 6h 无人接、已跨日或已显式撤回，原路退还预扣工钱到雇主钱包。 */
 export function refundExpiredErrand(
   state: HelperHostState,
   now: Date,
+  opts: { force?: boolean; reason?: string } = {},
 ): { refunded: number; day: string; mode: Exclude<HelperMode, 'off'> } | null {
   const pe = state.farmHelper.pendingErrand;
   if (!pe) return null;
   const todayKey = fmtLocalDay(now);
   const expMs = Date.parse(pe.expiresAt);
   const expired = (Number.isFinite(expMs) && now.getTime() >= expMs) || pe.day !== todayKey;
-  if (!expired) return null;
+  if (!opts.force && !expired) return null;
 
   state.money.cash += pe.wage;
   state.money.spent = Math.max(0, state.money.spent - pe.wage);
   state.farmHelper.pendingErrand = null;
-  state.farmHelper.lastSummary = `鱼市街农牧代管委托无人接单已到期，预扣 ¥${pe.wage} 原路退回${state.farmHelper.mode !== 'off' ? '，已转系统自动照料兜底' : ''}。`;
+  state.farmHelper.lastSummary = opts.reason
+    || `鱼市街农牧代管委托无人接单已到期，预扣 ¥${pe.wage} 原路退回${state.farmHelper.mode !== 'off' ? '，已转系统自动照料兜底' : ''}。`;
   pushMemory(state, state.farmHelper.lastSummary, now);
   state.updatedAt = now.toISOString();
   return { refunded: pe.wage, day: pe.day, mode: pe.mode };

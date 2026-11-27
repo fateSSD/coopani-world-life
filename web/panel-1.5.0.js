@@ -1,5 +1,5 @@
 /*
- * 模拟鱼生面板（1.4.4，原生 ES module，零打包直跑）。
+ * 模拟鱼生面板（1.5.0，手账视觉焕新 + Hub v1.1 多城联机适配，原生 ES module 零打包直跑）。
  */
 
 /** 作者的 QQ 群。反馈栏那一行和简介里写的是同一个号，改这里一处就够。 */
@@ -16,7 +16,7 @@ const TEXT = {
     helpOffDesc: '未启用（比如未装旅行或未配城服），不是报错。',
     helpErr: '红',
     helpErrDesc: '已配置但异常，悬停看原因。',
-    helpHint: '三盏灯依次代表：过日子 · 本城服务器 · 旅行同步。',
+    helpHint: '四盏灯依次代表：过日子 · 本城/Hub · 旅行同步 · 外部天气。',
     fbLead: '问题反馈与建议',
     fbBug: '复制诊断',
     fbWant: '复制建议模板',
@@ -46,8 +46,11 @@ const TEXT = {
     own: '自有',
     money: '现金',
     goals: '目标',
-    moves: '住处与换街',
+    moves: '住处、换街与多城迁居',
     streetsTitle: '本城街道（换街不收押金）',
+    townsTitle: 'Hub 多城迁居（开放城市免押金切换）',
+    moveTownTo: '迁居此城',
+    townMoveNote: '迁城免押金并自动切换本城风貌、行业加成、同城委托与免邮鱼市街；与 life_move 共用同一本账。',
     moveStreetTo: '搬去这里',
     streetMoveNote: '换街免押金，仅在本城生效；与 life_move 共用同一本账。',
     livingHere: '现居',
@@ -68,6 +71,7 @@ const TEXT = {
     calm: '身心平稳，暂无待催事项。',
     none: '—',
     town: '住',
+    hubMode: 'Hub v1 多城',
     server: '读服务器',
     townOwn: '自定义',
     builtin: '内置',
@@ -87,7 +91,7 @@ const TEXT = {
     helpOffDesc: 'disabled (normal).',
     helpErr: 'Red',
     helpErrDesc: 'configured but failing; hover dot for details.',
-    helpHint: 'Daily life · Town server · Journey sync.',
+    helpHint: 'Daily life · Town/Hub · Journey · Weather.',
     fbLead: 'Feedback & Issues',
     fbBug: 'Copy diagnostics',
     fbWant: 'Copy state',
@@ -117,8 +121,11 @@ const TEXT = {
     own: 'owned',
     money: 'Cash',
     goals: 'Goals',
-    moves: 'Housing & Streets',
+    moves: 'Housing, Streets & Hub Migration',
     streetsTitle: 'Streets in town (no deposit)',
+    townsTitle: 'Hub Towns (free relocation)',
+    moveTownTo: 'Relocate here',
+    townMoveNote: 'Switching town on Hub costs no deposit and updates town buffs & local errands.',
     moveStreetTo: 'Move here',
     streetMoveNote: 'Changing streets costs no deposit; same books as life_move.',
     livingHere: 'here',
@@ -139,6 +146,7 @@ const TEXT = {
     calm: 'All steady.',
     none: '—',
     town: 'Lives in',
+    hubMode: 'Hub v1',
     server: 'server',
     townOwn: 'custom',
     builtin: 'built-in',
@@ -229,6 +237,40 @@ const HOME_SLOTS_FALLBACK = {
   new: 4,
   villa: 8,
 };
+
+const BUFF_LABELS = {
+  writing_pay_mult: '写作薪酬',
+  cooking_pay_mult: '烹饪薪酬',
+  craft_pay_mult: '手作薪酬',
+  crop_yield_bonus: '农作收成',
+  noodle_craft_bonus: '面食手作',
+  ranch_yield_bonus: '牧场产出',
+  fish_yield_bonus: '塘鱼收成',
+  craft_mood_bonus: '手作心情加成',
+  food_mood_bonus: '美食心情加成',
+  writing_mood_bonus: '写作心情',
+};
+
+function fmtBuffChips(buffs) {
+  if (!buffs || typeof buffs !== 'object') return [];
+  const list = [];
+  for (const [k, raw] of Object.entries(buffs)) {
+    const v = Number(raw);
+    if (!Number.isFinite(v)) continue;
+    if (k.endsWith('_mult') && v !== 1) {
+      const pct = Math.round((v - 1) * 100);
+      list.push(`${BUFF_LABELS[k] || k} ${pct >= 0 ? `+${pct}` : pct}%`);
+    } else if (k.endsWith('_bonus') && v !== 0) {
+      if (Math.abs(v) > 0 && Math.abs(v) < 1) {
+        const pct = Math.round(v * 100);
+        list.push(`${BUFF_LABELS[k] || k} ${pct >= 0 ? `+${pct}` : pct}%`);
+      } else {
+        list.push(`${BUFF_LABELS[k] || k} ${v >= 0 ? `+${v}` : v}`);
+      }
+    }
+  }
+  return list;
+}
 
 const DEFAULT_STALL_RULES = [
   {
@@ -353,99 +395,137 @@ function fmtEffectsText(fx, compact = false) {
   return parts.join(compact ? ' ' : ' / ');
 }
 
-const STYLE_ID = 'life-panel-style';
+const STYLE_ID = 'life-panel-style-v150';
 function ensureStyle(root) {
   const doc = root.ownerDocument || document;
   if (doc.getElementById(STYLE_ID)) return;
   const s = doc.createElement('style');
   s.id = STYLE_ID;
   s.textContent = `
-.lf { color: #1b1e24; font: 13.5px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+.lf {
+  --lf-bg: #f6f7f9;
+  --lf-card: #ffffff;
+  --lf-border: #e5e7eb;
+  --lf-muted: #64748b;
+  --lf-ink: #1e293b;
+  --lf-accent: #2563eb;
+  --lf-accent-soft: #eff6ff;
+  --lf-green: #15803d;
+  --lf-green-soft: #ecfdf5;
+  --lf-amber: #b45309;
+  --lf-amber-soft: #fffbeb;
+  --lf-red: #b91c1c;
+  --lf-red-soft: #fef2f2;
+  color: var(--lf-ink);
+  font: 13.5px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
 .lf * { box-sizing: border-box; }
-.lf-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 3px; }
-.lf-town { font-size: 18px; font-weight: 650; margin: 0; }
-.lf-tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #eef2f7; color: #64748b; border: 1px solid #e2e8f0; }
-.lf-ver { font-size: 11px; color: #94a3b8; }
-.lf-ver[data-new="1"] { padding: 1px 7px; border-radius: 999px; background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; font-weight: 600; }
-.lf-sub { color: #64748b; font-size: 12px; margin: 0 0 12px; }
-.lf-note { margin: 0 0 10px; padding: 7px 10px; border-radius: 8px; background: #fdf8ec; border: 1px solid #ecd9b6; color: #7a5b1c; font-size: 12px; }
+.lf-hero {
+  background: linear-gradient(135deg, #f8fafc 0%, #eef4ff 60%, #f5f3ff 100%);
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  padding: 13px 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, .04);
+}
+.lf-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.lf-town { font-size: 19px; font-weight: 700; margin: 0; color: #0f172a; letter-spacing: -.01em; }
+.lf-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #fff; color: #475569; border: 1px solid #cbd5e1; font-weight: 500; }
+.lf-tag.hub { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; font-weight: 600; }
+.lf-ver { font-size: 11px; color: #64748b; }
+.lf-ver[data-new="1"] { padding: 2px 8px; border-radius: 999px; background: var(--lf-red-soft); color: var(--lf-red); border: 1px solid #fecaca; font-weight: 600; }
+.lf-sub { color: #475569; font-size: 12px; margin: 0; }
+.lf-hero-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.lf-note { margin: 0 0 11px; padding: 8px 12px; border-radius: 10px; background: var(--lf-amber-soft); border: 1px solid #fde68a; color: #78350f; font-size: 12px; }
+.lf-alert { margin: 0 0 11px; padding: 9px 12px; border-radius: 10px; background: var(--lf-red-soft); border: 1px solid #fecaca; border-left: 3px solid var(--lf-red); color: #991b1b; font-size: 12px; line-height: 1.55; }
+.lf-alert .t { font-weight: 700; margin-bottom: 2px; font-size: 11.5px; letter-spacing: .04em; }
 
-.lf-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
-.lf-card h3 { font-size: 12px; font-weight: 600; color: #6b7280; margin: 0 0 8px; }
-.lf-cols { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
-.lf-cols > .lf-card { flex: 1 1 200px; margin-bottom: 0; }
+.lf-card {
+  background: var(--lf-card);
+  border: 1px solid var(--lf-border);
+  border-radius: 12px;
+  padding: 13px 15px;
+  margin-bottom: 11px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .03);
+}
+.lf-card h3 { font-size: 12.5px; font-weight: 650; color: #475569; margin: 0 0 9px; letter-spacing: .01em; }
+.lf-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 11px; margin-bottom: 11px; }
+.lf-cols > .lf-card { margin-bottom: 0; }
 
-.lf-vital { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; }
+.lf-vital { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .lf-vital:last-child { margin-bottom: 0; }
-.lf-vital .k { flex: 0 0 40px; font-size: 12.5px; color: #374151; }
-.lf-vital .track { flex: 1 1 auto; height: 8px; border-radius: 999px; background: #eef0f3; overflow: hidden; }
-.lf-vital .fill { height: 100%; border-radius: 999px; transition: width .3s ease; }
-.lf-vital .n { flex: 0 0 32px; text-align: right; font-size: 12.5px; font-variant-numeric: tabular-nums; color: #6b7280; }
-.lf-vital.low .k, .lf-vital.low .n { color: #c0392b; font-weight: 600; }
+.lf-vital .k { flex: 0 0 40px; font-size: 12.5px; color: #334155; font-weight: 500; }
+.lf-vital .track { flex: 1 1 auto; height: 9px; border-radius: 999px; background: #eef2f6; overflow: hidden; }
+.lf-vital .fill { height: 100%; border-radius: 999px; transition: width .35s ease; }
+.lf-vital .n { flex: 0 0 32px; text-align: right; font-size: 12.5px; font-variant-numeric: tabular-nums; color: #64748b; }
+.lf-vital.low .k, .lf-vital.low .n { color: #c0392b; font-weight: 700; }
 
 .lf-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-.lf-chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #f4f6f8; border: 1px solid #e5e7eb; color: #374151; }
-.lf-chip.bad { background: #fdeceb; border-color: #f0cfcb; color: #c0392b; }
-.lf-chip.good { background: #eaf5ee; border-color: #cbe7d6; color: #2f855a; }
-.lf-chip.info { background: #eff6ff; border-color: #dbeafe; color: #1d4ed8; }
+.lf-chip { font-size: 11.5px; padding: 2px 9px; border-radius: 999px; background: #f1f5f9; border: 1px solid #e2e8f0; color: #334155; }
+.lf-chip.bad { background: var(--lf-red-soft); border-color: #fecaca; color: var(--lf-red); }
+.lf-chip.good { background: var(--lf-green-soft); border-color: #a7f3d0; color: var(--lf-green); }
+.lf-chip.info { background: var(--lf-accent-soft); border-color: #bfdbfe; color: #1d4ed8; }
 .lf-chip.warn { background: #fff7ed; border-color: #fed7aa; color: #c2410c; }
-.lf-muted { color: #9ca3af; font-size: 12.5px; margin: 0; }
+.lf-muted { color: #94a3b8; font-size: 12.5px; margin: 0; }
 
-.lf-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
-.lf-stat { padding: 8px 10px; border: 1px solid #eef0f3; border-radius: 8px; background: #fbfcfd; }
-.lf-stat .lab { font-size: 11px; color: #9ca3af; display: block; margin-bottom: 2px; }
-.lf-stat .val { font-size: 14px; font-weight: 600; color: #1b1e24; font-variant-numeric: tabular-nums; word-break: break-word; }
-.lf-stat .sub2 { font-size: 11px; color: #6b7280; margin-top: 2px; }
-.lf-stat.money .val { color: #1a6b4a; }
-.lf-subrow { margin-top: 9px; padding-top: 8px; border-top: 1px dashed #eef0f3; display: flex; flex-wrap: wrap; gap: 5px; }
+.lf-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 9px; }
+.lf-stat { padding: 9px 11px; border: 1px solid #e2e8f0; border-radius: 10px; background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%); }
+.lf-stat .lab { font-size: 11px; color: #64748b; display: block; margin-bottom: 2px; }
+.lf-stat .val { font-size: 14.5px; font-weight: 650; color: #0f172a; font-variant-numeric: tabular-nums; word-break: break-word; }
+.lf-stat .sub2 { font-size: 11px; color: #64748b; margin-top: 2px; }
+.lf-stat.money .val { color: #047857; }
+.lf-subrow { margin-top: 10px; padding-top: 9px; border-top: 1px dashed #e2e8f0; display: flex; flex-wrap: wrap; gap: 5px; }
 
 .lf-goal { margin-bottom: 8px; }
 .lf-goal:last-child { margin-bottom: 0; }
-.lf-goal .top { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; color: #374151; margin-bottom: 4px; gap: 8px; }
-.lf-goal .left { flex: 0 0 auto; color: #6b7280; font-size: 12px; font-variant-numeric: tabular-nums; }
-.lf-goal .track { height: 7px; border-radius: 999px; background: #eef0f3; overflow: hidden; }
-.lf-goal .fill { height: 100%; border-radius: 999px; background: #2f6fed; transition: width .3s ease; }
+.lf-goal .top { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; color: #334155; margin-bottom: 4px; gap: 8px; }
+.lf-goal .left { flex: 0 0 auto; color: #64748b; font-size: 12px; font-variant-numeric: tabular-nums; }
+.lf-goal .track { height: 7px; border-radius: 999px; background: #eef2f6; overflow: hidden; }
+.lf-goal .fill { height: 100%; border-radius: 999px; background: var(--lf-accent); transition: width .35s ease; }
 
-details.lf-fold summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: #374151; }
+details.lf-fold summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 650; color: #334155; }
 details.lf-fold summary::-webkit-details-marker { display: none; }
 details.lf-fold summary .hint { font-size: 11.5px; font-weight: 400; color: #94a3b8; }
-details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px dashed #eef0f3; }
+details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px dashed #e2e8f0; }
 
-.lf-move { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px dashed #f0f1f3; }
+.lf-move { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px dashed #f1f5f9; }
 .lf-move:last-child { border-bottom: 0; }
-.lf-move .nm { flex: 0 0 68px; font-size: 12.5px; color: #374151; font-weight: 600; }
-.lf-move.now .nm { color: #2f6fed; }
-.lf-move .cost { flex: 1 1 auto; font-size: 11.5px; color: #6b7280; }
-.lf-move .cost b { color: #374151; font-weight: 600; }
-.lf-move .cost .short { color: #c0392b; }
+.lf-move .nm { flex: 0 0 72px; font-size: 12.5px; color: #334155; font-weight: 600; }
+.lf-move.now .nm { color: var(--lf-accent); }
+.lf-move .cost { flex: 1 1 auto; font-size: 11.5px; color: #64748b; }
+.lf-move .cost b { color: #334155; font-weight: 600; }
+.lf-move .cost .short { color: var(--lf-red); }
 .lf-move .btnbox { flex: 0 0 auto; }
-.lf-move .nowtag, .lf-st-row .nowtag { font-size: 11.5px; color: #2f6fed; }
-.lf-note-line { margin: 8px 0 0; font-size: 11px; color: #9ca3af; line-height: 1.5; }
-.lf-st-box { margin-top: 10px; padding-top: 10px; border-top: 1px solid #eef0f3; }
-.lf-st-box h4 { font-size: 12px; font-weight: 600; color: #6b7280; margin: 0 0 6px; }
-.lf-st-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px dashed #f0f1f3; }
+.lf-move .nowtag, .lf-st-row .nowtag { font-size: 11.5px; color: var(--lf-accent); font-weight: 600; }
+.lf-note-line { margin: 8px 0 0; font-size: 11.5px; color: #94a3b8; line-height: 1.5; }
+.lf-st-box { margin-top: 10px; padding-top: 10px; border-top: 1px solid #e2e8f0; }
+.lf-st-box h4 { font-size: 12px; font-weight: 650; color: #475569; margin: 0 0 6px; }
+.lf-st-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px dashed #f1f5f9; }
 .lf-st-row:last-child { border-bottom: 0; }
-.lf-st-row.now .st-nm { color: #2f6fed; }
+.lf-st-row.now .st-nm { color: var(--lf-accent); }
 .lf-st-info { flex: 1 1 auto; min-width: 0; }
-.lf-st-info .st-nm { font-size: 12.5px; font-weight: 600; color: #374151; }
-.lf-st-info .st-desc { font-size: 11.5px; color: #6b7280; margin-top: 1px; }
+.lf-st-info .st-nm { font-size: 12.5px; font-weight: 600; color: #334155; }
+.lf-st-info .st-desc { font-size: 11.5px; color: #64748b; margin-top: 1px; }
 .lf-st-info .lf-chips { margin-top: 4px; }
 
 /* 鱼市街单行紧凑摊位清单 & 农牧场操作面板 */
 .lf-mkt-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .lf-mkt-head h3 { margin: 0; }
 .lf-mkt-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.lf-feedback { margin: 6px 0 8px; padding: 6px 10px; border-radius: 7px; font-size: 12px; }
+.lf-feedback { margin: 6px 0 8px; padding: 7px 11px; border-radius: 8px; font-size: 12px; }
 .lf-feedback.ok { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
 .lf-feedback.err { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
-.lf-board-strip { font-size: 12px; padding: 6px 9px; border-radius: 7px; background: #fdf8ec; border: 1px solid #ecd9b6; color: #7a5b1c; margin-bottom: 8px; }
-.lf-stall { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px dashed #f0f1f3; }
+.lf-board-strip { font-size: 12px; padding: 7px 10px; border-radius: 8px; background: #fffbeb; border: 1px solid #fde68a; color: #78350f; margin-bottom: 8px; }
+.lf-stall { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px dashed #f1f5f9; }
 .lf-stall:last-child { border-bottom: 0; }
 .lf-stall-l { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-.lf-stall-l .nm { font-weight: 600; color: #1f2937; font-size: 13px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.lf-stall-l .nm { font-weight: 600; color: #0f172a; font-size: 13px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .lf-stall-l .seller { font-size: 11.5px; color: #94a3b8; }
 .lf-fx-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #f1f5f9; color: #475569; white-space: nowrap; }
-.lf-veg-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #eaf5ee; color: #2f855a; white-space: nowrap; }
+.lf-veg-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #ecfdf5; color: #15803d; white-space: nowrap; }
+.lf-ship-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; white-space: nowrap; }
+.lf-ship-pill.free { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.lf-spec-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; white-space: nowrap; font-weight: 600; }
 .lf-cost-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #fff7ed; color: #b45309; border: 1px solid #fed7aa; white-space: nowrap; }
 .lf-income-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; margin-left: 5px; font-weight: 600; white-space: nowrap; }
 .lf-cat-pill { font-size: 11px; padding: 1px 6px; border-radius: 5px; white-space: nowrap; font-weight: 500; }
@@ -454,104 +534,114 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-cat-pill[data-cat="craft"] { background: #f3e8ff; color: #6b21a8; }
 .lf-cat-pill[data-cat="writing"] { background: #e0f2fe; color: #0369a1; }
 .lf-cat-pill[data-cat="photo"] { background: #fce7f3; color: #9d174d; }
-.lf-stall-r { flex: 0 0 auto; font-size: 12px; font-variant-numeric: tabular-nums; color: #475569; white-space: nowrap; }
-.lf-stall-r b { color: #1a6b4a; font-weight: 600; margin-right: 4px; }
-.lf-mkt-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #eef0f3; }
-.lf-subh { font-size: 11.5px; font-weight: 600; color: #6b7280; margin: 0 0 6px; }
+.lf-stall-r { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-variant-numeric: tabular-nums; color: #475569; white-space: nowrap; }
+.lf-stall-r b { color: #047857; font-weight: 650; }
+.lf-mkt-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #e2e8f0; }
+.lf-subh { font-size: 11.5px; font-weight: 650; color: #475569; margin: 0 0 6px; }
 
-.lf-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
-.lf-step { padding: 8px 10px; border-radius: 8px; border: 1px solid #e5e7eb; background: #f8fafc; }
+.lf-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.lf-step { padding: 9px 10px; border-radius: 9px; border: 1px solid #e2e8f0; background: #f8fafc; }
 .lf-step .st-t { font-size: 12px; font-weight: 650; color: #1e3a8a; margin-bottom: 3px; }
 .lf-step .st-d { font-size: 11.5px; color: #475569; line-height: 1.5; }
 .lf-plots { display: grid; grid-template-columns: repeat(auto-fill, minmax(195px, 1fr)); gap: 8px; margin-bottom: 8px; }
-.lf-plot { border: 1px solid #e5e7eb; border-radius: 8px; padding: 9px 10px; background: #fbfcfd; display: flex; flex-direction: column; gap: 5px; }
+.lf-plot { border: 1px solid #e2e8f0; border-radius: 10px; padding: 9px 10px; background: #fbfcfd; display: flex; flex-direction: column; gap: 5px; }
 .lf-plot.ready { border-color: #86efac; background: #f0fdf4; }
 .lf-plot.empty { border-style: dashed; border-color: #cbd5e1; background: #f8fafc; justify-content: space-between; min-height: 86px; }
-.lf-plot .ptop { display: flex; justify-content: space-between; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: #1f2937; }
+.lf-plot .ptop { display: flex; justify-content: space-between; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 650; color: #0f172a; }
 .lf-plot .ptag { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: #eef2f7; color: #475569; font-weight: 500; }
 .lf-plot.ready .ptag { background: #dcfce7; color: #166534; }
 .lf-plot .pmeta { font-size: 11px; color: #64748b; display: flex; justify-content: space-between; gap: 4px; flex-wrap: wrap; }
-.lf-plot .ptrack { height: 6px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
+.lf-plot .ptrack { height: 6px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
 .lf-plot .pfill { height: 100%; border-radius: 999px; background: #3b82f6; }
 .lf-plot.ready .pfill { background: #16a34a; }
 .lf-plot .pact { display: flex; gap: 5px; flex-wrap: wrap; margin-top: auto; padding-top: 3px; }
 .lf-plot .pact select { flex: 1 1 110px; min-width: 0; font-size: 11.5px; padding: 3px 5px; }
 
-.lf-table-wrap { overflow-x: auto; width: 100%; margin-top: 6px; border: 1px solid #e5e7eb; border-radius: 8px; }
+.lf-table-wrap { overflow-x: auto; width: 100%; margin-top: 6px; border: 1px solid #e2e8f0; border-radius: 9px; }
 .lf-table { width: 100%; min-width: 520px; border-collapse: collapse; font-size: 11.5px; }
-.lf-table thead th { background: #f3f4f6; color: #374151; font-weight: 600; text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
-.lf-table tbody td { padding: 6px 8px; border-bottom: 1px dashed #eef0f3; color: #334155; vertical-align: top; line-height: 1.5; }
+.lf-table thead th { background: #f8fafc; color: #334155; font-weight: 650; text-align: left; padding: 7px 9px; border-bottom: 1px solid #e2e8f0; white-space: nowrap; }
+.lf-table tbody td { padding: 7px 9px; border-bottom: 1px dashed #f1f5f9; color: #334155; vertical-align: top; line-height: 1.5; }
 .lf-table tbody tr:last-child td { border-bottom: 0; }
 .lf-say-list { margin: 6px 0 0; padding-left: 16px; font-size: 11.5px; color: #475569; line-height: 1.65; }
 
 /* 职业与工坊面板 */
 .lf-cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 8px; }
-.lf-cert { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; background: #fbfcfd; display: flex; flex-direction: column; gap: 4px; }
+.lf-cert { border: 1px solid #e2e8f0; border-radius: 10px; padding: 9px 10px; background: #fbfcfd; display: flex; flex-direction: column; gap: 4px; }
 .lf-cert.owned { border-color: #86efac; background: #f0fdf4; }
-.lf-cert .ctop { display: flex; justify-content: space-between; align-items: center; gap: 5px; font-weight: 600; font-size: 12.5px; }
+.lf-cert .ctop { display: flex; justify-content: space-between; align-items: center; gap: 5px; font-weight: 650; font-size: 12.5px; }
 .lf-cert .cmeta { font-size: 11px; color: #64748b; }
 .lf-recipe-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
-.lf-recipe { border: 1px solid #e5e7eb; border-radius: 8px; padding: 9px 10px; background: #fbfcfd; display: flex; flex-direction: column; gap: 5px; }
+.lf-recipe { border: 1px solid #e2e8f0; border-radius: 10px; padding: 9px 11px; background: #fbfcfd; display: flex; flex-direction: column; gap: 5px; }
 .lf-recipe.ready { border-color: #86efac; background: #f0fdf4; }
 .lf-recipe.locked { opacity: .82; background: #f8fafc; }
-.lf-recipe .rtop { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.lf-recipe .rtop { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 13px; font-weight: 650; }
 .lf-recipe .rmeta { font-size: 11px; color: #64748b; }
-.lf-ing { font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid #e5e7eb; }
+.lf-ing { font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid #e2e8f0; }
 .lf-ing.ok { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
 .lf-ing.miss { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
 
+/* 鱼间信箱只读气泡 */
+.lf-mail-conv { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 9px; margin-bottom: 6px; cursor: pointer; background: #fff; }
+.lf-mail-conv:hover { background: #f8fafc; }
+.lf-mail-conv[data-on="1"] { border-color: #93c5fd; background: #eff6ff; }
+.lf-mail-thread { margin-top: 8px; padding: 10px; border-radius: 9px; border: 1px solid #e2e8f0; background: #f8fafc; display: flex; flex-direction: column; gap: 6px; }
+.lf-bubble { padding: 7px 10px; border-radius: 9px; font-size: 12.5px; max-width: 88%; line-height: 1.5; }
+.lf-bubble.peer { align-self: flex-start; background: #ffffff; border: 1px solid #e2e8f0; color: #1e293b; }
+.lf-bubble.mine { align-self: flex-end; background: #dbeafe; border: 1px solid #bfdbfe; color: #1e3a8a; }
+.lf-bubble .bmeta { font-size: 10.5px; color: #64748b; margin-top: 2px; }
+
 .lf-list { margin: 0; padding: 0; list-style: none; }
-.lf-list li { font-size: 12.5px; padding: 4px 0; border-bottom: 1px dashed #f0f1f3; color: #374151; }
+.lf-list li { font-size: 12.5px; padding: 5px 0; border-bottom: 1px dashed #f1f5f9; color: #334155; }
 .lf-list li:last-child { border-bottom: 0; }
-.lf-list .id { color: #b0b5bd; font-size: 11px; margin-left: 6px; font-family: ui-monospace, Consolas, monospace; }
-.lf-btn { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #e5e7eb; background: #fff; color: #1b1e24; cursor: pointer; text-decoration: none; display: inline-block; }
-.lf-btn:hover:not(:disabled) { background: #f7f8fa; }
+.lf-list .id { color: #94a3b8; font-size: 11px; margin-left: 6px; font-family: ui-monospace, Consolas, monospace; }
+.lf-btn { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 7px; border: 1px solid #cbd5e1; background: #fff; color: #1e293b; cursor: pointer; text-decoration: none; display: inline-block; transition: background .15s ease, border-color .15s ease; }
+.lf-btn:hover:not(:disabled) { background: #f1f5f9; border-color: #94a3b8; }
 .lf-btn:disabled { opacity: .55; cursor: not-allowed; }
 .lf-btn.sm { font-size: 11.5px; padding: 3px 8px; }
 .lf-btn.primary { border-color: #93c5fd; background: #eff6ff; color: #1d4ed8; font-weight: 600; }
 .lf-btn.primary:hover:not(:disabled) { background: #dbeafe; }
 .lf-btn.danger { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
 .lf-foot { margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.lf-msg { font-size: 12px; color: #6b7280; }
+.lf-msg { font-size: 12px; color: #64748b; }
 .lf-tools-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
-.lf-help { font-size: 12px; color: #4b5563; }
-.lf-help summary { cursor: pointer; color: #6b7280; font-size: 12px; padding: 3px 0; }
-.lf-help summary:hover { color: #2f6fed; }
+.lf-help { font-size: 12px; color: #475569; }
+.lf-help summary { cursor: pointer; color: #64748b; font-size: 12px; padding: 3px 0; }
+.lf-help summary:hover { color: var(--lf-accent); }
 .lf-help ul { margin: 6px 0 0; padding-left: 16px; line-height: 1.7; }
 .lf-help .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
 .lf-help .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.lf-help .addr { margin-top: 6px; font-size: 11px; color: #6b7280; }
-.lf-help code { background: #f3f4f6; padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+.lf-help .addr { margin-top: 6px; font-size: 11px; color: #64748b; }
+.lf-help code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
 
-.lf-diary-wrap { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
-.lf-dlist { flex: 0 0 150px; display: flex; flex-direction: column; gap: 5px; }
-.lf-ditem { text-align: left; padding: 7px 9px; border-radius: 7px; border: 1px solid #e5e7eb; background: #fff; cursor: pointer; font: inherit; color: #1b1e24; }
-.lf-ditem:hover { background: #f7f8fa; }
-.lf-ditem[data-on="1"] { border-color: #2f6fed; background: #f0f5ff; }
-.lf-ditem .d { font-size: 12px; font-weight: 600; display: block; }
-.lf-ditem .c { font-size: 11px; color: #6b7280; }
-.lf-dview { flex: 1 1 260px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px 14px; }
+.lf-diary-wrap { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 11px; }
+.lf-dlist { flex: 0 0 155px; display: flex; flex-direction: column; gap: 5px; }
+.lf-ditem { text-align: left; padding: 8px 10px; border-radius: 9px; border: 1px solid #e2e8f0; background: #fff; cursor: pointer; font: inherit; color: #1e293b; }
+.lf-ditem:hover { background: #f8fafc; }
+.lf-ditem[data-on="1"] { border-color: var(--lf-accent); background: #eff6ff; }
+.lf-ditem .d { font-size: 12px; font-weight: 650; display: block; }
+.lf-ditem .c { font-size: 11px; color: #64748b; }
+.lf-dview { flex: 1 1 260px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 13px 15px; }
 .lf-dview h2 { margin: 0 0 4px; font-size: 15px; }
-.lf-dmeta { margin: 0 0 10px; font-size: 11.5px; color: #6b7280; }
+.lf-dmeta { margin: 0 0 10px; font-size: 11.5px; color: #64748b; }
 .lf-dp { margin: 0 0 8px; font-size: 13px; line-height: 1.7; color: #1f2937; white-space: pre-wrap; }
 .lf-dp:last-child { margin-bottom: 0; }
-.lf-dir { font-size: 11px; color: #9ca3af; word-break: break-all; margin: 2px 0 8px; }
+.lf-dir { font-size: 11px; color: #94a3b8; word-break: break-all; margin: 2px 0 8px; }
 .lf-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.lf-tab[data-on="1"] { border-color: #2f6fed; background: #f0f5ff; color: #1d4ed8; font-weight: 600; }
+.lf-tab[data-on="1"] { border-color: var(--lf-accent); background: #eff6ff; color: #1d4ed8; font-weight: 650; }
 .lf-lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 9px; }
-.lf-lib-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 9px; padding: 10px 11px; display: flex; flex-direction: column; gap: 5px; }
+.lf-lib-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 11px; display: flex; flex-direction: column; gap: 5px; }
 .lf-lib-card .top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
-.lf-lib-card .nm { font-size: 13.5px; font-weight: 600; }
-.lf-lib-card .alias { font-size: 11px; color: #6b7280; }
-.lf-lib-card .desc { font-size: 12px; color: #374151; line-height: 1.45; }
+.lf-lib-card .nm { font-size: 13.5px; font-weight: 650; }
+.lf-lib-card .alias { font-size: 11px; color: #64748b; }
+.lf-lib-card .desc { font-size: 12px; color: #334155; line-height: 1.45; }
 .lf-lib-thumbs { display: flex; gap: 5px; flex-wrap: wrap; }
-.lf-lib-thumbs img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid #e5e7eb; }
+.lf-lib-thumbs img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid #e2e8f0; }
 .lf-form-row { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin-bottom: 7px; }
-.lf-input, .lf-textarea, .lf-select { font: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #1b1e24; }
+.lf-input, .lf-textarea, .lf-select { font: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: #1e293b; }
 .lf-input { flex: 1 1 150px; }
 .lf-textarea { width: 100%; min-height: 54px; resize: vertical; margin-bottom: 7px; }
-.lf-drop { border: 1.5px dashed #cbd5e1; border-radius: 7px; padding: 8px; font-size: 11.5px; color: #64748b; text-align: center; cursor: pointer; margin-bottom: 7px; background: #f8fafc; }
-.lf-drop.over { border-color: #2f6fed; background: #eff6ff; color: #1d4ed8; }
+.lf-drop { border: 1.5px dashed #cbd5e1; border-radius: 9px; padding: 9px; font-size: 11.5px; color: #64748b; text-align: center; cursor: pointer; margin-bottom: 7px; background: #f8fafc; }
+.lf-drop.over { border-color: var(--lf-accent); background: #eff6ff; color: #1d4ed8; }
 `;
   doc.head.append(s);
 }
@@ -559,7 +649,7 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 function colorOf(v) {
   if (v < 30) return '#c0392b';
   if (v < 60) return '#d69e2e';
-  return '#2f855a';
+  return '#15803d';
 }
 
 const copyText = (str) => {
@@ -579,7 +669,7 @@ const copyText = (str) => {
   return Promise.resolve();
 };
 
-function renderStallRow(st, showSeller, recordMap) {
+function renderStallRow(st, showSeller, recordMap, onCancel) {
   const row = el('div', 'lf-stall');
   if (st.note) row.title = `说明：${st.note}`;
   const left = el('div', 'lf-stall-l');
@@ -590,7 +680,7 @@ function renderStallRow(st, showSeller, recordMap) {
     left.append(el('span', 'nm', st.item));
     if (showSeller && st.seller) left.append(el('span', 'seller', `雇主：${st.seller}`));
     const mMatch = /(\d+)\s*分/.exec(String(st.item || ''));
-    const mins = mMatch ? Number(mMatch[1]) : 25;
+    const mins = st.estMinutes || (mMatch ? Number(mMatch[1]) : 25);
     left.append(el('span', 'lf-fx-pill', `忙活约 ${mins} 分 · 社交+10 · 不占正式出工`));
     if (st.id) left.append(el('span', 'lf-fx-pill', `编号 ${st.id}`));
     const right = el('div', 'lf-stall-r');
@@ -603,8 +693,16 @@ function renderStallRow(st, showSeller, recordMap) {
     cPill.setAttribute('data-cat', st.category);
     left.append(cPill);
   }
+  if (st.isSpecialty) {
+    left.append(el('span', 'lf-spec-pill', '特产'));
+  }
   left.append(el('span', 'nm', st.item));
   if (showSeller && st.seller) left.append(el('span', 'seller', st.seller));
+  if (showSeller && st.townName) {
+    const fee = Number(st.estimatedShippingFee || 0);
+    const sp = el('span', 'lf-ship-pill' + (st.isCrossTown ? '' : ' free'), st.isCrossTown ? `${st.townName} · 快递+¥${fee}` : `${st.townName} · 免邮`);
+    left.append(sp);
+  }
   if (st.freshVeg) left.append(el('span', 'lf-veg-pill', '鲜蔬'));
   const rec = recordMap && st.id ? recordMap.get(st.id) : null;
   if (!showSeller && rec && rec.totalCost > 0) {
@@ -622,6 +720,12 @@ function renderStallRow(st, showSeller, recordMap) {
 
   const right = el('div', 'lf-stall-r');
   right.append(el('b', null, `¥${st.price}`), document.createTextNode(`×${st.stock}`));
+  if (!showSeller && onCancel && st.id) {
+    const cb = el('button', 'lf-btn sm danger', '下架');
+    cb.type = 'button';
+    cb.addEventListener('click', () => { cb.disabled = true; onCancel(st.id); });
+    right.append(cb);
+  }
   row.append(left, right);
   return row;
 }
@@ -637,6 +741,11 @@ function renderDealsList(ds) {
       li.append(el('span', 'lf-chip good', '已代管完成'));
     } else {
       li.append(document.createTextNode(`${dl.seen ? '' : '[新] '}${dl.buyerPet} 买走 ${dl.qty} 份「${dl.item}」`));
+      if (dl.isCrossTown) {
+        const ct = el('span', 'lf-ship-pill', '跨城单');
+        ct.style.marginLeft = '5px';
+        li.append(ct);
+      }
       if (dl.income > 0) {
         li.append(el('span', 'lf-income-pill', `+¥${dl.income}`));
       }
@@ -656,20 +765,30 @@ export default {
         const app = el('div', 'lf');
         ctx.root.append(app);
 
+        const hero = el('div', 'lf-hero');
         const head = el('div', 'lf-head');
         const town = el('h1', 'lf-town', '—');
         const tag = el('span', 'lf-tag', '');
         const ver = el('span', 'lf-ver', '');
         head.append(town, tag, ver);
-
         const sub = el('p', 'lf-sub', t(lang, 'loading'));
+        const heroChips = el('div', 'lf-hero-chips');
+        hero.append(head, sub, heroChips);
+
+        const alertBox = el('div', 'lf-alert');
+        alertBox.setAttribute('role', 'alert');
+        alertBox.hidden = true;
+
         const note = el('div', 'lf-note');
         note.hidden = true;
 
         const whoCard = el('div', 'lf-card');
         const vitalsCard = el('div', 'lf-card');
+        const twoCol = el('div', 'lf-cols');
         const goalCard = el('div', 'lf-card');
         const mindBodyCard = el('div', 'lf-card');
+        twoCol.append(goalCard, mindBodyCard);
+
         const moveFold = el('details', 'lf-card lf-fold');
         const moveSum = el('summary', null, t(lang, 'moves'));
         const moveHint = el('span', 'hint', '');
@@ -688,7 +807,7 @@ export default {
         const msg = el('span', 'lf-msg', '');
         foot.append(reload, msg);
 
-        app.append(head, sub, note, whoCard, vitalsCard, goalCard, mindBodyCard, moveFold, toolsRow, foot);
+        app.append(hero, alertBox, note, whoCard, vitalsCard, twoCol, moveFold, toolsRow, foot);
 
         let moveTip = null;
         const MOD_SHORT = { food: '饱', energy: '精', clean: '洁', fun: '娱', social: '社', know: '识', work: '钱' };
@@ -793,6 +912,9 @@ export default {
             dChip.title = dishes.map((x) => `${x.name}×${x.qty}`).join('、');
             subRow.append(dChip);
           }
+          if (d.hub?.enabled && d.hub.unreadMail > 0) {
+            subRow.append(el('span', 'lf-chip warn', `未读私信 ${d.hub.unreadMail}`));
+          }
           whoCard.append(subRow);
         };
 
@@ -812,7 +934,7 @@ export default {
             const track = el('div', 'track');
             const fill = el('div', 'fill');
             fill.style.width = Math.max(2, Math.min(100, pct)) + '%';
-            fill.style.background = '#2b6cb0';
+            fill.style.background = '#2563eb';
             track.append(fill);
             row.append(top, track);
             vitalsCard.append(row);
@@ -847,7 +969,7 @@ export default {
             const track = el('div', 'track');
             const fill = el('div', 'fill');
             fill.style.width = Math.max(1, Math.min(100, Math.round((g.ratio || 0) * 100))) + '%';
-            if (g.done || g.left <= 0) fill.style.background = '#2f855a';
+            if (g.done || g.left <= 0) fill.style.background = '#15803d';
             track.append(fill);
             row.append(top, track);
             goalCard.append(row);
@@ -862,7 +984,7 @@ export default {
           for (const m of (d.moodlets || [])) chips.append(el('span', 'lf-chip ' + (m.kind === 'bad' ? 'bad' : 'good'), m.text || ''));
           for (const o of (d.overdue || [])) chips.append(el('span', 'lf-chip bad', `到期：${o.what}`));
           for (const p of (d.pending || [])) chips.append(el('span', 'lf-chip', `悬着：${p.what}（${p.blockedLabel}）`));
-          if (!chips.childElementCount) {
+          if (!chips.children.length) {
             mindBodyCard.append(el('p', 'lf-muted', t(lang, 'calm')));
           } else {
             mindBodyCard.append(chips);
@@ -871,7 +993,7 @@ export default {
 
         const drawMoves = (d) => {
           const h = d.home || {};
-          moveHint.textContent = `${h.tierLabel || '—'}${d.street ? ` · ${d.street}` : ''}（点击展开）`;
+          moveHint.textContent = `${d.town?.name || '—'} · ${h.tierLabel || '—'}${d.street ? ` · ${d.street}` : ''}（点击展开）`;
           if (moveTip && moveTip.until > Date.now()) moveFold.open = true;
 
           moveBody.innerHTML = '';
@@ -908,7 +1030,7 @@ export default {
           }
           if (moveTip && moveTip.until > Date.now()) {
             const p = el('p', 'lf-note-line', moveTip.text);
-            p.style.color = moveTip.err ? '#c0392b' : '#2f855a';
+            p.style.color = moveTip.err ? '#b91c1c' : '#15803d';
             p.style.fontWeight = '600';
             moveBody.append(p);
           }
@@ -951,6 +1073,39 @@ export default {
             stBox.append(el('p', 'lf-note-line', t(lang, 'streetMoveNote')));
             moveBody.append(stBox);
           }
+
+          const hubTowns = (d.hub && d.hub.enabled && Array.isArray(d.hub.towns)) ? d.hub.towns : [];
+          if (hubTowns.length) {
+            const twBox = el('div', 'lf-st-box');
+            twBox.append(el('h4', null, t(lang, 'townsTitle')));
+            for (const tw of hubTowns) {
+              const isCur = tw.id === (d.hub.townId || d.town?.id);
+              const row = el('div', 'lf-st-row' + (isCur ? ' now' : ''));
+              const info = el('div', 'lf-st-info');
+              info.append(el('div', 'st-nm', `${tw.name} · 在籍 ${tw.residentCount ?? 0} 只鱼`));
+              if (tw.notice) info.append(el('div', 'st-desc', tw.notice));
+              const chips = el('div', 'lf-chips');
+              for (const bTxt of fmtBuffChips(tw.buffs)) chips.append(el('span', 'lf-chip info', bTxt));
+              if (tw.shipping && typeof tw.shipping.base_fee === 'number') {
+                chips.append(el('span', 'lf-chip', `跨城快递 ¥${tw.shipping.base_fee}`));
+              }
+              if (chips.children.length) info.append(chips);
+              const btnBox = el('div', 'btnbox');
+              if (isCur) btnBox.append(el('span', 'nowtag', t(lang, 'livingHere')));
+              else {
+                const tb = el('button', 'lf-btn primary', t(lang, 'moveTownTo'));
+                tb.type = 'button';
+                tb.disabled = Boolean(busyHint);
+                if (busyHint) tb.title = busyHint;
+                tb.setAttribute('data-move-town', tw.id);
+                btnBox.append(tb);
+              }
+              row.append(info, btnBox);
+              twBox.append(row);
+            }
+            twBox.append(el('p', 'lf-note-line', t(lang, 'townMoveNote')));
+            moveBody.append(twBox);
+          }
         };
 
         const drawFeedback = (d) => {
@@ -991,7 +1146,7 @@ export default {
         const drawHelp = () => {
           helpBox.append(el('summary', null, t(lang, 'helpTitle')));
           const ul = el('ul');
-          for (const [color, key, desc] of [['#2f855a', 'helpOn', 'helpOnDesc'], ['#9ca3af', 'helpOff', 'helpOffDesc'], ['#c0392b', 'helpErr', 'helpErrDesc']]) {
+          for (const [color, key, desc] of [['#15803d', 'helpOn', 'helpOnDesc'], ['#94a3b8', 'helpOff', 'helpOffDesc'], ['#b91c1c', 'helpErr', 'helpErrDesc']]) {
             const li = el('li');
             const dot = el('span', 'dot');
             dot.style.background = color;
@@ -1004,7 +1159,12 @@ export default {
         const render = (d) => {
           if (!d) return;
           town.textContent = d.town.name || '—';
-          tag.textContent = t(lang, d.town.source === 'server' ? 'server' : d.town.source === 'own' ? 'townOwn' : 'builtin');
+          const isHub = Boolean(d.hub && d.hub.enabled && d.town.source === 'server');
+          tag.className = 'lf-tag' + (isHub ? ' hub' : '');
+          tag.textContent = isHub
+            ? t(lang, 'hubMode')
+            : t(lang, d.town.source === 'server' ? 'server' : d.town.source === 'own' ? 'townOwn' : 'builtin');
+
           const bits = [`${d.dayPart} ${d.clock}`];
           if (d.solarTerm && d.solarTerm.name) bits.push(lang === 'en' ? `Solar term: ${d.solarTerm.name}` : `节气·${d.solarTerm.name}`);
           if (d.weather && d.weather.sky) {
@@ -1016,15 +1176,40 @@ export default {
           if (d.street) bits.push(d.street);
           sub.textContent = bits.join(' · ');
 
+          heroChips.innerHTML = '';
+          if (d.town.buffs) {
+            for (const bTxt of fmtBuffChips(d.town.buffs)) {
+              heroChips.append(el('span', 'lf-chip info', bTxt));
+            }
+          }
+          if (isHub && d.town.shipping && typeof d.town.shipping.base_fee === 'number') {
+            heroChips.append(el('span', 'lf-chip', `跨城快递 ¥${d.town.shipping.base_fee} 起`));
+          }
+          if (isHub && d.hub.petId) {
+            heroChips.append(el('span', 'lf-chip', `身份 ${d.hub.petId}`));
+          }
+
+          alertBox.innerHTML = '';
+          if (d.hub && d.hub.authError) {
+            alertBox.hidden = false;
+            alertBox.append(
+              el('div', 't', lang === 'en' ? 'Hub connection error' : '总服连接报错'),
+              el('div', null, d.hub.authError),
+            );
+          } else {
+            alertBox.hidden = true;
+          }
+
           note.hidden = true;
           note.textContent = '';
           const notes = [];
+          if (d.town && d.town.notice) notes.push(`城门公告：${d.town.notice}`);
           if (!d.journey.installed) notes.push(t(lang, 'noJourney'));
           else if (d.journey.phase === 'traveling') {
             notes.push(t(lang, 'onRoad', { to: d.journey.to || '?', from: d.journey.city || '?' }) + (d.journey.seat ? `（${d.journey.seat}）` : ''));
           } else if (d.journey.tripWork && d.journey.tripWork.gig) notes.push(`旅途打工：${d.journey.tripWork.gig}`);
           else if (d.journey.restUntil) notes.push(`休整至 ${fmtLocal(d.journey.restUntil, 'mdhm')}`);
-          if (d.bulletin && d.bulletin.length) notes.push(`黑板报：${d.bulletin[0]}`);
+          if (d.bulletin && d.bulletin.length && !d.town?.notice) notes.push(`黑板报：${d.bulletin[0]}`);
           if (d.recovered === 'bak') notes.push(t(lang, 'recoveredBak'));
           else if (d.recovered === 'fresh' && d.town.custom) notes.push(t(lang, 'recoveredFresh'));
           if (notes.length) {
@@ -1032,9 +1217,9 @@ export default {
             note.textContent = notes.join(' · ');
           }
 
-          if (!fbBox.childElementCount) drawFeedback(d);
+          if (!fbBox.children.length) drawFeedback(d);
           const hasNew = Boolean(d.versionOutdated && d.latestVersion);
-          ver.dataset.new = hasNew ? '1' : '0';
+          ver.setAttribute('data-new', hasNew ? '1' : '0');
           ver.textContent = hasNew ? t(lang, 'verNew', { v: d.version || '', new: d.latestVersion }) : `· ${t(lang, 'verSelf', { v: d.version || '' })}`;
           ver.title = hasNew ? t(lang, 'verHint', { v: d.version || '', new: d.latestVersion }) : '';
 
@@ -1051,18 +1236,22 @@ export default {
         });
 
         moveBody.addEventListener('click', (ev) => {
-          const b = ev.target && ev.target.closest ? ev.target.closest('button[data-move], button[data-move-street]') : null;
+          const b = ev.target && ev.target.closest ? ev.target.closest('button[data-move], button[data-move-street], button[data-move-town]') : null;
           if (!b || b.disabled) return;
           const tier = b.getAttribute('data-move');
           const street = b.getAttribute('data-move-street');
+          const townId = b.getAttribute('data-move-town');
           b.disabled = true;
           b.textContent = t(lang, 'moving');
           msg.textContent = '';
-          ctx.invoke('move', [street ? { street } : { tier }])
+          const req = townId
+            ? ctx.invoke('moveTown', [{ townId }])
+            : ctx.invoke('move', [street ? { street } : { tier }]);
+          req
             .then((r) => {
               moveTip = (r && r.ok === false && r.reason)
                 ? { text: r.reason, err: true, until: Date.now() + 5000 }
-                : { text: '搬过去了 ✓', err: false, until: Date.now() + 4000 };
+                : { text: townId ? '已经搬去这座城 ✓' : '搬过去了 ✓', err: false, until: Date.now() + 4000 };
               if (moveTip.err) msg.textContent = moveTip.text;
               render(r);
             })
@@ -1070,7 +1259,9 @@ export default {
               moveTip = { text: (e && e.message) || '没搬成', err: true, until: Date.now() + 5000 };
               msg.textContent = moveTip.text;
             })
-            .finally(() => load());
+            .finally(() => {
+              b.disabled = false;
+            });
         });
 
         reload.addEventListener('click', () => {
@@ -1094,11 +1285,14 @@ export default {
         const app = el('div', 'lf');
         ctx.root.append(app);
 
+        const hero = el('div', 'lf-hero');
         const head = el('div', 'lf-head');
         head.append(el('h1', 'lf-town', '职业与工坊'));
         const ver = el('span', 'lf-ver', '');
         head.append(ver);
         const sub = el('p', 'lf-sub', '读取中…');
+        const buffRow = el('div', 'lf-hero-chips');
+        hero.append(head, sub, buffRow);
 
         const summaryCard = el('div', 'lf-card');
         const certCard = el('div', 'lf-card');
@@ -1109,7 +1303,7 @@ export default {
         reload.type = 'button';
         foot.append(reload);
 
-        app.append(head, sub, summaryCard, certCard, recipeCard, jobCard, foot);
+        app.append(hero, summaryCard, certCard, recipeCard, jobCard, foot);
 
         let recipeTab = 'all';
         let lastSnap = null;
@@ -1122,6 +1316,11 @@ export default {
           const jb = c.currentJob || d.job || {};
           const ownedCerts = (jb.certs || []).length;
           sub.textContent = `${jb.what ? `当前职业：${jb.what}（¥${jb.daily}/天）` : '暂无固定营生'} · 工龄 ${jb.days || 0} 天 · 见识 ${c.knowledge ?? d.knowledge ?? 0} · 已考取 ${ownedCerts}/${(c.certs || []).length || 9} 证`;
+          buffRow.innerHTML = '';
+          const buffs = d.town?.buffs || {};
+          for (const bTxt of fmtBuffChips(buffs)) {
+            buffRow.append(el('span', 'lf-chip info', `${d.town?.name || '本城'} · ${bTxt}`));
+          }
 
           /* 1. 职业概览与手艺/装备 */
           summaryCard.innerHTML = '';
@@ -1192,7 +1391,7 @@ export default {
           for (const [tid, tlab] of [['all', '全部菜谱'], ['ready', `材料齐可做 (${readyRecipes.length})`], ['simple', '零门槛简食'], ['chef', '厨师招牌菜']]) {
             const tb = el('button', 'lf-btn sm lf-tab', tlab);
             tb.type = 'button';
-            if (recipeTab === tid) tb.dataset.on = '1';
+            if (recipeTab === tid) tb.setAttribute('data-on', '1');
             tb.addEventListener('click', () => { recipeTab = tid; render(lastSnap); });
             tabBox.append(tb);
           }
@@ -1261,12 +1460,15 @@ export default {
           const jTbody = document.createElement('tbody');
           for (const jbItem of (c.jobs || [])) {
             const tr = document.createElement('tr');
+            const mult = Number(buffs[`${jbItem.domain}_pay_mult`] || 1);
+            const effPay = mult !== 1 ? Math.round(jbItem.pay * mult) : jbItem.pay;
+            const payTxt = mult !== 1 ? `¥${effPay} (原¥${jbItem.pay})` : `¥${jbItem.pay}`;
             const statusTd = el('td', null, jbItem.qualified ? '✓ 已可接' : `缺：${jbItem.missing.join('、')}`);
             statusTd.style.color = jbItem.qualified ? '#166534' : '#9a3412';
             tr.append(
               el('td', null, `${jbItem.tierLabel}·${jbItem.domainLabel}`),
               el('td', null, jbItem.name + (jbItem.materialCost > 0 ? ` (垫¥${jbItem.materialCost})` : '')),
-              el('td', null, `¥${jbItem.pay}`),
+              el('td', null, payTxt),
               el('td', null, `${Math.round(jbItem.minutes / 60 * 10) / 10}h · ${jbItem.place}`),
               statusTd,
             );
@@ -1292,9 +1494,11 @@ export default {
         const app = el('div', 'lf');
         ctx.root.append(app);
 
+        const hero = el('div', 'lf-hero');
         const head = el('div', 'lf-head');
         head.append(el('h1', 'lf-town', '她惦记的'));
-        head.style.marginBottom = '10px';
+        hero.append(head, el('p', 'lf-sub', '个人目标、日常常态、留意清单、想要与约定（只读观察）。'));
+
         const goalsCard = el('div', 'lf-card');
         const cols = el('div', 'lf-cols');
         const habitsCard = el('div', 'lf-card');
@@ -1304,7 +1508,7 @@ export default {
         const pendCard = el('div', 'lf-card');
         const pledgeCard = el('div', 'lf-card');
         cols.append(habitsCard, watchesCard, buyCard, placeCard, pendCard, pledgeCard);
-        app.append(head, goalsCard, cols);
+        app.append(hero, goalsCard, cols);
 
         const drawSec = (card, title, items, fmt) => {
           card.innerHTML = '';
@@ -1337,7 +1541,7 @@ export default {
               const track = el('div', 'track');
               const fill = el('div', 'fill');
               fill.style.width = Math.max(1, Math.min(100, Math.round((g.ratio || 0) * 100))) + '%';
-              if (g.done || g.left <= 0) fill.style.background = '#2f855a';
+              if (g.done || g.left <= 0) fill.style.background = '#15803d';
               track.append(fill);
               row.append(top, track);
               goalsCard.append(row);
@@ -1370,19 +1574,41 @@ export default {
         const app = el('div', 'lf');
         ctx.root.append(app);
 
+        const hero = el('div', 'lf-hero');
         const head = el('div', 'lf-head');
         head.append(el('h1', 'lf-town', '你和它'));
-        head.style.marginBottom = '10px';
+        const sub = el('p', 'lf-sub', '来访陪伴、收下的小物件、旅途对齐与 Hub 鱼间信箱（只列事实不打分）。');
+        hero.append(head, sub);
+
         const cols = el('div', 'lf-cols');
         const visitsCard = el('div', 'lf-card');
         const giftsCard = el('div', 'lf-card');
         const bridgeCard = el('div', 'lf-card');
         cols.append(visitsCard, giftsCard, bridgeCard);
 
-        app.append(head, cols);
+        const mailCard = el('div', 'lf-card');
+        app.append(hero, cols, mailCard);
+
+        let selectedConvId = '';
+        let loadedMessages = [];
+        let lastData = null;
+        let convReqSeq = 0;
+
+        const openConv = (convId) => {
+          selectedConvId = convId;
+          const seq = ++convReqSeq;
+          ctx.invoke('mailMessages', [{ conversationId: convId }])
+            .then((r) => {
+              if (seq !== convReqSeq || selectedConvId !== convId) return;
+              loadedMessages = (r && Array.isArray(r.messages)) ? r.messages : [];
+              if (lastData) render(lastData);
+            })
+            .catch(() => {});
+        };
 
         const render = (d) => {
           if (!d) return;
+          lastData = d;
           visitsCard.innerHTML = '';
           visitsCard.append(el('h3', null, d.visitedDays > 0 ? `最近陪伴（近 7 天 ${d.visitedDays} 天）` : '最近陪伴'));
           const pr = d.presence || [];
@@ -1441,6 +1667,95 @@ export default {
             for (const text of rows) ul.append(el('li', null, text));
             bridgeCard.append(ul);
           }
+
+          mailCard.innerHTML = '';
+          const mHead = el('div', 'lf-mkt-head');
+          const unreadCnt = Number(d.hub?.unreadMail || 0);
+          mHead.append(el('h3', null, `Hub 同城街坊与鱼间信箱${unreadCnt > 0 ? `（未读 ${unreadCnt}）` : ''}`));
+          const mActs = el('div', 'lf-mkt-actions');
+          if (d.hub?.enabled) {
+            const rfBtn = el('button', 'lf-btn sm', '刷新信箱');
+            rfBtn.type = 'button';
+            rfBtn.addEventListener('click', () => {
+              rfBtn.disabled = true;
+              ctx.invoke('mailRefresh')
+                .then((nextData) => {
+                  render(nextData);
+                  if (selectedConvId) openConv(selectedConvId);
+                })
+                .catch(() => {})
+                .finally(() => { rfBtn.disabled = false; });
+            });
+            mActs.append(rfBtn);
+          }
+          mHead.append(mActs);
+          mailCard.append(mHead);
+
+          if (!d.hub || !d.hub.enabled) {
+            mailCard.append(el('p', 'lf-muted', '配置 worlds.life.hubUrl 后开启多城邻里与鱼间私信；单机与老服模式静默不占资源。'));
+            return;
+          }
+          const myPetId = d.hub.petId || '';
+          const resList = (d.hub.residents || []).filter((r) => r.petId !== myPetId);
+          if (resList.length) {
+            const resBox = el('div', 'lf-chips');
+            resBox.style.marginBottom = '10px';
+            for (const r of resList.slice(0, 12)) {
+              resBox.append(el('span', 'lf-chip info', `${r.displayName} · ${r.street}`));
+            }
+            mailCard.append(resBox);
+          }
+          const convs = d.hub.conversations || [];
+          if (!convs.length) {
+            mailCard.append(el('p', 'lf-muted', '鱼间信箱里暂时还没有对话。在聊天里对它说「看看城里有哪些街坊 / 给 XX 寄封信」即可由它主动联络。'));
+            return;
+          }
+          for (const cv of convs) {
+            const cRow = el('div', 'lf-mail-conv');
+            if (cv.id === selectedConvId) cRow.setAttribute('data-on', '1');
+            const cLeft = el('div', null);
+            cLeft.append(el('strong', null, cv.peer?.displayName || cv.title || cv.id));
+            if (cv.lastMessage?.body) {
+              const prev = el('div', 'lf-muted', cv.lastMessage.body);
+              prev.style.fontSize = '11.5px';
+              cLeft.append(prev);
+            }
+            const cRight = el('div', 'lf-mkt-actions');
+            if (cv.unreadCount > 0) cRight.append(el('span', 'lf-chip warn', `未读 ${cv.unreadCount}`));
+            cRight.append(el('span', 'lf-btn sm', cv.id === selectedConvId ? '已展开' : '看信'));
+            cRow.append(cLeft, cRight);
+            cRow.addEventListener('click', () => openConv(cv.id));
+            mailCard.append(cRow);
+          }
+          if (selectedConvId) {
+            const activeConv = convs.find((c) => c.id === selectedConvId);
+            const thread = el('div', 'lf-mail-thread');
+            const tTop = el('div', 'lf-mkt-head');
+            tTop.append(el('span', 'lf-subh', `与 ${activeConv?.peer?.displayName || '街坊'} 的通信记录（只读）`));
+            if (activeConv && activeConv.unreadCount > 0) {
+              const mkBtn = el('button', 'lf-btn sm primary', '标记已读');
+              mkBtn.type = 'button';
+              mkBtn.addEventListener('click', () => {
+                mkBtn.disabled = true;
+                ctx.invoke('mailMarkRead', [{ conversationId: selectedConvId }]).then(render).catch(() => {}).finally(() => { mkBtn.disabled = false; });
+              });
+              tTop.append(mkBtn);
+            }
+            thread.append(tTop);
+            if (!loadedMessages.length) {
+              thread.append(el('p', 'lf-muted', '正在读取或暂无消息。'));
+            } else {
+              for (const m of loadedMessages) {
+                const mine = m.senderPetId === myPetId;
+                const bub = el('div', 'lf-bubble ' + (mine ? 'mine' : 'peer'));
+                bub.append(el('div', null, m.body));
+                if (m.createdAt) bub.append(el('div', 'bmeta', fmtLocal(m.createdAt, 'mdhm')));
+                thread.append(bub);
+              }
+            }
+            mailCard.append(thread);
+          }
+          mailCard.append(el('p', 'lf-note-line', '只读信箱：写信、回信或拉黑请在聊天里对它说，由它自主判断联络。'));
         };
 
         const load = () => ctx.invoke('snapshot').then(render).catch(() => {});
@@ -1456,11 +1771,13 @@ export default {
         const app = el('div', 'lf');
         ctx.root.append(app);
 
+        const hero = el('div', 'lf-hero');
         const head = el('div', 'lf-head');
         const title = el('h1', 'lf-town', '农牧场与鱼市街');
         const ver = el('span', 'lf-ver', '');
         head.append(title, ver);
         const sub = el('p', 'lf-sub', '读取中…');
+        hero.append(head, sub);
 
         const guideCard = el('div', 'lf-card');
         const helperCard = el('div', 'lf-card');
@@ -1474,11 +1791,13 @@ export default {
         reload.type = 'button';
         const msg = el('span', 'lf-msg', '');
         foot.append(reload, msg);
-        app.append(head, sub, guideCard, helperCard, farmCard, ranchCard, pantryCard, stallCard, foot);
+        app.append(hero, guideCard, helperCard, farmCard, ranchCard, pantryCard, stallCard, foot);
 
         let helperTip = null;
         let farmTip = null;
         let ranchTip = null;
+        let stallTip = null;
+        let marketFilter = 'all';
         let confirmHarvestId = '';
         let confirmUnrentFarm = false;
         let confirmUnrentRanch = false;
@@ -1492,6 +1811,7 @@ export default {
                 : { text: (r && r.message) || '操作成功 ✓', err: false, until: Date.now() + 4500 };
               if (section === 'farm') farmTip = tip;
               else if (section === 'helper') helperTip = tip;
+              else if (section === 'stall') stallTip = tip;
               else ranchTip = tip;
               render(r);
             })
@@ -1499,6 +1819,7 @@ export default {
               const tip = { text: (e && e.message) || '请求失败', err: true, until: Date.now() + 5500 };
               if (section === 'farm') farmTip = tip;
               else if (section === 'helper') helperTip = tip;
+              else if (section === 'stall') stallTip = tip;
               else ranchTip = tip;
               if (lastData) render(lastData);
             });
@@ -1518,20 +1839,23 @@ export default {
 
           /* 1. 玩法全链路图解 + 五大赛道成本说明表 */
           guideCard.innerHTML = '';
-          guideCard.append(el('h3', null, '农牧场（支持下方直接点击种菜与养殖）× 鱼市街闭环'));
+          const guideFold = el('details', 'lf-fold');
+          const guideSum = el('summary', null, '农牧场（支持下方直接点击种菜与养殖）× 鱼市街闭环');
+          guideSum.append(el('span', 'hint', '点击展开规则与攻略'));
+          const guideBody = el('div', null);
           const steps = el('div', 'lf-steps');
           const stepDefs = [
             ['① 种菜扩展 18 种', '18 种节气作物（红薯/土豆/萝卜/玉米/黄豆/莲藕等，4–9 天）；可直接在下方选种子点击播种、浇水与收割。'],
             ['② 养鸡牛与鱼塘', '大肥鱼是鲸鱼不算鱼，可放心养草鱼/鲈鱼，另有鸡舍收蛋肉、牛棚挤奶收牛肉；老小区起有鸡舍，签约城郊农牧场全解锁。'],
             ['③ 储物篮与成品菜', '蔬果与肉蛋奶鱼入储物篮；她下厨做出成品菜格既可热吃，也能在鱼市街摆料理摊免现买原料费（仅 ¥2 打包）。'],
-            ['④ 鱼市街摆摊入账', '五大品类摆摊实扣本钱与精力（3 天过期压货）；成交后由 life_deals 进账钱包（同两人每日限 2 单防刷）。'],
+            ['④ 跨城鱼市街摆摊', '五大品类摆摊实扣本钱与精力（3 天过期压货）；Hub 多城支持跨城逛特产并明算快递费，成交后真金白银进账。'],
           ];
           for (const [st, sd] of stepDefs) {
             const box = el('div', 'lf-step');
             box.append(el('div', 'st-t', st), el('div', 'st-d', sd));
             steps.append(box);
           }
-          guideCard.append(steps);
+          guideBody.append(steps);
 
           const rulesFold = el('details', 'lf-fold');
           const rulesSum = el('summary', null, '五大赛道门槛、本钱明细与常用对话示范');
@@ -1572,11 +1896,13 @@ export default {
           sayList.append(
             el('li', null, '菜谱下厨：「去用储物篮里的红薯烤个红薯吃」「考个厨师证」「用番茄和牛肉做份西红柿炖牛腩存着摆摊」'),
             el('li', null, '养殖与收货：「看看牧场和鱼塘还能放养啥」「去鸡舍把鸡蛋收了」「起塘收草鱼」'),
-            el('li', null, '农产/料理摆摊：「把自家鲜鸡蛋或莲藕挂鱼市街卖 16 元 3 份」「把做好的成品菜拿去鱼市街摆摊」'),
+            el('li', null, '农产/跨城摊位：「把自家鲜鸡蛋挂鱼市街卖 16 元 3 份」「逛逛鱼市街看看有没有北京特产」'),
           );
           rulesBody.append(sayTitle, sayList);
           rulesFold.append(rulesSum, rulesBody);
-          guideCard.append(rulesFold);
+          guideBody.append(rulesFold);
+          guideFold.append(guideSum, guideBody);
+          guideCard.append(guideFold);
 
           /* 1.5 农牧帮手（活干完0元免扣 · 优先真鱼邻里代管，找不到自动回落） */
           helperCard.innerHTML = '';
@@ -1628,9 +1954,15 @@ export default {
           if (d.townConnected && pw.total > 0 && !fh.pendingErrand) {
             const postErrBtn = el('button', 'lf-btn sm', `发今日邻里单(¥${curQuote.wage}·约${curQuote.minutes}分)`);
             postErrBtn.type = 'button';
-            postErrBtn.title = '在鱼市街单次发一条农牧代管委托，比系统自动更便宜；耗时按动植物数量算，6 小时无人接自动退钱';
+            postErrBtn.title = '在本城鱼市街单次发一条农牧代管委托，比系统自动更便宜；耗时按动植物数量算，6 小时无人接自动退钱';
             postErrBtn.addEventListener('click', () => { postErrBtn.disabled = true; runOp('helper', 'postErrand', { mode: curModeForErrand }); });
             hActs.append(postErrBtn);
+          }
+          if (d.hub?.enabled && fh.pendingErrand) {
+            const cErrBtn = el('button', 'lf-btn sm danger', '撤回委托并退钱');
+            cErrBtn.type = 'button';
+            cErrBtn.addEventListener('click', () => { cErrBtn.disabled = true; runOp('helper', 'cancelErrand', { errandId: fh.pendingErrand.stallId }); });
+            hActs.append(cErrBtn);
           }
           if (fh.mode !== 'off') {
             const offBtn = el('button', 'lf-btn sm danger', '解雇帮手');
@@ -1952,13 +2284,24 @@ export default {
           animalsFold.append(animalsSum, aWrap);
           ranchCard.append(animalsFold);
 
-          /* 4. 储物篮与成品菜格 */
+          /* 4. 储物篮与成品菜格 + 本城特产 */
           pantryCard.innerHTML = '';
           const pan = d.pantry || [];
           const dishes = d.cookedDishes || [];
           const panTotal = pan.reduce((s, x) => s + (Number(x.qty) || 0), 0);
           const dishTotal = dishes.reduce((s, x) => s + (Number(x.qty) || 0), 0);
           pantryCard.append(el('h3', null, `储物篮原料（${panTotal} 份）与成品菜格（${dishTotal} 份）`));
+
+          const specs = d.hub?.specialties || [];
+          if (specs.length) {
+            const spBox = el('div', 'lf-chips');
+            spBox.style.marginBottom = '9px';
+            spBox.append(el('span', 'lf-spec-pill', `${d.town?.name || '本城'}特产目录`));
+            for (const sp of specs) {
+              spBox.append(el('span', 'lf-chip', `${sp.name}（¥${sp.basePrice}–${sp.maxPrice}）`));
+            }
+            pantryCard.append(spBox);
+          }
 
           const splitBox = el('div', 'lf-mkt-split');
           splitBox.style.marginTop = '0';
@@ -2003,22 +2346,44 @@ export default {
 
           /* 5. 鱼市街与成交入账 */
           stallCard.innerHTML = '';
-          stallCard.append(el('h3', null, '鱼市街 · 摊位与成交入账'));
+          const stHead = el('div', 'lf-mkt-head');
+          stHead.append(el('h3', null, d.hub?.enabled ? '鱼市街 · 全服跨城集市与成交入账' : '鱼市街 · 摊位与成交入账'));
+          if (d.hub?.enabled) {
+            const fTabs = el('div', 'lf-tabs');
+            fTabs.style.marginBottom = '0';
+            for (const [fk, fl] of [['all', '全部城市'], ['local', '仅本城(免邮)'], ['spec', '仅看特产']]) {
+              const fb = el('button', 'lf-btn sm lf-tab', fl);
+              fb.type = 'button';
+              if (marketFilter === fk) fb.setAttribute('data-on', '1');
+              fb.addEventListener('click', () => { marketFilter = fk; render(lastData); });
+              fTabs.append(fb);
+            }
+            stHead.append(fTabs);
+          }
+          stallCard.append(stHead);
+
+          if (stallTip && stallTip.until > Date.now()) {
+            stallCard.append(el('div', 'lf-feedback ' + (stallTip.err ? 'err' : 'ok'), stallTip.text));
+          }
           const bd = d.bulletin || [];
           if (bd.length) stallCard.append(el('div', 'lf-board-strip', `《街口黑板报》 ${bd.join('；')}`));
 
           const recordMap = new Map((d.stallRecords || []).map((r) => [r.id, r]));
           const os = d.otherStalls || [];
           const otherErrands = os.filter((st) => st.kind === 'errand');
-          const otherGoods = os.filter((st) => st.kind !== 'errand');
+          const otherGoods = os.filter((st) => st.kind !== 'errand').filter((st) => {
+            if (marketFilter === 'local') return !st.isCrossTown;
+            if (marketFilter === 'spec') return Boolean(st.isSpecialty);
+            return true;
+          });
           if (otherErrands.length) {
-            stallCard.append(el('div', 'lf-subh', `街坊农牧委托 · 让大肥鱼帮忙干活挣零花钱（${otherErrands.length}）`));
+            stallCard.append(el('div', 'lf-subh', `同城街坊农牧委托 · 让大肥鱼帮忙干活挣零花钱（${otherErrands.length}）`));
             for (const st of otherErrands) stallCard.append(renderStallRow(st, true, recordMap));
-            stallCard.append(el('p', 'lf-note-line', '在对话里对它说「接鱼市街最短的那份农牧委托」或报出上面的 16 位委托编号即可认领（不扣钱、不占今天正式打工额度）。'));
+            stallCard.append(el('p', 'lf-note-line', '在对话里对它说「接鱼市街最短的那份农牧委托」或报出上面的委托编号即可认领（不扣钱、仅限同城、不占今天正式打工额度）。'));
           }
           if (!otherGoods.length) {
             if (!otherErrands.length) {
-              stallCard.append(el('p', 'lf-muted', '街坊这会儿还没摆出摊子或委托（或未连接城服务器）。'));
+              stallCard.append(el('p', 'lf-muted', marketFilter === 'all' ? '街坊这会儿还没摆出摊子或委托（或未连接城服务器）。' : '当前筛选条件下暂无在售摊位。'));
             }
           } else {
             stallCard.append(el('div', 'lf-subh', `街坊在售（${otherGoods.length}）`));
@@ -2029,8 +2394,9 @@ export default {
           const mineCol = el('div', null);
           mineCol.append(el('div', 'lf-subh', '我的在架摊位'));
           const ms = d.myStalls || [];
+          const cancelHandler = d.hub?.enabled ? (lid) => runOp('stall', 'cancelListing', { listingId: lid }) : null;
           if (!ms.length) mineCol.append(el('p', 'lf-muted', '暂无在架摊位（每人最多挂 3 摊，3 天有效）。'));
-          else for (const st of ms) mineCol.append(renderStallRow(st, false, recordMap));
+          else for (const st of ms) mineCol.append(renderStallRow(st, false, recordMap, cancelHandler));
 
           const dealCol = el('div', null);
           const un = Number(d.unseenDeals || 0);
@@ -2059,12 +2425,16 @@ export default {
         const app = el('div', 'lf');
         ctx.root.append(app);
 
+        const hero = el('div', 'lf-hero');
         const head = el('div', 'lf-head');
         head.append(el('h1', 'lf-town', '日记与时间轴'));
         const ver = el('span', 'lf-ver', '');
         head.append(ver);
         const sub = el('p', 'lf-sub', '读取中…');
         const dirLine = el('p', 'lf-dir', '');
+        dirLine.style.margin = '4px 0 0';
+        hero.append(head, sub, dirLine);
+
         const notice = el('div', 'lf-note');
         notice.hidden = true;
 
@@ -2080,7 +2450,7 @@ export default {
         reload.type = 'button';
         foot.append(reload);
 
-        app.append(head, sub, dirLine, notice, tlCard, wrap, ledgerCard, foot);
+        app.append(hero, notice, tlCard, wrap, ledgerCard, foot);
 
         let selectedDate = '';
         let ledgerTab = 'today';
@@ -2127,7 +2497,7 @@ export default {
             notice.textContent = '旅行途中记录写入旅行日记，回家后恢复写入生活日记。';
           }
 
-          /* 1. 一日时间轴（合并原 day 页签，不再与下面重复） */
+          /* 1. 一日时间轴 */
           tlCard.innerHTML = '';
           const tList = (r.todayTellable && r.todayTellable.length) ? r.todayTellable : (r.recentTellable || r.tellable || []);
           tlCard.append(el('h3', null, (r.todayTellable && r.todayTellable.length) ? '今日时间轴' : '近期经历时间轴（今日暂无）'));
@@ -2153,11 +2523,13 @@ export default {
             for (const d of days) {
               const btn = el('button', 'lf-ditem');
               btn.type = 'button';
-              if (d.dateKey === active.dateKey) btn.dataset.on = '1';
+              if (d.dateKey === active.dateKey) btn.setAttribute('data-on', '1');
               btn.append(el('span', 'd', d.dateKey), el('span', 'c', d.town || '兰州'));
               btn.addEventListener('click', () => {
-                for (const ch of listBox.children) if (ch.dataset) delete ch.dataset.on;
-                btn.dataset.on = '1';
+                for (const ch of listBox.children) {
+                  if (ch && ch.removeAttribute) ch.removeAttribute('data-on');
+                }
+                btn.setAttribute('data-on', '1');
                 showEntry(d);
               });
               listBox.append(btn);
@@ -2165,7 +2537,7 @@ export default {
             showEntry(active);
           }
 
-          /* 3. 合并收支流水（支持今日 / 近期切换，不重复渲染两遍） */
+          /* 3. 合并收支流水 */
           ledgerCard.innerHTML = '';
           const lHead = el('div', 'lf-mkt-head');
           const todayL = r.todayLedger || [];
@@ -2176,7 +2548,7 @@ export default {
           for (const [lid, llab] of [['today', `今日 (${todayL.length})`], ['recent', `近期 (${recentL.length})`]]) {
             const tb = el('button', 'lf-btn sm lf-tab', llab);
             tb.type = 'button';
-            if (ledgerTab === lid) tb.dataset.on = '1';
+            if (ledgerTab === lid) tb.setAttribute('data-on', '1');
             tb.addEventListener('click', () => { ledgerTab = lid; render(lastResp); });
             lTabs.append(tb);
           }
@@ -2221,9 +2593,12 @@ export default {
         ctx.root.append(app);
 
         const CAT_LABELS = { characters: '人物', outfits: '服饰', scenes: '场景', props: '道具' };
+        const hero = el('div', 'lf-hero');
         const head = el('div', 'lf-head');
         head.append(el('h1', 'lf-town', '素材库与留影'));
         const dirLine = el('div', 'lf-dir', '');
+        dirLine.style.margin = '4px 0 0';
+        hero.append(head, el('p', 'lf-sub', '四分类参考图库与自动留影策略。'), dirLine);
 
         const policyCard = el('div', 'lf-card');
         policyCard.append(el('h3', null, '留影策略'));
@@ -2293,7 +2668,7 @@ export default {
         formFold.append(formTitle, formBody);
 
         const grid = el('div', 'lf-lib-grid');
-        app.append(head, dirLine, policyCard, tabs, formFold, grid);
+        app.append(hero, policyCard, tabs, formFold, grid);
 
         const readImages = (files) => {
           const picked = Array.from(files || []).filter((f) => /^image\//.test(f.type)).slice(0, 4);
@@ -2347,7 +2722,7 @@ export default {
             const count = (lastState.entries || []).filter((x) => x.category === cat).length;
             const tb = el('button', 'lf-btn lf-tab', `${CAT_LABELS[cat]} (${count})`);
             tb.type = 'button';
-            if (cat === curCat) tb.dataset.on = '1';
+            if (cat === curCat) tb.setAttribute('data-on', '1');
             tb.addEventListener('click', () => { curCat = cat; resetForm(); render(lastState); });
             tabs.append(tb);
           }

@@ -36,6 +36,14 @@ export function normWeatherUrl(raw: unknown): string {
   return String(raw || '').trim().replace(/\/+$/, '').replace(/\/now$/i, '').replace(/\/+$/, '');
 }
 
+export function normHubUrl(raw: unknown): string {
+  return String(raw || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/(?:v1|health)$/i, '')
+    .replace(/\/+$/, '');
+}
+
 export function clampWeatherTimeoutMs(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return 2500;
@@ -50,6 +58,10 @@ export interface LifeConfigSection extends WorldSection {
    * 现在按 journey 那套来 —— **本机填的优先，服务器是覆盖**。
    */
   homeCity: string;
+  /** 多城联机总服 Hub v1 根地址（如 `https://hub.cooppetsjourney.top`）。留空 = 退回老服 `townUrl` 或单机。 */
+  hubUrl: string;
+  /** 接入 Hub v1 时默认定居的城镇 ID（如 `lanzhou-reedpond` / `beijing`）。 */
+  hubTownId: string;
   /** 她住的那座城由哪台服务器定。填了 = 覆盖上面那座（支持单个 URL 或逗号/换行分隔多台，留位置兼容 F1 联邦）。 */
   townUrl: string | string[];
   /** 天气模式：auto（有外部地址优先、失败静默回退内置）/ external（外部优先、失联兜底并红灯提示）/ builtin（仅内置）。 */
@@ -88,6 +100,8 @@ export const LIFE_DEFAULTS = (): LifeConfigSection => ({
    */
   enabled: false,
   homeCity: '',
+  hubUrl: '',
+  hubTownId: 'lanzhou-reedpond',
   townUrl: '',
   weatherMode: 'auto',
   weatherUrl: '',
@@ -115,15 +129,29 @@ export function lifeConfigGroups(): ConfigGroup[] {
           type: 'string',
           title: '她住的那座城',
           description: '填一座真实城市（如北京、成都），日常出门与打工就落在这儿；留空则用内置的「兰州」。'
-            + '\n若下面填了服务器地址，这一栏会被服务器统一城名覆盖。',
+            + '\n若下面填了 Hub v1 或旧服服务器地址，这一栏会被服务器统一城名覆盖。',
+          'x-hot': true,
+        },
+        'worlds.life.hubUrl': {
+          type: 'string',
+          title: '多城联机总服地址 (Hub v1)',
+          description: '填入 Hub v1 服务根地址（如 https://hub.cooppetsjourney.top）即开启多城联机：'
+            + '\n支持在兰州 / 北京等开放城市间自由迁居、跨城鱼市街买摊与快递费结算、同城农牧代管、鱼间私信，以及动态城市特产与行业加成。'
+            + '\n留空随时回滚老服 townUrl 或纯本地单机过日子。',
+          'x-hot': true,
+        },
+        'worlds.life.hubTownId': {
+          type: 'string',
+          title: 'Hub 默认定居城市 ID',
+          description: '接入 Hub v1 时默认落户哪座城，常用 lanzhou-reedpond（兰州）或 beijing（北京）。'
+            + '\n也可在「她此刻」面板直接一键迁居其他开放城市，迁城后会自动同步。',
           'x-hot': true,
         },
         'worlds.life.townUrl': {
           type: 'string',
-          title: '同城服务器地址',
-          description: '填你的服务器域名（如 https://cooppetsjourney.top），支持逗号或换行填多个备选地址。'
-            + '\n填了：同步城名/街规与《街口黑板报》，可在鱼市街买菜、挂摊卖货；留空：纯本地单机过日子，不发网络请求。'
-            + '\n管理城名与看全城鱼数，打开服务器的 /pets/life 页面。',
+          title: '同城服务器地址（老服兼容）',
+          description: '仅在留空 Hub v1 地址时生效（老服兼容与回滚通道），支持逗号或换行填多个备选地址（如 https://cooppetsjourney.top）。'
+            + '\n填了：同步城名/街规与《街口黑板报》，可在鱼市街买菜、挂摊卖货；两项皆留空：纯本地单机过日子，不发网络请求。',
           'x-hot': true,
         },
         'worlds.life.weatherMode': {

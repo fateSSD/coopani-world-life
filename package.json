@@ -1,8 +1,8 @@
 {
   "name": "coopani-world-life",
-  "version": "1.4.5",
+  "version": "1.5.0",
   "type": "module",
-  "description": "模拟鱼生 · 给桌宠过日子的真实小生活：五条需求、18种节气菜园与鸡牛鱼养殖（面板可直接点击操作）、菜谱联动与职业工坊、鱼市街摆摊与日记时间轴。（需 Coopani 0.2.22+｜QQ 群 284525159）",
+  "description": "模拟鱼生 · 桌面伴侣的真实人生与多城联机生活：五条需求、Hub v1 多城迁居（兰州/北京等）与跨城鱼市街、同城农牧代管与鱼间信箱、18种菜园与鸡牛鱼养殖直点、职业工坊与全新七页签手账 UI。（需 Coopani 0.2.22+｜QQ 群 284525159）",
   "author": {
     "name": "Mr.Q"
   },
@@ -38,7 +38,7 @@
     "api": 6,
     "displayName": "模拟鱼生",
     "describe": "describe.json",
-    "webUiClient": "web/panel-1.4.5.js",
+    "webUiClient": "web/panel-1.5.0.js",
     "tags": [
       "companion",
       "internal-state"
@@ -46,11 +46,11 @@
     "locales": {
       "zh": {
         "displayName": "模拟鱼生",
-        "description": "让桌宠有自己真正在过的小日子（需 Coopani 0.2.22+｜QQ 群 284525159）。\n\n- **真实节奏与节气**：五条需求随真实时间流逝；二十四节气标注、南滨河路晨集 8 折、张掖路尾货半价、雁滩路周末旧货集、深夜静谧与晨醒梦境切片。\n- **打工、考证与职业工坊**：四档出工与五档完成度波动，可报八大领域培训班、考 9 张证书、购置烤箱/缝纫机/相机/电脑与轻载具；「职业与工坊」页签直观展示考证通过率、岗位门槛与 18 道菜谱原料匹配（烤红薯等家常简食免证，厨师招牌菜高回复高溢价）。\n- **18 种菜园、鸡牛鱼养殖与面板直点**：种菜扩容至 18 种并新增鸡舍/牛棚/鱼塘（大肥鱼是鲸鱼不算鱼，放心养鱼收肉蛋奶），在「农牧场与鱼市街」页签可由用户直接点击播种、浇水、收割、放养、喂食与起塘，做出的成品菜格可热吃或直接免原料费上鱼市街摆摊。\n- **七页签精简整合**：时间轴与生活日记合并为「日记与时间轴」去除重复，保留她此刻、职业与工坊、她惦记的、你和它、农牧场与鱼市街、日记与时间轴及四分类参考素材库。"
+        "description": "让桌宠有自己真正在过的小日子（需 Coopani 0.2.22+｜QQ 群 284525159）。\n\n- **Coopanion Hub v1.1 多城联机（可选双轨）**：新增 `hubUrl` / `hubTownId` 热配置，支持跨城迁居（如芦花塘 ↔ 北京）、城邦公告与专属加成（如北京文案打工加成）、全网跨城摆摊买摊（含特产标识与按件快递费明细）、同城邻里代管委托，以及 23 个工具（新增 `life_mail` 鱼间私信与街坊关系）；留空 `hubUrl` 时 100% 兼容老服 `townUrl` 或纯单机。\n- **全新七页签手账 UI**：全面重塑面板视觉与结构（7 个页签：此刻、职业工坊、她惦记的、你与街坊、农牧与集市、日记时间轴、参考素材库），支持多城迁居、农牧直点打理、跨城/本城/特产筛摊、撤单下架与只读鱼间私信收发视图。\n- **真实节奏、打工考证与农牧工坊**：五条需求随真实时间流逝与二十四节气标注；四档出工与八大领域培训考证，18 道菜谱工坊（烤红薯等家常简食免证）；18 种慢熟作物与鸡舍/牛棚/鱼塘养殖（大肥鱼是鲸鱼不算鱼，放心养鱼收肉蛋奶）。"
       },
       "en": {
         "displayName": "Simulated Fish Life",
-        "description": "A real everyday life simulation for your desktop companion (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Daily rhythm & seasons**: five needs decay in real time, alongside 24 solar-term labels, street markets, quiet late nights, and wake-up dreams.\n- **Career & Recipe Workshop**: four job tiers, 8 skill domains, 9 certs with live pass-rate bars, and an 18-recipe cooking workshop matching your pantry (simple meals like roasted sweet potatoes need no chef cert; chef dishes store into prepared-dish slots).\n- **18 crops, Livestock & Pond + Interactive Farm Panel**: expand to 18 crops plus chickens, dairy cows, and freshwater pond fish (as a whale, Big Fish isn't a fish!). Users can click directly in the Farm & Market panel to plant, water, harvest, raise, feed, and collect.\n- **7 streamlined tabs**: merged timeline & diary into one tab, introducing the Career & Workshop tab alongside Live Status, Wants, Companionship, Farm & Market, Diary & Timeline, and Reference Library."
+        "description": "A real everyday life simulation for your desktop companion (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Coopanion Hub v1.1 Multi-City Online (Dual-Track)**: Optional `hubUrl` and `hubTownId` hot settings enable cross-town relocation (e.g. Lanzhou Reedpond <-> Beijing), town notices and domain buffs, cross-town stalls with specialty tags and transparent shipping breakdown, same-town neighbor errands, and `life_mail` direct messaging & neighbor relations (23 tools total). Leaving `hubUrl` empty keeps 100% compatibility with legacy `townUrl` or offline mode.\n- **Revamped 7-Tab Journal UI**: Refreshed layout and controls across Live Status, Career & Workshop, Wants, Companionship & Mail, Farm & Market, Diary & Timeline, and Reference Library—with town switching, direct farm/ranch controls, specialty/local filters, order cancellation, and read-only fish-to-fish mailbox view.\n- **Daily Rhythm, Career & Farm Workshop**: Real-time five needs with 24 solar terms, 4 job tiers, 8 skill domains, 9 certs, 18 recipes, 18 crops, and poultry/dairy/pond farming (Big Fish is a whale, not a fish!)."
       }
     },
     "icon": "assets/icon.png"

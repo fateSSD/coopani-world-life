@@ -1,5 +1,18 @@
 # 变更记录
 
+## 1.5.0 — 2026-11-27（接入 Coopanion Hub v1.1 多城联机 + 全新七页签手账 UI + 鱼间私信与扩充文档）
+
+- **Coopanion Hub v1.1 双轨接入**（`src/hub-client.ts`、`src/config.ts`、`src/bridge.ts`、`src/world.ts`）：
+  - 新增 `worlds.life.hubUrl` 与 `worlds.life.hubTownId`（均标 `x-hot: true` 支持热更新）；留空 `hubUrl` 时 100% 退回老服 `townUrl` 或纯单机运行。
+  - 新增 `src/hub-client.ts`，实现 `<dataDir>/coopanion-hub-auth.json` 跨扩展共享凭据原子读写、`meet-uid.txt` / `life-town-uid.txt` 历史 UID 只读探测认领与 `409 LEGACY_UID_CLAIMED` 防裂号、Bearer 鉴权、`ETag`/`304` 城邦与目录快照缓存、`Idempotency-Key` 买摊/接委托幂等与精确 `eventIds` 收件箱确认。
+  - 接入多城迁居（`life_move` 支持 `town` 参数及面板 `now.moveTown`）、城邦公告与专属 Buff（如北京 `writing_pay_mult` 实算入日薪）、跨城摊位特产标注与透明快递费账本明细、`/v1/market/orders/settle` 仅入账 `itemSubtotal`、同城邻里代管委托与跨城 `403 ERRAND_TOWN_MISMATCH` 防护。
+  - 新增 `life_mail` 工具（`inbox` / `residents` / `read` / `send` / `relation`）与 `life.social` 主动提醒事件。
+- **全面焕新七页签手账 UI**（`web/panel-1.5.0.js`、`package.json`）：
+  - 升级面板为 `web/panel-1.5.0.js`（并移除旧版 `web/panel-1.4.5.js`），引入渐变顶部卡片、双列响应式网格与七页签交互增强。
+  - 「此刻」支持多城徽标/公告/Buff 展示与一键迁城；「职业工坊」显示当前城邦加成后的预期日薪；「你和它 / 街坊」支持同城街坊与只读鱼间私信收发气泡及标已读；「农牧场与鱼市街」新增全部/本城免邮/特产筛选、跨城运费徽章与自主下架余货/撤回委托；「日志与时间轴」补充跨城订单与私信动态记录。
+- **扩展描述、提示词与集成测试**（`describe.json`、`ENV_PROMPT.md`、`README.md`、`test/hub-v1.test.mjs`）：
+  - 同步更新 23 个工具与 `life.social` 事件声明，新增覆盖 Hub v1.1 核心闭环的本地 mock 集成测试 `test/hub-v1.test.mjs`。
+
 ## 1.4.5 — 2026-11-26（修复菜园浇水次数歧义展示 + 新增在家产蛋/产奶与熟货待收主动提醒）
 
 - **菜园与养殖场面板文案消歧**（`web/panel-1.4.5.js`、`package.json`）：

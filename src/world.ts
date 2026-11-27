@@ -9,7 +9,7 @@ import type {
   Logger, ToolDef, World, WorldHost, WorldWebUiDecl, WorldLamp, TriggerMode, EventTag, EventEnvelope, StoragePart,
 } from 'cortico/core/types.ts';
 import {
-  LIFE_ID, clampWeatherTimeoutMs, lifeConfigGroups, normWeatherUrl, parseTownUrls,
+  LIFE_ID, clampWeatherTimeoutMs, lifeConfigGroups, normHubUrl, normWeatherUrl, parseTownUrls,
   type ExternalWeatherOverride, type LifeConfigSection, type WeatherMode, type WeatherSky,
 } from './config.ts';
 import {
@@ -37,6 +37,16 @@ import {
   pickTownStreet, postTownStall, fetchTownDeals, ackTownDeals, findStreetProfile, formatStreetMods, normStallEffects, resolveStallEffects, formatStallEffects,
   type JourneyView, type TownView, type TownStall, type TownDeal, type StreetMods, type StallEffects,
 } from './bridge.ts';
+import {
+  ensureHubAuth, readHubAuth, onHubAuthFailure, hubGetMe, hubListTowns, hubGetTown, hubJoinTown, hubGetResidents, hubPutExtProfile,
+  hubGetCatalogSnapshot, hubListListings, hubCreateListing, hubCancelListing, hubTradeListing,
+  hubListOrders, hubSettleOrders, hubListErrands, hubCreateErrand, hubClaimErrand, hubCancelErrand,
+  hubSyncInbox, hubAckInbox, hubListRelations, hubSetRelation, hubOpenDirectConversation,
+  hubListConversations, hubListCompanions, hubGetMessages, hubSendMessage, hubMarkConversationRead,
+  type HubAuthRecord, type HubAuthFailureEvent, type HubCatalogItem, type HubCatalogJob, type HubConversation,
+  type HubResident, type HubTownMeta, type HubTownSummary,
+} from './hub-client.ts';
+import { findJob } from './jobs.ts';
 
 /**
  * 自己的提示词模板，按本文件位置定位。
@@ -156,7 +166,11 @@ function stripStallIdPrefix(raw: string): string {
   let s = normalizeTownText(raw);
   if ((s.startsWith('(') && s.endsWith(')')) || (s.startsWith('[') && s.endsWith(']'))) {
     const inner = s.slice(1, -1).trim();
-    if (/^(?:邻里)?(?:委托|摊位|单号|编号)?\s*(?:stall_?id|errand_?id|id|编号)\s*[:=#]?/i.test(inner) || /^[a-f0-9]{6,}$/i.test(inner)) {
+    if (
+      /^(?:邻里)?(?:委托|摊位|单号|编号)?\s*(?:stall_?id|errand_?id|id|编号)\s*[:=#]?/i.test(inner)
+      || /^[a-f0-9]{6,}$/i.test(inner)
+      || /^(?:lst|err)_[a-z0-9]{4,}$/i.test(inner)
+    ) {
       s = inner;
     }
   }
@@ -168,6 +182,7 @@ function stripStallIdPrefix(raw: string): string {
 function looksLikeRemoteOrErrandPick(raw: string): boolean {
   const s = normalizeTownText(raw);
   if (!s) return false;
+  if (/(?:lst|err)_[a-z0-9]{4,}/i.test(s)) return true;
   if (/[a-f0-9]{8,}/i.test(s)) return true;
   if (/^[a-f0-9]{6,}$/i.test(stripStallIdPrefix(s))) return true;
   if (/^\s*(?:邻里)?(?:委托|摊位|单号|编号)?\s*(?:stall_?id|errand_?id|id|编号)\s*[:=#]/i.test(s)) return true;
@@ -175,7 +190,7 @@ function looksLikeRemoteOrErrandPick(raw: string): boolean {
   return false;
 }
 
-/** 按裸 ID、内嵌 16 位 hex ID、短前缀、归一化标题与委托快捷意图匹配鱼市街在架条目。 */
+/** 按裸 ID、内嵌 Hub/16-hex ID、短前缀、归一化标题与委托快捷意图匹配鱼市街在架条目。 */
 function matchTownStall(
   stalls: readonly TownStall[],
   rawPick: string,
@@ -199,11 +214,11 @@ function matchTownStall(
     if (p1.length > 1) return { match: preferNonMine(p1)[0] };
   }
 
-  // P2：从入参任意位置提取 16 位 hex ID
-  const hexIds = normalizeTownText(rawPick).match(/(?<![a-f0-9])[a-f0-9]{16}(?![a-f0-9])/gi) ?? [];
-  if (hexIds.length) {
+  // P2：从入参任意位置提取 Hub ID (lst_/err_...) 或 16 位 hex ID
+  const embeddedIds = normalizeTownText(rawPick).match(/(?<![a-z0-9])(?:(?:lst|err)_[a-z0-9]{12,32}|[a-f0-9]{16})(?![a-z0-9])/gi) ?? [];
+  if (embeddedIds.length) {
     const p2: TownStall[] = [];
-    for (const h of hexIds) {
+    for (const h of embeddedIds) {
       const hl = h.toLowerCase();
       for (const st of pool) {
         if (st.id.toLowerCase() === hl && !p2.some((x) => x.id === st.id)) p2.push(st);
@@ -213,8 +228,8 @@ function matchTownStall(
     if (p2.length > 1) return { match: null, ambiguous: p2 };
   }
 
-  // P3：6–15 位 hex 前缀唯一匹配
-  if (/^[a-f0-9]{6,15}$/i.test(cleaned)) {
+  // P3：短前缀唯一匹配（支持 6-15 hex 或 lst_/err_ 前缀）
+  if (/^(?:(?:lst|err)_[a-z0-9]{4,31}|[a-f0-9]{6,15})$/i.test(cleaned)) {
     const p3 = pool.filter((s) => s.id.toLowerCase().startsWith(lower));
     if (p3.length === 1) return { match: p3[0] };
     if (p3.length > 1) return { match: null, ambiguous: p3 };
@@ -233,7 +248,7 @@ function matchTownStall(
     const nonMineErrands = preferNonMine(errands);
     if (/最短|最快/.test(normClean)) {
       const sorted = [...nonMineErrands].sort(
-        (a, b) => parseErrandMinutes(a.item) - parseErrandMinutes(b.item),
+        (a, b) => (a.estMinutes ?? parseErrandMinutes(a.item)) - (b.estMinutes ?? parseErrandMinutes(b.item)),
       );
       return { match: sorted[0] ?? null };
     }
@@ -304,6 +319,8 @@ export class LifeWorld implements World {
    */
   private lastTickMs = 0;
   private lastTownUrl: string | null = null;
+  private lastHubUrl: string | null = null;
+  private lastHubTownId: string | null = null;
   private lastHomeCity: string | null = null;
   private lastDiaryDir: string | null = null;
   private lastLibraryDir: string | null = null;
@@ -433,6 +450,129 @@ export class LifeWorld implements World {
   private unseenDealsCount = 0;
   private lastErrandPostAttemptDay = '';
 
+  /* ---- Hub v1.1 多城联机态 ---- */
+  private hubAuth: HubAuthRecord | null = null;
+  private hubAuthError = '';
+  private hubAuthErrorToken = '';
+  private unsubHubAuthFailure: (() => void) | null = null;
+  private hubAuthInFlight: { hubUrl: string; promise: Promise<HubAuthRecord | null> } | null = null;
+  private hubAuthFailedUrl = '';
+  private hubAuthRetryAfterMs = 0;
+  private hubAuthFailStep = 0;
+  private hubTownId = '';
+  private hubTownEtag = '';
+  private hubTownsCache: HubTownSummary[] = [];
+  private hubTownMeta: HubTownMeta | null = null;
+  private hubCatalogEtag = '';
+  private hubCatalog: { version: number; items: HubCatalogItem[]; jobs: HubCatalogJob[] } = {
+    version: 1,
+    items: [],
+    jobs: [],
+  };
+  private hubResidentsCache: HubResident[] = [];
+  private hubConversationsCache: HubConversation[] = [];
+  private hubUnreadMailCount = 0;
+  private hubInboxCursor = 0;
+  private lastExtProfileSyncMs = 0;
+  private notifiedMailIds = new Set<number>();
+
+  private activeHubUrl(): string {
+    return normHubUrl(this.cfg.hubUrl);
+  }
+
+  private isHubMode(): boolean {
+    return Boolean(this.activeHubUrl());
+  }
+
+  private hasRemoteServer(): boolean {
+    return this.isHubMode() || parseTownUrls(this.cfg.townUrl).length > 0;
+  }
+
+  private targetHubTownId(): string {
+    return this.hubTownId || this.state.hubTownId || String(this.cfg.hubTownId || '').trim() || 'lanzhou-reedpond';
+  }
+
+  private currentTownBuffs(): Record<string, number> {
+    if (this.isHubMode()) {
+      return this.hubTownMeta?.buffs ?? this.town.buffs ?? {};
+    }
+    return this.town.buffs ?? {};
+  }
+
+  private async ensureHubReady(generation: number): Promise<HubAuthRecord | null> {
+    const hubUrl = this.activeHubUrl();
+    if (!hubUrl) return null;
+    if (this.hubAuth && this.hubAuth.hubUrl === hubUrl) return this.hubAuth;
+    const local = readHubAuth(this.opts.dataDir, hubUrl);
+    const localChanged = !this.hubAuthErrorToken || (local?.token ?? '') !== this.hubAuthErrorToken;
+    if (local && local.hubUrl === hubUrl && localChanged) {
+      this.hubAuth = local;
+      this.hubAuthError = '';
+      this.hubAuthErrorToken = '';
+      this.hubAuthFailedUrl = '';
+      this.hubAuthRetryAfterMs = 0;
+      this.hubAuthFailStep = 0;
+      return local;
+    }
+    if (this.hubAuthFailedUrl === hubUrl && Date.now() < this.hubAuthRetryAfterMs) {
+      return null;
+    }
+    if (this.hubAuthInFlight && this.hubAuthInFlight.hubUrl === hubUrl) {
+      const rec = await this.hubAuthInFlight.promise;
+      if (generation !== this.stateGeneration) return null;
+      return rec;
+    }
+
+    const promise = (async (): Promise<HubAuthRecord | null> => {
+      try {
+        const res = await ensureHubAuth({
+          hubUrl,
+          dataDir: this.opts.dataDir,
+          displayName: this.opts.botName || '大肥鱼',
+        });
+        if (generation !== this.stateGeneration) return null;
+        if (res.ok && res.auth) {
+          this.hubAuth = res.auth;
+          this.hubAuthError = '';
+          this.hubAuthErrorToken = '';
+          this.hubAuthFailedUrl = '';
+          this.hubAuthRetryAfterMs = 0;
+          this.hubAuthFailStep = 0;
+          return res.auth;
+        }
+        this.hubAuthError = res.reason || 'Hub 身份认证失败';
+        this.hubAuthFailedUrl = hubUrl;
+        if (res.code === 'LEGACY_UID_CLAIMED') {
+          this.hubAuthRetryAfterMs = Date.now() + 15 * 60_000;
+        } else {
+          const wait = Math.min(30 * 60_000, 60_000 * 2 ** this.hubAuthFailStep);
+          this.hubAuthFailStep = Math.min(this.hubAuthFailStep + 1, 6);
+          this.hubAuthRetryAfterMs = Date.now() + wait;
+        }
+        return null;
+      } finally {
+        if (this.hubAuthInFlight?.promise === promise) {
+          this.hubAuthInFlight = null;
+        }
+      }
+    })();
+
+    this.hubAuthInFlight = { hubUrl, promise };
+    return promise;
+  }
+
+  private hubStreetParam(displayOrId: string): string {
+    const raw = String(displayOrId || '').trim();
+    if (!raw) return this.town.streets[0] || '';
+    return this.hubTownMeta?.streetIdByName[raw] ?? raw;
+  }
+
+  private hubStreetDisplay(idOrName: string): string {
+    const raw = String(idOrName || '').trim();
+    if (!raw) return '';
+    return this.hubTownMeta?.streetNameById[raw] ?? raw;
+  }
+
   private marketShowcaseLine(limit = 3): string {
     if (!this.otherStallsCache.length) return '';
     return this.otherStallsCache.slice(0, limit).map((st) => {
@@ -440,7 +580,10 @@ export class LifeWorld implements World {
         return `${st.seller}的「${st.item}」[邻里委托·接单挣+${st.price}元]`;
       }
       const fx = formatStallEffects(resolveStallEffects(st.effects, st.price));
-      return `${st.seller}的「${st.item}」${st.price}元（${fx}）`;
+      const shipTxt = st.isCrossTown && (st.estimatedShippingFee ?? 0) > 0
+        ? `·${st.townName || '外城'}(邮+${st.estimatedShippingFee})`
+        : (st.townName && this.isHubMode() ? `·${st.townName}(免邮)` : '');
+      return `${st.seller}的「${st.item}」${st.price}元${shipTxt}（${fx}）`;
     }).join('；');
   }
 
@@ -482,6 +625,73 @@ export class LifeWorld implements World {
   }
 
   private async syncTownPresenceAndBulletin(now: Date, generation: number): Promise<void> {
+    if (this.isHubMode()) {
+      const hubUrl = this.activeHubUrl();
+      const auth = await this.ensureHubReady(generation);
+      if (generation !== this.stateGeneration) return;
+      if (Date.now() - this.lastTownFetchMs >= 15 * 60_000) {
+        await this.refreshTownInfo(generation, { minIntervalMs: 15 * 60_000 });
+        if (generation !== this.stateGeneration) return;
+      }
+      const today = localDateKey(now);
+      if (auth && !this.state.hubTownId && !this.state.hubJoinedKey) {
+        const me = await hubGetMe(hubUrl, auth.token);
+        if (generation !== this.stateGeneration) return;
+        if (me.ok && me.residency?.townId && me.residency.townId !== this.targetHubTownId()) {
+          this.hubTownId = me.residency.townId;
+          this.state.hubTownId = me.residency.townId;
+          this.stateSaveDirty = true;
+          await this.refreshTownInfo(generation, { force: true });
+          if (generation !== this.stateGeneration) return;
+        }
+      }
+      const targetTown = this.targetHubTownId();
+      const joinKey = `${hubUrl}|${targetTown}|${today}`;
+      const street = this.ensureTownStreet(auth?.petId || readMeetUid(this.opts.dataDir));
+      if (auth && this.state.hubJoinedKey !== joinKey) {
+        const res = await hubJoinTown(hubUrl, auth.token, targetTown, this.hubStreetParam(street));
+        if (generation !== this.stateGeneration) return;
+        if (res.ok) {
+          const joinedTown = res.townId || targetTown;
+          this.state.lastJoinedTownAt = today;
+          this.state.hubTownId = joinedTown;
+          this.state.hubJoinedKey = `${hubUrl}|${joinedTown}|${today}`;
+          this.hubTownId = joinedTown;
+          const displayStreet = this.hubStreetDisplay(res.streetName || res.street || '');
+          if (
+            displayStreet
+            && (!this.town.streets.length || this.town.streets.includes(displayStreet))
+            && displayStreet !== this.state.street
+          ) {
+            this.state.street = displayStreet;
+            this.state.home.street = displayStreet;
+          }
+          this.stateSaveDirty = true;
+        }
+      }
+      if (auth && Date.now() - this.lastExtProfileSyncMs >= 15 * 60_000) {
+        const s = snapshot(this.state, now);
+        this.lastExtProfileSyncMs = Date.now();
+        void hubPutExtProfile(hubUrl, auth.token, 'life', {
+          schemaVer: 1,
+          summaryText: `${this.town.name}${this.state.street ? `·${this.state.street}` : ''} | ${s.job.what || '自由过日子'} | ${HOME_TIER_LABEL[s.home.tier]}`,
+          payload: {
+            townId: this.targetHubTownId(),
+            townName: this.town.name,
+            street: this.state.street,
+            homeTier: s.home.tier,
+            job: s.job.what || '',
+            knowledge: Math.round(s.knowledge * 10) / 10,
+            fitness: Math.round(s.fitness * 100) / 100,
+          },
+        }).catch(() => {});
+      }
+      if (Date.now() - this.lastBulletinFetchMs >= 15 * 60_000) {
+        await this.refreshTownMarket(generation);
+      }
+      return;
+    }
+
     const urls = parseTownUrls(this.cfg.townUrl);
     if (!urls.length) return;
     const today = localDateKey(now);
@@ -515,14 +725,14 @@ export class LifeWorld implements World {
   }
 
   /**
-   * 节流或强制从服务器重拉 `/town/info`，同步最新的城名、街道简介与增益属性。
-   * 未配置 `townUrl` 且非强制时零请求直接返回 `false`；临时断网/5xx 自动刷新时保留既有服务端档案防闪烁。
+   * 节流或强制从服务器重拉 `/town/info` 或 Hub v1 `/v1/towns/:townId` + 目录，同步最新的城名、街道简介与增益属性。
+   * 未配置任何服务器且非强制时零请求直接返回 `false`；临时断网/5xx 自动刷新时保留既有服务端档案防闪烁。
    */
   private async refreshTownInfo(
     generation: number,
     opts: { force?: boolean; minIntervalMs?: number } = {},
   ): Promise<boolean> {
-    if (!opts.force && parseTownUrls(this.cfg.townUrl).length === 0) return false;
+    if (!opts.force && !this.hasRemoteServer()) return false;
     const minInterval = opts.minIntervalMs ?? 15 * 60_000;
     if (!opts.force && this.lastTownFetchMs > 0 && Date.now() - this.lastTownFetchMs < minInterval) {
       return false;
@@ -533,6 +743,67 @@ export class LifeWorld implements World {
       if (generation !== this.stateGeneration) return false;
     }
     const run = (async (): Promise<boolean> => {
+      if (this.isHubMode()) {
+        const hubUrl = this.activeHubUrl();
+        const tid = this.targetHubTownId();
+        const auth = await this.ensureHubReady(generation);
+        if (generation !== this.stateGeneration) return false;
+
+        const [townRes, listRes, catRes] = await Promise.all([
+          hubGetTown(hubUrl, tid, { etag: opts.force ? undefined : this.hubTownEtag }),
+          hubListTowns(hubUrl),
+          hubGetCatalogSnapshot(hubUrl, {
+            ext: 'life',
+            townId: tid,
+            etag: opts.force ? undefined : this.hubCatalogEtag,
+            token: auth?.token,
+          }),
+        ]);
+        if (generation !== this.stateGeneration) return false;
+
+        if (listRes.ok && listRes.towns.length) {
+          this.hubTownsCache = listRes.towns;
+        }
+        if (catRes.ok && !catRes.notModified) {
+          if (catRes.etag) this.hubCatalogEtag = catRes.etag;
+          this.hubCatalog = {
+            version: catRes.version ?? 1,
+            items: catRes.items ?? [],
+            jobs: catRes.jobs ?? [],
+          };
+        }
+
+        if (townRes.ok && townRes.notModified) {
+          this.lastTownFetchMs = Date.now();
+          return this.town.source === 'server';
+        }
+        if (townRes.ok && townRes.townView) {
+          this.town = townRes.townView;
+          this.hubTownId = townRes.townView.id;
+          if (townRes.etag) this.hubTownEtag = townRes.etag;
+          if (townRes.meta) this.hubTownMeta = townRes.meta;
+          this.lastTownFetchMs = Date.now();
+          this.ensureTownStreet(auth?.petId);
+          if (this.stateSaveDirty && !this.stateCleared) {
+            this.saveDeliveredState();
+            this.broadcastLife(this.now());
+          }
+          return true;
+        }
+
+        if (!opts.force && this.town.source === 'server') {
+          this.lastTownFetchMs = Math.max(this.lastTownFetchMs, Date.now() - Math.max(0, minInterval - 120_000));
+          return false;
+        }
+        const own = String(this.cfg.homeCity || '').trim();
+        this.town = own
+          ? { id: 'own', name: own, origin: '', streets: [], streetProfiles: [], rules: [], custom: true, source: 'failed', problem: townRes.reason || 'Hub v1 暂不可达' }
+          : { ...BUILTIN_TOWN, source: 'failed', problem: townRes.reason || 'Hub v1 暂不可达' };
+        this.lastTownFetchMs = Date.now();
+        this.ensureTownStreet();
+        return false;
+      }
+
       const fresh = await readTown(this.cfg.townUrl, this.cfg.homeCity);
       if (generation !== this.stateGeneration) return false;
       if (!opts.force && fresh.source === 'failed' && this.town.source === 'server') {
@@ -661,20 +932,183 @@ export class LifeWorld implements World {
     return (this.state.farmHelper.errandStallIds ?? []).includes(stallId);
   }
 
-  /** 统一切分我的/街坊摊位缓存：委托仅凭本机发单 ID 归属我的、置顶展示且不被普通摊货 12 条上限截丢。 */
+  /** 统一切分我的/街坊摊位缓存：委托仅凭本机发单 ID 或 isMine 归属我的、置顶展示且不被普通摊货截丢。 */
   private updateTownStallsCache(stalls: readonly TownStall[], myName: string): void {
-    const isMyStall = (st: TownStall): boolean => (
-      st.kind === 'errand' ? this.isMyPostedErrandId(st.id) : st.seller === myName
-    );
+    const isMyStall = (st: TownStall): boolean => {
+      if (typeof st.isMine === 'boolean') return st.isMine;
+      return st.kind === 'errand' ? this.isMyPostedErrandId(st.id) : st.seller === myName;
+    };
     this.myStallsCache = stalls.filter(isMyStall);
     const others = stalls.filter((st) => !isMyStall(st));
     const otherErrands = others.filter((st) => st.kind === 'errand');
     const otherGoods = others.filter((st) => st.kind !== 'errand');
-    this.otherStallsCache = [...otherErrands, ...otherGoods.slice(0, 12)];
+    this.otherStallsCache = [...otherErrands, ...otherGoods.slice(0, this.isHubMode() ? 30 : 12)];
   }
 
-  /** 拉取鱼市街黑板报、摊位与成交回执；仅成功时置满 15 分钟冷却，失败则 1 分钟后允许重试。 */
+  /** 拉取鱼市街黑板报、摊位与成交回执（Hub 模式下同步同城委托、收件箱、居民与私信列表）；仅成功时置满 15 分钟冷却。 */
   private async refreshTownMarket(generation: number): Promise<void> {
+    if (this.isHubMode()) {
+      const hubUrl = this.activeHubUrl();
+      const auth = await this.ensureHubReady(generation);
+      if (generation !== this.stateGeneration || !auth) return;
+
+      const [lstRes, errRes, ordRes, inboxRes, convRes, resRes] = await Promise.all([
+        hubListListings(hubUrl, auth.token, { limit: 40 }),
+        hubListErrands(hubUrl, auth.token, { limit: 30 }),
+        hubListOrders(hubUrl, auth.token, { role: 'maker', limit: 30 }),
+        hubSyncInbox(hubUrl, auth.token, { sourceExt: 'life,core', afterId: this.hubInboxCursor, limit: 50 }),
+        hubListConversations(hubUrl, auth.token),
+        hubGetResidents(hubUrl, auth.token, this.targetHubTownId(), { limit: 30 }),
+      ]);
+      if (generation !== this.stateGeneration) return;
+
+      let ok = false;
+      const now = this.now();
+      const mergedStalls: TownStall[] = [];
+      if (errRes.ok) {
+        ok = true;
+        mergedStalls.push(...errRes.errands);
+      }
+      if (lstRes.ok) {
+        ok = true;
+        mergedStalls.push(...lstRes.stalls);
+      }
+      if (ok) {
+        this.updateTownStallsCache(mergedStalls, auth.displayName || this.opts.botName || 'fish');
+      }
+      if (this.town.notice) {
+        this.townBulletin = [this.town.notice];
+      }
+
+      if (resRes.ok) {
+        this.hubResidentsCache = resRes.residents.map((r) => ({
+          ...r,
+          street: this.hubStreetDisplay(r.street),
+        }));
+      }
+
+      if (convRes.ok) {
+        this.hubConversationsCache = convRes.conversations;
+        this.hubUnreadMailCount = convRes.conversations.reduce((s, c) => s + (c.unreadCount || 0), 0);
+      }
+
+      const unsettledOrderIds: string[] = [];
+      if (ordRes.ok) {
+        const deals: TownDeal[] = ordRes.orders.map((o) => ({
+          id: o.id,
+          orderId: o.id,
+          stallId: o.listingId,
+          item: o.itemName,
+          qty: o.qty,
+          buyerPet: o.takerName || o.takerPetId,
+          note: o.buyerNote || undefined,
+          seen: Boolean(o.settledAt),
+          at: o.createdAt,
+          unitPrice: o.unitPrice,
+          isCrossTown: o.isCrossTown,
+          shippingFee: o.shippingFee,
+          buyerTotal: o.buyerTotal,
+          sellerTownId: o.sellerTownId,
+          buyerTownId: o.buyerTownId ?? undefined,
+        }));
+        for (const o of ordRes.orders) {
+          if (!o.settledAt) {
+            unsettledOrderIds.push(o.id);
+          }
+        }
+        this.myDealsCache = deals;
+        this.unseenDealsCount = deals.filter((d) => !d.seen).length;
+        this.settleTownDeals(deals, now);
+      }
+
+      if (unsettledOrderIds.length) {
+        await hubSettleOrders(hubUrl, auth.token, unsettledOrderIds).catch(() => {});
+        if (generation !== this.stateGeneration) return;
+      }
+
+      if (inboxRes.ok) {
+        const ackIds: number[] = [];
+        for (const ev of inboxRes.events) {
+          if (ev.eventType === 'market.order_created') {
+            ackIds.push(ev.id);
+          } else if (ev.eventType === 'errand.completed') {
+            const errandId = String(ev.payload?.errandId || ev.refId || '');
+            const workerName = String(ev.payload?.workerName || '同城街坊');
+            const pe = this.state.farmHelper.pendingErrand;
+            if (pe && (!errandId || pe.stallId === errandId)) {
+              const comp = applyNeighborErrandCompleted(this.state, workerName, now, { stallId: pe.stallId });
+              if (comp.feedPaid > 0) {
+                appendLedger(this.opts.dataDir, {
+                  id: `errand-feed-${ev.id}`,
+                  ts: now.toISOString(),
+                  kind: 'expense',
+                  amount: comp.feedPaid,
+                  source: 'farm_helper',
+                  payee: '牧场饲料',
+                  note: `街坊${workerName}代管喂食饲料费`,
+                });
+              }
+              this.saveDeliveredState();
+              this.broadcastLife(now);
+            }
+            ackIds.push(ev.id);
+          } else if (ev.eventType === 'errand.expired') {
+            const errandId = String(ev.payload?.errandId || ev.refId || '');
+            const pe = this.state.farmHelper.pendingErrand;
+            if (pe && (!errandId || pe.stallId === errandId)) {
+              const ref = refundExpiredErrand(this.state, now, { force: true });
+              if (ref && ref.refunded > 0) {
+                appendLedger(this.opts.dataDir, {
+                  id: `errand-refund-inbox-${ev.id}`,
+                  ts: now.toISOString(),
+                  kind: 'income',
+                  amount: ref.refunded,
+                  source: 'farm_errand_refund',
+                  payee: '鱼市街托管退回',
+                  note: '邻里农牧委托到期无人接单，预扣工钱已原路退回',
+                });
+              }
+              this.saveDeliveredState();
+              this.broadcastLife(now);
+            }
+            ackIds.push(ev.id);
+          } else if (ev.eventType === 'social.new_message') {
+            const msgId = Number(ev.payload?.messageId || ev.refId || 0);
+            const sender = String(ev.payload?.senderName || '城里街坊');
+            const preview = String(ev.payload?.preview || '');
+            if (msgId && !this.notifiedMailIds.has(msgId)) {
+              this.notifiedMailIds.add(msgId);
+              if (this.notifiedMailIds.size > 200) {
+                const first = this.notifiedMailIds.values().next().value;
+                if (first !== undefined) this.notifiedMailIds.delete(first);
+              }
+              if (!isAsleep(this.state, now)) {
+                await this.push(
+                  'life.social',
+                  `${sender}给你寄来了一封短讯：「${preview}」（可以用 life_mail 查看或回信）。`,
+                  'debounce',
+                );
+                if (generation !== this.stateGeneration) return;
+              }
+            }
+            ackIds.push(ev.id);
+          }
+        }
+        if (ackIds.length) {
+          const ackRes = await hubAckInbox(hubUrl, auth.token, ackIds).catch(() => ({ ok: false }));
+          if (generation !== this.stateGeneration) return;
+          if (ackRes.ok) {
+            this.hubInboxCursor = Math.max(this.hubInboxCursor, inboxRes.nextAfterId);
+          }
+        } else {
+          this.hubInboxCursor = Math.max(this.hubInboxCursor, inboxRes.nextAfterId);
+        }
+      }
+
+      this.lastBulletinFetchMs = ok ? Date.now() : Math.max(this.lastBulletinFetchMs, Date.now() - 14 * 60_000);
+      return;
+    }
+
     if (!parseTownUrls(this.cfg.townUrl).length) return;
     const uid = readMeetUid(this.opts.dataDir);
     let ok = false;
@@ -713,31 +1147,55 @@ export class LifeWorld implements World {
     now: Date,
     generation: number,
   ): Promise<{ text: string }> {
-    if (this.isMyPostedErrandId(match.id)) {
+    if (this.isMyPostedErrandId(match.id) || match.isMine) {
       return { text: '这是你自己发出去的农牧代管委托，不能自己接自己的单哦。' };
     }
     if (this.state.vitals.energy < 10) {
       return { text: `精力只剩 ${Math.round(this.state.vitals.energy)} 点了，先歇会儿或睡一觉再去帮街坊照料农牧场吧。` };
     }
-    const buyerUid = readMeetUid(this.opts.dataDir);
-    if (!buyerUid) {
-      return { text: '缺少本机 uid（先跟城里连一次碰面生成 uid 后再接鱼市街邻里委托）。' };
-    }
-    const myName = this.opts.botName || 'fish';
-    const accepted = await buyTownStall(this.cfg.townUrl, match.id, myName, {
-      buyerUid,
-      note: '我来帮你照料农牧场啦',
-      isErrand: true,
-    });
-    if (generation !== this.stateGeneration) {
-      return { text: '生活档案刚刚被清理，这次接单操作已停止，未写入新档案。' };
-    }
-    if (!accepted.ok) return { text: accepted.reason ?? '没抢到这单农牧代管委托。' };
+    let errandItem = match.item;
+    let pay = match.price;
+    let employer = match.seller;
+    let mins = match.estMinutes ?? parseErrandMinutes(match.item);
 
-    const errandItem = accepted.item || match.item;
-    const pay = accepted.price || match.price;
-    const employer = accepted.seller || match.seller;
-    const mins = parseErrandMinutes(errandItem);
+    if (this.isHubMode()) {
+      const auth = await this.ensureHubReady(generation);
+      if (generation !== this.stateGeneration) {
+        return { text: '生活档案刚刚被清理，这次接单操作已停止，未写入新档案。' };
+      }
+      if (!auth) return { text: this.hubAuthError || 'Hub 身份认证未就绪，暂时没法接单。' };
+      const claimed = await hubClaimErrand(this.activeHubUrl(), auth.token, match.id, `claim-${randomUUID()}`);
+      if (generation !== this.stateGeneration) {
+        return { text: '生活档案刚刚被清理，这次接单操作已停止，未写入新档案。' };
+      }
+      if (!claimed.ok || !claimed.errand) {
+        return { text: claimed.reason ?? '没抢到这单农牧代管委托。' };
+      }
+      errandItem = claimed.errand.title || errandItem;
+      pay = claimed.errand.rewardPrice || pay;
+      mins = claimed.errand.estMinutes || mins;
+    } else {
+      const buyerUid = readMeetUid(this.opts.dataDir);
+      if (!buyerUid) {
+        return { text: '缺少本机 uid（先跟城里连一次碰面生成 uid 后再接鱼市街邻里委托）。' };
+      }
+      const myName = this.opts.botName || 'fish';
+      const accepted = await buyTownStall(this.cfg.townUrl, match.id, myName, {
+        buyerUid,
+        note: '我来帮你照料农牧场啦',
+        isErrand: true,
+      });
+      if (generation !== this.stateGeneration) {
+        return { text: '生活档案刚刚被清理，这次接单操作已停止，未写入新档案。' };
+      }
+      if (!accepted.ok) return { text: accepted.reason ?? '没抢到这单农牧代管委托。' };
+
+      errandItem = accepted.item || match.item;
+      pay = accepted.price || match.price;
+      employer = accepted.seller || match.seller;
+      mins = parseErrandMinutes(errandItem);
+    }
+
     const energyCost = Math.min(24, Math.max(8, Math.round(mins * 0.25)));
     const foodCost = 6;
     const until = new Date(now.getTime() + mins * 60_000).toISOString();
@@ -780,30 +1238,49 @@ export class LifeWorld implements World {
     now: Date,
     generation: number,
   ): Promise<{ text: string }> {
-    const hasTownUrl = parseTownUrls(this.cfg.townUrl).length > 0;
-    if (!hasTownUrl) {
-      return { text: '还没配置城服务器地址，暂时看不到也接不了鱼市街邻里代管委托。' };
+    if (!this.hasRemoteServer()) {
+      return { text: '还没配置城服务器或 Hub v1 地址，暂时看不到也接不了鱼市街邻里代管委托。' };
     }
     const trimmed = String(rawPick ?? '').trim();
     if (trimmed && isBusy(this.state, now)) {
       return { text: busyRefusal(this.state, now, '去接邻里代管委托') };
     }
-    const remote = await fetchTownStalls(this.cfg.townUrl);
-    if (generation !== this.stateGeneration) {
-      return { text: '生活档案刚刚被清理，这次查询委托操作已停止。' };
+    let errands: TownStall[] = [];
+    let allStalls: TownStall[] = [];
+    if (this.isHubMode()) {
+      const auth = await this.ensureHubReady(generation);
+      if (generation !== this.stateGeneration) {
+        return { text: '生活档案刚刚被清理，这次查询委托操作已停止。' };
+      }
+      if (!auth) return { text: this.hubAuthError || 'Hub 身份认证未就绪。' };
+      const remoteErr = await hubListErrands(this.activeHubUrl(), auth.token, { limit: 30 });
+      if (generation !== this.stateGeneration) {
+        return { text: '生活档案刚刚被清理，这次查询委托操作已停止。' };
+      }
+      if (!remoteErr.ok) {
+        return { text: `鱼市街委托板暂时连不上（${remoteErr.reason || '网络错误'}），没有误买任何摊货。` };
+      }
+      errands = remoteErr.errands;
+      allStalls = errands;
+    } else {
+      const remote = await fetchTownStalls(this.cfg.townUrl);
+      if (generation !== this.stateGeneration) {
+        return { text: '生活档案刚刚被清理，这次查询委托操作已停止。' };
+      }
+      if (!remote.ok) {
+        return { text: '鱼市街这会儿连不上，暂时看不到/接不了邻里代管委托，请稍后再试（没有误买任何摊货）。' };
+      }
+      this.townBulletin = remote.bulletin;
+      const myName = this.opts.botName || 'fish';
+      this.updateTownStallsCache(remote.stalls, myName);
+      errands = remote.stalls.filter((st) => st.kind === 'errand');
+      allStalls = remote.stalls;
     }
-    if (!remote.ok) {
-      return { text: '鱼市街这会儿连不上，暂时看不到/接不了邻里代管委托，请稍后再试（没有误买任何摊货）。' };
-    }
-    this.townBulletin = remote.bulletin;
-    const myName = this.opts.botName || 'fish';
-    this.updateTownStallsCache(remote.stalls, myName);
 
-    const errands = remote.stalls.filter((st) => st.kind === 'errand');
     const formatErrandList = (list: readonly TownStall[]) => [...list]
-      .sort((a, b) => parseErrandMinutes(a.item) - parseErrandMinutes(b.item))
+      .sort((a, b) => (a.estMinutes ?? parseErrandMinutes(a.item)) - (b.estMinutes ?? parseErrandMinutes(b.item)))
       .map((st) => {
-        const mins = parseErrandMinutes(st.item);
+        const mins = st.estMinutes ?? parseErrandMinutes(st.item);
         const selfTag = this.isMyPostedErrandId(st.id) ? ' [你发的·不可自接]' : '';
         return `编号 ${st.id}｜${st.item}｜雇主：${st.seller}｜工钱+${st.price}元/约${mins}分${selfTag}`;
       })
@@ -811,20 +1288,20 @@ export class LifeWorld implements World {
 
     if (!trimmed) {
       if (!errands.length) {
-        return { text: '此刻鱼市街上没有在架的邻里农牧代管委托。' };
+        return { text: '此刻本城没有在架的邻里农牧代管委托。' };
       }
       return {
-        text: `鱼市街此刻挂着的邻里农牧代管委托（按耗时从短到长）：${formatErrandList(errands)}。传入 16 位委托编号（或传「最短」自动接耗时最短的那份）到 errand_id 即可接单，不扣钱、干完领工钱且不占今天正式打工额度。`,
+        text: `鱼市街此刻挂着的本城邻里农牧代管委托（按耗时从短到长）：${formatErrandList(errands)}。传入委托编号（或传「最短」自动接耗时最短的那份）到 errand_id 即可接单，不扣钱、干完领工钱且不占今天正式打工额度。`,
       };
     }
 
-    const matched = matchTownStall(remote.stalls, trimmed, {
+    const matched = matchTownStall(allStalls, trimmed, {
       errandsOnly: true,
       isMyErrand: (id) => this.isMyPostedErrandId(id),
     });
     if (matched.ambiguous?.length) {
       return {
-        text: `「${trimmed}」同时对上了多条邻里委托，请传入其中一条的 16 位纯编号：${formatErrandList(matched.ambiguous)}（没有误买任何摊货）。`,
+        text: `「${trimmed}」同时对上了多条邻里委托，请传入其中一条的完整编号：${formatErrandList(matched.ambiguous)}（没有误买任何摊货）。`,
       };
     }
     if (matched.match) {
@@ -833,7 +1310,7 @@ export class LifeWorld implements World {
 
     const avail = errands.filter((st) => !this.isMyPostedErrandId(st.id));
     const listHint = avail.length
-      ? `当前可接委托：${formatErrandList(avail)}。请传入其中一条的 16 位纯编号或传「最短」。`
+      ? `当前可接委托：${formatErrandList(avail)}。请传入其中一条的完整编号或传「最短」。`
       : (errands.length
         ? '目前鱼市街上只有你自己挂出的委托，暂时没有街坊委托可接。'
         : '此刻鱼市街上没有在架的邻里代管委托（可能刚被接走或过期）。');
@@ -860,6 +1337,7 @@ export class LifeWorld implements World {
     let changed = false;
     for (const d of deals) {
       if (!d.id || settled.has(d.id)) continue;
+      if (this.isHubMode() && d.seen) continue;
       if (this.isMyFarmErrandDeal(d)) {
         settled.add(d.id);
         this.state.settledDeals.push(d.id);
@@ -932,33 +1410,54 @@ export class LifeWorld implements World {
     if (existing && existing.day === todayKey && Date.parse(existing.expiresAt) > now.getTime()) {
       return { ok: false, reason: `今天鱼市街上已经挂着邻里代管单（预扣 ¥${existing.wage} · 约 ${existing.minutes} 分钟），正等街坊接单。` };
     }
-    if (!parseTownUrls(this.cfg.townUrl).length) {
-      return { ok: false, reason: '未连接城服务器' };
+    if (!this.hasRemoteServer()) {
+      return { ok: false, reason: '未连接城服务器或 Hub v1' };
     }
-    const uid = readMeetUid(this.opts.dataDir);
-    if (!uid) return { ok: false, reason: '缺少本机 uid' };
     const quote = calcNeighborErrandQuote(pending.workPlots, pending.workPens, mode);
     if (this.state.money.cash < quote.wage) {
       return { ok: false, reason: `发邻里代管委托需先托管预扣 ¥${quote.wage}，手上只有 ${Math.round(this.state.money.cash)} 元。` };
     }
     const myName = this.opts.botName || 'fish';
-    const res = await postTownStall(this.cfg.townUrl, {
-      uid,
-      pet: myName,
-      kind: 'errand',
-      item: quote.itemLabel,
-      price: quote.wage,
-      stock: 1,
-      note: '请街坊帮忙浇水喂食收蛋奶，6h无人接自动退回',
-    });
-    if (generation !== this.stateGeneration) {
-      return { ok: false, reason: '生活档案刚刚被清理' };
-    }
-    if (!res.ok || !res.id) {
-      return { ok: false, reason: res.reason || '鱼市街挂委托单失败' };
+    let postedId = '';
+    if (this.isHubMode()) {
+      const auth = await this.ensureHubReady(generation);
+      if (generation !== this.stateGeneration) {
+        return { ok: false, reason: '生活档案刚刚被清理' };
+      }
+      if (!auth) return { ok: false, reason: this.hubAuthError || 'Hub 身份认证未就绪' };
+      const res = await hubCreateErrand(this.activeHubUrl(), auth.token, {
+        townId: this.targetHubTownId(),
+        errandKind: mode === 'full' ? 'farm_full' : 'farm_care',
+        title: quote.itemLabel,
+        rewardPrice: quote.wage,
+        estMinutes: quote.minutes,
+        payload: { workPlots: pending.workPlots, workPens: pending.workPens },
+      });
+      if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理' };
+      if (!res.ok || !res.id) return { ok: false, reason: res.reason || 'Hub 挂委托单失败' };
+      postedId = res.id;
+    } else {
+      const uid = readMeetUid(this.opts.dataDir);
+      if (!uid) return { ok: false, reason: '缺少本机 uid' };
+      const res = await postTownStall(this.cfg.townUrl, {
+        uid,
+        pet: myName,
+        kind: 'errand',
+        item: quote.itemLabel,
+        price: quote.wage,
+        stock: 1,
+        note: '请街坊帮忙浇水喂食收蛋奶，6h无人接自动退回',
+      });
+      if (generation !== this.stateGeneration) {
+        return { ok: false, reason: '生活档案刚刚被清理' };
+      }
+      if (!res.ok || !res.id) {
+        return { ok: false, reason: res.reason || '鱼市街挂委托单失败' };
+      }
+      postedId = res.id;
     }
     const rec = recordPostedNeighborErrand(this.state, {
-      stallId: res.id,
+      stallId: postedId,
       mode,
       wage: quote.wage,
       minutes: quote.minutes,
@@ -966,7 +1465,7 @@ export class LifeWorld implements World {
     });
     if (!rec.ok) return { ok: false, reason: rec.reason };
     appendLedger(this.opts.dataDir, {
-      id: `errand-post-${res.id}`,
+      id: `errand-post-${postedId}`,
       ts: now.toISOString(),
       kind: 'expense',
       amount: quote.wage,
@@ -976,20 +1475,20 @@ export class LifeWorld implements World {
     });
     this.myStallsCache = [
       {
-        id: res.id,
+        id: postedId,
         seller: myName,
         kind: 'errand',
-        item: res.item || quote.itemLabel,
+        item: quote.itemLabel,
         price: quote.wage,
         stock: 1,
         freshVeg: false,
         note: '请街坊帮忙浇水喂食收蛋奶，6h无人接自动退回',
       },
-      ...this.myStallsCache.filter((s) => s.id !== res.id),
+      ...this.myStallsCache.filter((s) => s.id !== postedId),
     ];
     this.saveDeliveredState();
     this.broadcastLife(now);
-    return { ok: true, stallId: res.id, wage: quote.wage, minutes: quote.minutes, itemLabel: quote.itemLabel };
+    return { ok: true, stallId: postedId, wage: quote.wage, minutes: quote.minutes, itemLabel: quote.itemLabel };
   }
 
   /** 版本号与新版本检查。面板表头那个徽章读它。 */
@@ -1003,12 +1502,35 @@ export class LifeWorld implements World {
   async start(host: WorldHost): Promise<void> {
     this.host = host;
     this.log = host.log;
-    this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
-    this.lastTownFetchMs = Date.now();
-    this.ensureTownStreet();
-    if (this.stateSaveDirty && !this.stateCleared) this.saveDeliveredState();
+    this.unsubHubAuthFailure?.();
+    this.unsubHubAuthFailure = onHubAuthFailure((ev: HubAuthFailureEvent) => {
+      if (ev.hubUrl !== this.activeHubUrl()) return;
+      this.hubAuthErrorToken = ev.token;
+      if (ev.code === 'ACCOUNT_BANNED') {
+        this.hubAuthError = `Hub 账号已被封禁：${ev.message || '请联系总服管理员处理'}`;
+      } else if (ev.code === 'RENAME_REQUIRED') {
+        this.hubAuthError = 'Hub 昵称需按审核要求修改后才可继续使用（请改名后重试）';
+      } else {
+        this.hubAuthError = `Hub 身份令牌已失效（${ev.code}），请重新认领或通过 tokens/reset 找回：${ev.message}`;
+        this.hubAuth = null;
+        this.hubAuthFailedUrl = ev.hubUrl;
+        this.hubAuthRetryAfterMs = Date.now() + 60_000;
+      }
+    });
+    this.lastHubUrl = this.activeHubUrl();
+    this.lastHubTownId = String(this.cfg.hubTownId || '').trim() || 'lanzhou-reedpond';
+    this.hubTownId = this.state.hubTownId || this.lastHubTownId;
     this.lastTownUrl = this.townUrlKey(this.cfg.townUrl);
     this.lastHomeCity = String(this.cfg.homeCity || '').trim();
+
+    if (this.isHubMode()) {
+      await this.refreshTownInfo(this.stateGeneration, { force: true });
+    } else {
+      this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
+      this.lastTownFetchMs = Date.now();
+      this.ensureTownStreet();
+    }
+    if (this.stateSaveDirty && !this.stateCleared) this.saveDeliveredState();
     this.lastWeatherCfgKey = this.weatherCfgKey();
     this.lastDiaryDir = String(this.cfg.diaryDir || '').trim();
     const dh = this.diary.configure(this.lastDiaryDir);
@@ -1027,7 +1549,7 @@ export class LifeWorld implements World {
     this.broadcastLife(new Date());
     /* 查最新版：不 await，面板不该等网络。 */
     void this.versionCheck.startupRefresh();
-    if (parseTownUrls(this.cfg.townUrl).length) {
+    if (this.hasRemoteServer()) {
       void this.syncTownPresenceAndBulletin(new Date(), this.stateGeneration);
     }
     void this.refreshExternalWeather(new Date(), { force: true });
@@ -1053,6 +1575,8 @@ export class LifeWorld implements World {
         throw e;
       }
     }
+    this.unsubHubAuthFailure?.();
+    this.unsubHubAuthFailure = null;
     this.host = null;
     this.log = null;
   }
@@ -1229,6 +1753,8 @@ export class LifeWorld implements World {
     const ms = Math.max(15_000, Number(this.cfg.tickMs) || 60_000);
     if (ms !== this.lastTickMs) this.restartTimer();
     const townUrl = this.townUrlKey(this.cfg.townUrl);
+    const hubUrl = this.activeHubUrl();
+    const cfgHubTownId = String(this.cfg.hubTownId || '').trim() || 'lanzhou-reedpond';
     const homeCity = String(this.cfg.homeCity || '').trim();
     const diaryDir = String(this.cfg.diaryDir || '').trim();
     if (this.lastDiaryDir !== null && diaryDir !== this.lastDiaryDir) {
@@ -1244,14 +1770,53 @@ export class LifeWorld implements World {
       this.broadcastLife(now);
     }
     if (
-      (this.lastTownUrl !== null && townUrl !== this.lastTownUrl)
+      (this.lastHubUrl !== null && hubUrl !== this.lastHubUrl)
+      || (this.lastHubTownId !== null && cfgHubTownId !== this.lastHubTownId)
+      || (this.lastTownUrl !== null && townUrl !== this.lastTownUrl)
       || (this.lastHomeCity !== null && homeCity !== this.lastHomeCity)
     ) {
+      const urlChanged = hubUrl !== this.lastHubUrl;
+      const townCfgChanged = cfgHubTownId !== this.lastHubTownId;
+      const hubChanged = urlChanged || townCfgChanged;
+      this.lastHubUrl = hubUrl;
+      this.lastHubTownId = cfgHubTownId;
       this.lastTownUrl = townUrl;
       this.lastHomeCity = homeCity;
       this.lastBulletinFetchMs = 0;
-      this.town = await readTown(this.cfg.townUrl, homeCity);
-      this.lastTownFetchMs = Date.now();
+      if (hubChanged) {
+        this.hubTownId = cfgHubTownId;
+        this.state.hubTownId = '';
+        this.state.hubJoinedKey = '';
+        this.hubTownEtag = '';
+        this.hubCatalogEtag = '';
+        this.hubTownMeta = null;
+        this.hubResidentsCache = [];
+        this.hubConversationsCache = [];
+        this.hubUnreadMailCount = 0;
+        this.hubInboxCursor = 0;
+        this.myStallsCache = [];
+        this.otherStallsCache = [];
+        this.myDealsCache = [];
+        this.unseenDealsCount = 0;
+        this.townBulletin = [];
+        this.hubTownsCache = [];
+        this.hubCatalog = { version: 1, items: [], jobs: [] };
+        this.state.lastJoinedTownAt = '';
+        if (!hubUrl || urlChanged) {
+          this.hubAuth = null;
+          this.hubAuthError = '';
+          this.hubAuthErrorToken = '';
+          this.hubAuthFailedUrl = '';
+          this.hubAuthRetryAfterMs = 0;
+          this.hubAuthFailStep = 0;
+        }
+      }
+      if (this.isHubMode()) {
+        await this.refreshTownInfo(generation, { force: true });
+      } else {
+        this.town = await readTown(this.cfg.townUrl, homeCity);
+        this.lastTownFetchMs = Date.now();
+      }
       if (generation !== this.stateGeneration) return;
       this.ensureTownStreet();
       this.log?.info(`模拟鱼生：本城改成了 ${this.town.name}（${this.townSourceLabel()}）`);
@@ -1291,7 +1856,7 @@ export class LifeWorld implements World {
       && this.state.farmHelper.preferNeighbor
       && this.state.farmHelper.lastRunDay !== tickToday
       && this.lastErrandPostAttemptDay !== tickToday
-      && parseTownUrls(this.cfg.townUrl).length > 0
+      && this.hasRemoteServer()
     ) {
       const oldPe = this.state.farmHelper.pendingErrand;
       if (oldPe && (oldPe.day !== tickToday || Date.parse(oldPe.expiresAt) <= now.getTime())) {
@@ -2343,6 +2908,7 @@ export class LifeWorld implements World {
       this.toolDiaryWrite(),
       this.toolDiaryRead(),
       this.toolLibrary(),
+      this.toolMail(),
     ];
   }
 
@@ -2528,6 +3094,22 @@ export class LifeWorld implements World {
         }
         const r = applyWork(this.state, what, now, phase);
         if (!r.ok) return { text: r.reason ?? '今天去不了。' };
+
+        const buffs = this.currentTownBuffs();
+        const def = (what ? findJob(what) : (this.state.job.id ? findJob(this.state.job.id) : null));
+        const multKey = def ? `${def.domain}_pay_mult` : '';
+        const mult = multKey && Number(buffs[multKey]) > 0 ? Number(buffs[multKey]) : 1;
+        let expectedPay = r.expectedPay ?? 0;
+        let buffNote = '';
+        if (mult !== 1 && this.state.activity?.kind === 'work' && this.state.activity.workPay) {
+          const boosted = Math.max(1, Math.round(this.state.activity.workPay * mult));
+          this.state.activity.workPay = boosted;
+          this.state.job.daily = boosted;
+          expectedPay = boosted;
+          const pct = Math.round((mult - 1) * 100);
+          buffNote = `（含${this.town.name}风貌加成 ${pct >= 0 ? `+${pct}` : pct}%）`;
+        }
+
         if (r.materialPaid && r.materialPaid > 0) {
           appendLedger(this.opts.dataDir, {
             id: `work-mat-${now.getTime().toString(36)}`,
@@ -2549,7 +3131,7 @@ export class LifeWorld implements World {
           const matTxt = r.materialPaid && r.materialPaid > 0 ? `已先垫付成本 ${r.materialPaid} 元。` : '';
           return {
             text: `去上「${this.state.job.what}」了，工时 ${r.minutes ?? 240} 分钟（预计 ${hh}:${mm} 收工），`
-              + `预计标准工钱 ${r.expectedPay ?? 0} 元。${matTxt}`
+              + `预计标准工钱 ${expectedPay} 元${buffNote}。${matTxt}`
               + '干活期间社交不会掉，但精力、清爽、饱腹和少量娱乐会消耗；早退不满 30 分钟白干、满 30 分钟按比例打六折。',
           };
         }
@@ -2638,12 +3220,83 @@ export class LifeWorld implements World {
    * 这个工具存在的理由：**目标是「攒够押金搬到新小区」，而没有搬的动作，
    * 那个目标就永远只是个进度条** —— 攒到了也没事发生，比没目标更伤。
    */
+  private async moveHubTown(
+    targetTownQuery: string,
+    now: Date,
+    generation: number,
+  ): Promise<{ ok: boolean; townName?: string; street?: string; reason?: string }> {
+    if (!this.isHubMode()) {
+      return { ok: false, reason: '未接入 Hub v1 多城总服，暂时不支持跨城迁居。' };
+    }
+    if (isBusy(this.state, now)) {
+      return { ok: false, reason: busyRefusal(this.state, now, '迁居去另一座城') };
+    }
+    const auth = await this.ensureHubReady(generation);
+    if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理，操作已停止。' };
+    if (!auth) return { ok: false, reason: this.hubAuthError || 'Hub 身份认证未就绪。' };
+
+    const q = String(targetTownQuery || '').trim();
+    const hubUrl = this.activeHubUrl();
+    if (!this.hubTownsCache.length) {
+      const listRes = await hubListTowns(hubUrl);
+      if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理。' };
+      if (listRes.ok) this.hubTownsCache = listRes.towns;
+    }
+    const foundSummary = this.hubTownsCache.find((t) => t.id === q || t.name === q || t.name.includes(q));
+    const targetTownId = foundSummary?.id || q;
+    if (!targetTownId) return { ok: false, reason: '请提供要迁往的城市 ID 或名称（如 beijing / 北京、lanzhou-reedpond / 兰州）。' };
+
+    const townRes = await hubGetTown(hubUrl, targetTownId);
+    if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理。' };
+    if (!townRes.ok || !townRes.townView) {
+      return { ok: false, reason: townRes.reason || `找不到开放城镇「${q}」` };
+    }
+
+    const pickedStreet = pickTownStreet(townRes.townView.streets, auth.petId) || townRes.townView.streets[0] || '';
+    const streetParam = townRes.meta?.streetIdByName[pickedStreet] ?? pickedStreet;
+    const joinRes = await hubJoinTown(hubUrl, auth.token, townRes.townView.id, streetParam);
+    if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理。' };
+    if (!joinRes.ok) {
+      return { ok: false, reason: joinRes.reason || '迁城入册失败。' };
+    }
+
+    const oldTownName = this.town.name;
+    this.hubTownId = townRes.townView.id;
+    this.town = townRes.townView;
+    this.hubTownMeta = townRes.meta ?? null;
+    if (townRes.etag) this.hubTownEtag = townRes.etag;
+    const finalStreet = (townRes.meta?.streetNameById[joinRes.streetName || joinRes.street || ''])
+      || joinRes.streetName
+      || pickedStreet;
+    this.state.street = finalStreet;
+    this.state.home.street = finalStreet;
+    this.state.lastJoinedTownAt = localDateKey(now);
+    this.state.hubTownId = this.hubTownId;
+    this.state.hubJoinedKey = `${hubUrl}|${this.hubTownId}|${localDateKey(now)}`;
+    this.hubCatalogEtag = '';
+    this.lastTownFetchMs = Date.now();
+    this.lastBulletinFetchMs = 0;
+
+    const catRes = await hubGetCatalogSnapshot(hubUrl, { ext: 'life', townId: this.hubTownId, token: auth.token });
+    if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理。' };
+    if (catRes.ok) {
+      if (catRes.etag) this.hubCatalogEtag = catRes.etag;
+      this.hubCatalog = { version: catRes.version ?? 1, items: catRes.items ?? [], jobs: catRes.jobs ?? [] };
+    }
+    remember(this.state, `从${oldTownName}搬到了${this.town.name}（落脚${finalStreet}）。`, now);
+    this.saveDeliveredState();
+    this.broadcastLife(now);
+    void this.refreshTownMarket(generation);
+    return { ok: true, townName: this.town.name, street: finalStreet };
+  }
+
   private toolMove(): ToolDef {
     return {
       name: 'life_move',
       description:
         '搬去本城的另一档住处（城中村 / 老小区 / 新小区 / 别墅区，押两个月房租，老押金不退，钱紧时也可往低处搬自救），'
-        + '或搬到同一座城市的其他街道（换街不收押金，不同街道有各自的街景介绍与属性增益/减益）。tier 和 street 可单传其一，也可同时传。',
+        + '搬到同一座城市的其他街道（换街不收押金，不同街道有各自的街景介绍与属性增益/减益），'
+        + '或在接入 Hub v1 多城总服时迁居到其他开放城市（town 参数，迁城免押金并自动切街道与城市风貌加成）。tier、street、town 可单传其一或组合传递。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -2657,6 +3310,10 @@ export class LifeWorld implements World {
             type: 'string',
             description: '搬去本城的哪条街道，填本城街道名（可选，换街不收押金，享受该街道的属性增益/减益）。',
           },
+          town: {
+            type: 'string',
+            description: 'Hub v1 多城模式下迁居到另一座开放城市，填城市 ID 或名称（如 beijing / 北京、lanzhou-reedpond / 兰州）。',
+          },
         },
       },
       tags: ['write'],
@@ -2666,31 +3323,40 @@ export class LifeWorld implements World {
         const generation = this.stateGeneration;
         const tier = String(args?.tier ?? '').trim();
         const street = String(args?.street ?? '').trim();
-        if (!tier && !street) {
+        const townReq = String(args?.town ?? '').trim();
+        if (!tier && !street && !townReq) {
           const curTier = HOME_TIER_LABEL[this.state.home.tier];
           const streetDesc = this.town.streetProfiles.map((p) => {
             const m = formatStreetMods(p.mods);
             return `${p.name}${p.name === this.state.street ? '[当前]' : ''}：${p.desc || '暂无介绍'}${m ? `（${m}）` : ''}`;
           }).join('；');
+          const townsTxt = this.isHubMode() && this.hubTownsCache.length
+            ? `\nHub 开放城市：${this.hubTownsCache.map((t) => `${t.name}(${t.id}，${t.residentCount}人)`).join('、')}`
+            : '';
           return {
-            text: `当前住处档位：${curTier}，当前所在街道：${this.state.street || '未定'}。${streetDesc ? `\n本城街道：\n${streetDesc}` : ''}`,
+            text: `当前住处档位：${curTier}，当前所在城市与街道：${this.town.name} · ${this.state.street || '未定'}。${streetDesc ? `\n本城街道：\n${streetDesc}` : ''}${townsTxt}`,
           };
+        }
+        const notes: string[] = [];
+        if (townReq) {
+          const mr = await this.moveHubTown(townReq, now, generation);
+          if (generation !== this.stateGeneration) return { text: '生活档案刚刚被清理，这次搬家操作已停止。' };
+          if (!mr.ok) return { text: mr.reason ?? '没能迁去那座城。' };
+          notes.push(`已经搬家安顿到「${mr.townName}」（先落脚${mr.street}，免押金），以后本城风貌、日常委托和免运费市集就归这座城啦。`);
         }
         if (street) {
           if (!this.town.streets.length) {
-            return { text: '当前城市还没有划分具体街道，暂时没法换街。' };
-          }
-          if (!this.town.streets.includes(street)) {
+            if (!notes.length) return { text: '当前城市还没有划分具体街道，暂时没法换街。' };
+          } else if (!this.town.streets.includes(street)) {
             return { text: `本城没有「${street}」这条街。能搬去的街道：${this.town.streets.join(' / ')}。` };
           }
         }
-        const notes: string[] = [];
         if (tier) {
           if (!(tier in HOME_TIER_COST)) {
             return { text: `没有「${tier}」这一档。能搬的：城中村 / 老小区 / 新小区 / 别墅区。` };
           }
           const r = applyMove(this.state, tier as HomeTier, now);
-          if (!r.ok) return { text: r.reason ?? '搬不了。' };
+          if (!r.ok) return { text: notes.length ? `${notes.join(' ')} ${r.reason ?? '换房档没成。'}` : (r.reason ?? '搬不了。') };
           if (r.deposit > 0) {
             appendLedger(this.opts.dataDir, {
               id: `move-${now.getTime().toString(36)}`,
@@ -2719,7 +3385,8 @@ export class LifeWorld implements World {
               + `${sp?.desc ? `${sp.desc}` : ''}`
               + `${modTxt ? `（街道效果：${modTxt}）` : ''}`,
             );
-            if (parseTownUrls(this.cfg.townUrl).length) {
+            if (this.hasRemoteServer()) {
+              this.state.lastJoinedTownAt = '';
               void this.syncTownPresenceAndBulletin(now, generation);
             }
           }
@@ -3162,12 +3829,12 @@ export class LifeWorld implements World {
     return {
       name: 'life_buy',
       description:
-        '去兰州南滨河路早市、张掖路尾货或鱼市街看看今天有什么可买的，也可接下街坊发出的农牧代管委托帮忙干活挣零花钱（不传参数看摊位、邻里委托与街口黑板报，传 16 位委托编号或摊位/菜名到 stall_id 就购买或接单；接邻里代管委托不扣钱、按动植物数量忙活对应分钟后领全额工钱且不占今天正式打工额度；买鲜蔬果品还会收入储物篮供下厨与摆摊）。',
+        '去晨集、尾货摊或鱼市街看看今天有什么可买的，接入 Hub v1 多城总服时还能跨城逛别座城的特产摊位（明算跨城快递费），也可接下同城街坊发出的农牧代管委托帮忙干活挣零花钱（不传参数看摊位、邻里委托与街口黑板报，传委托编号或摊位/菜名到 stall_id 就购买或接单；接邻里代管委托不扣钱且仅限本城、干完领工钱且不占今天正式打工额度；买鲜蔬果品还会收入储物篮供下厨与摆摊）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          stall_id: { type: 'string', description: '摊位 16 位编号、邻里代管委托 16 位编号（支持写「最短」直接接耗时最短的那份）或早市/尾货/节气菜名；不填则先逛逛看看价。' },
+          stall_id: { type: 'string', description: '摊位编号、邻里代管委托编号（支持写「最短」直接接耗时最短的那份）或早市/尾货/节气菜名；不填则先逛逛看看价。' },
         },
       },
       tags: ['write'],
@@ -3178,10 +3845,34 @@ export class LifeWorld implements World {
         const cleared = () => ({ text: '生活档案刚刚被清理，这次旧购买操作已停止，未写入新档案。' });
         if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去鱼市街') };
         const pick = String(args?.stall_id ?? '').trim();
-        const hasTownUrl = parseTownUrls(this.cfg.townUrl).length > 0;
+        const isHub = this.isHubMode();
+        const hasServer = this.hasRemoteServer();
         const myName = this.opts.botName || 'fish';
+
+        const fetchAllRemoteStalls = async (): Promise<{ ok: boolean; stalls: TownStall[]; bulletin: string[] }> => {
+          if (isHub) {
+            const auth = await this.ensureHubReady(generation);
+            if (generation !== this.stateGeneration) return { ok: false, stalls: [], bulletin: [] };
+            if (!auth) return { ok: false, stalls: [], bulletin: [] };
+            const [lstRes, errRes] = await Promise.all([
+              hubListListings(this.activeHubUrl(), auth.token, { limit: 40 }),
+              hubListErrands(this.activeHubUrl(), auth.token, { limit: 30 }),
+            ]);
+            if (generation !== this.stateGeneration) return { ok: false, stalls: [], bulletin: [] };
+            const stalls = [...errRes.errands, ...lstRes.stalls];
+            const ok = lstRes.ok || errRes.ok;
+            return {
+              ok,
+              stalls,
+              bulletin: this.town.notice ? [this.town.notice] : [],
+            };
+          }
+          if (!parseTownUrls(this.cfg.townUrl).length) return { ok: false, stalls: [], bulletin: [] };
+          return fetchTownStalls(this.cfg.townUrl);
+        };
+
         if (!pick) {
-          const remote = hasTownUrl ? await fetchTownStalls(this.cfg.townUrl) : { ok: false, stalls: [], bulletin: [] as string[] };
+          const remote = hasServer ? await fetchAllRemoteStalls() : { ok: false, stalls: [], bulletin: [] as string[] };
           if (generation !== this.stateGeneration) return cleared();
           if (remote.ok) {
             this.townBulletin = remote.bulletin;
@@ -3194,19 +3885,23 @@ export class LifeWorld implements World {
           if (remote.ok && remote.stalls.length) {
             const hasErrands = remote.stalls.some((st) => st.kind === 'errand');
             const errandGuide = hasErrands
-              ? '\n（接邻里代管委托可把 16 位纯委托编号传给 life_farm/life_ranch 的 action="accept_errand"，或直接传给 life_buy 的 stall_id，不扣钱、干完领工钱。）'
+              ? '\n（接同城邻里代管委托可把委托编号传给 life_farm/life_ranch 的 action="accept_errand"，或直接传给 life_buy 的 stall_id，不扣钱、干完领工钱。）'
               : '';
             return {
-              text: `${winTxt}鱼市街今天摆出来的摊位与邻里委托（买摊货涨社交与好心情；接农牧代管委托可帮街坊浇水喂食挣零花钱）：${remote.stalls.map((st) => {
+              text: `${winTxt}鱼市街今天摆出来的摊位与邻里委托（买摊货涨社交与好心情；接本城农牧代管委托可挣零花钱）：${remote.stalls.map((st) => {
                 if (st.kind === 'errand') {
-                  const mins = parseErrandMinutes(st.item);
-                  const selfTag = this.isMyPostedErrandId(st.id) ? '，你发的·不可自接' : '';
+                  const mins = st.estMinutes ?? parseErrandMinutes(st.item);
+                  const selfTag = (this.isMyPostedErrandId(st.id) || st.isMine) ? '，你发的·不可自接' : '';
                   const noteTxt = st.note ? ` · 「${st.note}」` : '';
-                  return `[邻里代管委托·挣钱] ${st.item} 工钱+${st.price}元/约${mins}分（雇主：${st.seller}，委托编号 ${st.id}${selfTag}${noteTxt}）`;
+                  return `[邻里代管委托·挣钱] ${st.item} 工钱+${st.price}元/约${mins}分（${isHub ? '限同城，' : ''}雇主：${st.seller}，委托编号 ${st.id}${selfTag}${noteTxt}）`;
                 }
                 const fx = formatStallEffects(resolveStallEffects(st.effects, st.price));
+                const shipTag = isHub
+                  ? (st.isCrossTown ? ` · ${st.townName || '外城'}·跨城快递+${st.estimatedShippingFee ?? 0}元` : ` · ${st.townName || '本城'}·免运费`)
+                  : '';
+                const specTag = st.isSpecialty ? '[特产]' : '';
                 const noteTxt = st.note ? ` · 「${st.note}」` : '';
-                return `${st.item} ${st.price}元（${st.seller}，id:${st.id}，${fx}${noteTxt}）`;
+                return `${specTag}${st.item} ${st.price}元${shipTag}（${st.seller}，id:${st.id}，${fx}${noteTxt}）`;
               }).join('；')}。${errandGuide}${boardTxt}`,
             };
           }
@@ -3217,7 +3912,10 @@ export class LifeWorld implements World {
 
         let item = '';
         let price = 0;
+        let shippingFee = 0;
+        let itemSubtotal = 0;
         let seller = '早市摊主';
+        let sellerTownName = '';
         let localTag = '';
         let isRemote = false;
         let isFreshVeg = false;
@@ -3225,8 +3923,8 @@ export class LifeWorld implements World {
         let knowGain = 0;
         let fitGain = 0;
         let remote: { ok: boolean; stalls: TownStall[]; bulletin: string[] } = { ok: false, stalls: [], bulletin: [] };
-        if (hasTownUrl) {
-          remote = await fetchTownStalls(this.cfg.townUrl);
+        if (hasServer) {
+          remote = await fetchAllRemoteStalls();
           if (generation !== this.stateGeneration) return cleared();
           if (remote.ok) {
             this.townBulletin = remote.bulletin;
@@ -3241,46 +3939,90 @@ export class LifeWorld implements World {
                 ? `[委托] 编号 ${st.id}（${st.item}，工钱+${st.price}元，雇主：${st.seller}）`
                 : `[摊货] 编号 ${st.id}（${st.item}，${st.price}元，卖家：${st.seller}）`
             )).join('；');
-            return { text: `「${pick}」同时对上了多条鱼市街条目，请直接传其中一条的 16 位纯编号：${optsTxt}（没有误买任何东西）。` };
+            return { text: `「${pick}」同时对上了多条鱼市街条目，请直接传其中一条的完整编号：${optsTxt}（没有误买任何东西）。` };
           }
           const match = matched.match;
           if (match && match.kind === 'errand') {
             return this.acceptTownErrandMatch(match, now, generation);
           }
           if (match) {
-            if (this.state.money.cash < match.price) {
-              return { text: `「${match.item}」要 ${match.price} 元，手上只有 ${this.state.money.cash} 元。` };
+            if (isHub) {
+              const auth = await this.ensureHubReady(generation);
+              if (generation !== this.stateGeneration) return cleared();
+              if (!auth) return { text: this.hubAuthError || 'Hub 身份认证未就绪。' };
+              const estShip = match.estimatedShippingFee ?? 0;
+              const estTotal = match.price + estShip;
+              if (this.state.money.cash < estTotal) {
+                return {
+                  text: `「${match.item}」单价 ${match.price} 元${estShip > 0 ? ` + 跨城快递费 ${estShip} 元 = 共 ${estTotal} 元` : ''}，手上只有 ${Math.round(this.state.money.cash)} 元。`,
+                };
+              }
+              const trade = await hubTradeListing(this.activeHubUrl(), auth.token, match.id, {
+                qty: 1,
+                idempotencyKey: `trade-${randomUUID()}`,
+              });
+              if (generation !== this.stateGeneration) return cleared();
+              if (!trade.ok || !trade.order) return { text: trade.reason ?? '没买成。' };
+              isRemote = true;
+              item = trade.order.itemName || match.item;
+              itemSubtotal = trade.order.itemSubtotal;
+              shippingFee = trade.order.shippingFee;
+              price = trade.order.buyerTotal;
+              seller = match.seller;
+              sellerTownName = match.townName || trade.order.sellerTownId;
+              isFreshVeg = Boolean(match.freshVeg || match.category === 'produce');
+              const stallEffects = resolveStallEffects(
+                (Object.keys(trade.order.effectsSnapshot || {}).length ? trade.order.effectsSnapshot : match.effects),
+                trade.order.unitPrice || match.price,
+              );
+              vitalDeltas = {
+                food: stallEffects.food ?? 0,
+                energy: stallEffects.energy ?? 0,
+                clean: stallEffects.clean ?? 0,
+                fun: stallEffects.fun ?? 0,
+                social: Math.min(80, (stallEffects.social ?? 0) + 4),
+              };
+              knowGain = Number((stallEffects.knowledge ?? 0).toFixed(2));
+              fitGain = Number((stallEffects.fitness ?? 0).toFixed(2));
+              this.otherStallsCache = this.otherStallsCache
+                .map((st) => (st.id === match.id ? { ...st, stock: st.stock - 1 } : st))
+                .filter((st) => st.stock > 0);
+            } else {
+              if (this.state.money.cash < match.price) {
+                return { text: `「${match.item}」要 ${match.price} 元，手上只有 ${this.state.money.cash} 元。` };
+              }
+              const buyerUid = readMeetUid(this.opts.dataDir);
+              if (!buyerUid) {
+                return { text: '缺少本机 uid（先跟城里连一次碰面生成 uid 后再在鱼市街摊位买东西）。' };
+              }
+              const bought = await buyTownStall(this.cfg.townUrl, match.id, myName, { buyerUid });
+              if (generation !== this.stateGeneration) return cleared();
+              if (!bought.ok) return { text: bought.reason ?? '没买成。' };
+              isRemote = true;
+              item = bought.item || match.item;
+              price = bought.price || match.price;
+              itemSubtotal = price;
+              seller = bought.seller || match.seller;
+              isFreshVeg = Boolean((bought.freshVeg ?? match.freshVeg) || bought.category === 'produce' || match.category === 'produce');
+              const stallEffects = resolveStallEffects(bought.effects ?? match.effects, price || match.price);
+              vitalDeltas = {
+                food: stallEffects.food ?? 0,
+                energy: stallEffects.energy ?? 0,
+                clean: stallEffects.clean ?? 0,
+                fun: stallEffects.fun ?? 0,
+                social: Math.min(80, (stallEffects.social ?? 0) + 4),
+              };
+              knowGain = Number((stallEffects.knowledge ?? 0).toFixed(2));
+              fitGain = Number((stallEffects.fitness ?? 0).toFixed(2));
+              this.otherStallsCache = this.otherStallsCache
+                .map((st) => (st.id === match.id ? { ...st, stock: st.stock - 1 } : st))
+                .filter((st) => st.stock > 0);
             }
-            const buyerUid = readMeetUid(this.opts.dataDir);
-            if (!buyerUid) {
-              return { text: '缺少本机 uid（先跟城里连一次碰面生成 uid 后再在鱼市街摊位买东西）。' };
-            }
-            const bought = await buyTownStall(this.cfg.townUrl, match.id, myName, { buyerUid });
-            if (generation !== this.stateGeneration) return cleared();
-            if (!bought.ok) return { text: bought.reason ?? '没买成。' };
-            isRemote = true;
-            item = bought.item || match.item;
-            price = bought.price || match.price;
-            seller = bought.seller || match.seller;
-            isFreshVeg = Boolean((bought.freshVeg ?? match.freshVeg) || bought.category === 'produce' || match.category === 'produce');
-            const stallEffects = resolveStallEffects(bought.effects ?? match.effects, price || match.price);
-            vitalDeltas = {
-              food: stallEffects.food ?? 0,
-              energy: stallEffects.energy ?? 0,
-              clean: stallEffects.clean ?? 0,
-              fun: stallEffects.fun ?? 0,
-              social: Math.min(80, (stallEffects.social ?? 0) + 4),
-            };
-            knowGain = Number((stallEffects.knowledge ?? 0).toFixed(2));
-            fitGain = Number((stallEffects.fitness ?? 0).toFixed(2));
-            this.otherStallsCache = this.otherStallsCache
-              .map((st) => (st.id === match.id ? { ...st, stock: st.stock - 1 } : st))
-              .filter((st) => st.stock > 0);
           }
         }
         if (!item && looksLikeRemoteOrErrandPick(pick)) {
-          if (!hasTownUrl) {
-            return { text: '还没配置城服务器地址，暂时没法去鱼市街接邻里代管委托或按编号买街坊摊货（没有误买任何东西）。' };
+          if (!hasServer) {
+            return { text: '还没配置城服务器或 Hub v1 地址，暂时没法去鱼市街接邻里代管委托或按编号买街坊摊货（没有误买任何东西）。' };
           }
           if (!remote.ok) {
             return { text: `鱼市街这会儿连不上，暂时没法核对或下单「${pick}」，请稍后再试（没有误买任何摊货）。` };
@@ -3288,7 +4030,7 @@ export class LifeWorld implements World {
           const errands = remote.stalls.filter((st) => st.kind === 'errand');
           const avail = errands.filter((st) => !this.isMyPostedErrandId(st.id));
           const errandListHint = avail.length
-            ? `当前鱼市街可接的邻里委托：${avail.map((st) => `编号 ${st.id}（${st.item}，工钱+${st.price}元，雇主：${st.seller}）`).join('；')}。请直接传入上面的 16 位纯编号接单。`
+            ? `当前鱼市街可接的邻里委托：${avail.map((st) => `编号 ${st.id}（${st.item}，工钱+${st.price}元，雇主：${st.seller}）`).join('；')}。请直接传入上面的完整编号接单。`
             : (errands.length
               ? '目前鱼市街上只有你自己挂出的委托，暂时没有街坊委托可接。'
               : '此刻鱼市街上没有在架的邻里代管委托（可能已被抢接或过期）。');
@@ -3305,6 +4047,7 @@ export class LifeWorld implements World {
           }
           item = hit.item;
           price = hit.price;
+          itemSubtotal = price;
           localTag = hit.tag ?? '';
           isFreshVeg = Boolean(hit.freshVeg);
           vitalDeltas = {
@@ -3314,7 +4057,7 @@ export class LifeWorld implements World {
         }
 
         if (generation !== this.stateGeneration) return cleared();
-        this.state.money.cash -= price;
+        this.state.money.cash = Math.max(0, this.state.money.cash - price);
         this.state.money.spent += price;
         const gainParts: string[] = [];
         for (const k of ['food', 'energy', 'clean', 'fun', 'social'] as VitalKey[]) {
@@ -3345,7 +4088,9 @@ export class LifeWorld implements World {
           this.state.moodlets.push({
             id: `m-townbuy-${now.getTime().toString(36)}`,
             source: 'town-buy',
-            text: `在鱼市街跟${seller}买了「${item}」，边逛边聊心情很舒畅`,
+            text: shippingFee > 0
+              ? `从${sellerTownName || '外城'}的${seller}那儿邮购了「${item}」，拆箱吃得蛮开心`
+              : `在鱼市街跟${seller}买了「${item}」，边逛边聊心情很舒畅`,
             kind: 'good',
             expiresAt: new Date(now.getTime() + 3 * 3_600_000).toISOString(),
           });
@@ -3358,15 +4103,16 @@ export class LifeWorld implements World {
             qty: stockIntoPantry,
             freshVeg: true,
             origin: isRemote ? 'town-buy' : 'market',
-            unitCost: Math.max(1, Math.round(price / stockIntoPantry)),
+            unitCost: Math.max(1, Math.round((itemSubtotal || price) / stockIntoPantry)),
             ...(isRemote ? { fromSeller: seller } : {}),
             acquiredAt: now.toISOString(),
           });
         }
         const placePhrase = isRemote
-          ? `在${seller}那儿`
+          ? (shippingFee > 0 ? `从${sellerTownName || '外城'}${seller}那儿` : `在${seller}那儿`)
           : (localTag ? `在${localTag}的摊子上` : '在早市');
-        remember(this.state, `${placePhrase}买了${item}（${price} 元）。`, now);
+        const shipDetail = shippingFee > 0 ? `（含货款 ${itemSubtotal} 元 + 跨城快递费 ${shippingFee} 元）` : '';
+        remember(this.state, `${placePhrase}买了${item}（${price} 元${shippingFee > 0 ? `，含快递 ${shippingFee} 元` : ''}）。`, now);
         appendLedger(this.opts.dataDir, {
           id: `buy-${now.getTime().toString(36)}`,
           ts: now.toISOString(),
@@ -3374,14 +4120,14 @@ export class LifeWorld implements World {
           amount: price,
           source: 'life_buy',
           payee: isRemote ? seller : '早市摊主',
-          note: `买菜：${item}`,
+          note: `买菜：${item}${shipDetail}`,
         });
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
         this.broadcastLife(now);
         const gainSummary = gainParts.length ? `（${gainParts.join('、')}${isRemote ? '，带 3 小时好心情' : ''}）` : '';
         return {
-          text: `买了${item}，花了 ${price} 元（${isRemote ? seller : (localTag || '早市摊主')}）${gainSummary}。`
-            + `${isFreshVeg ? `新鲜水灵，已收入储物篮（+${isRemote ? 2 : 1} 份），下厨或摆料理摊可省下原料钱。` : ''}手上还剩 ${this.state.money.cash} 元。`,
+          text: `买了${item}，共花了 ${price} 元${shipDetail}（${isRemote ? seller : (localTag || '早市摊主')}）${gainSummary}。`
+            + `${isFreshVeg ? `新鲜水灵，已收入储物篮（+${isRemote ? 2 : 1} 份），下厨或摆料理摊可省下原料钱。` : ''}手上还剩 ${Math.round(this.state.money.cash)} 元。`,
         };
       },
     };
@@ -3391,7 +4137,7 @@ export class LifeWorld implements World {
     return {
       name: 'life_stall',
       description:
-        '去兰州鱼市街摆摊卖货（或传空参数查看此刻鱼市街你在架上的摊位与储物篮余量）。'
+        '去本城鱼市街摆摊卖货（或传空参数查看此刻你在架上的摊位与储物篮余量；接入 Hub v1 后全城玩家都看得到并能跨城下单）。'
         + '价格 1–999、份数 1–99、每人同时最多挂 3 个有效摊位（3 天有效，卖不掉过期亏本）。'
         + '五大品类各扣真实本钱与精力：鲜蔬农产（produce，耗自产农牧货或早市现批+3元打包）、'
         + '料理熟食（food，先用已做好成品菜格仅2元打包费，再用储物篮原料仅收3元/份油盐费，无囤货现买原料；单价>25现做需厨师证/烹饪≥10/烤箱/独立厨房）、'
@@ -3435,20 +4181,30 @@ export class LifeWorld implements World {
         await this.settleBeforeTool(now);
         const generation = this.stateGeneration;
         const cleared = () => ({ text: '生活档案刚刚被清理，这次旧挂摊操作已取消。' });
-        const hasTownUrl = parseTownUrls(this.cfg.townUrl).length > 0;
-        if (!hasTownUrl) return { text: '还没配置城服务器地址，没法上鱼市街摆摊。' };
+        const isHub = this.isHubMode();
+        if (!this.hasRemoteServer()) return { text: '还没配置城服务器或 Hub v1 地址，没法上鱼市街摆摊。' };
 
         const item = String(args?.item ?? '').trim();
         const myName = this.opts.botName || 'fish';
         if (!item) {
-          const remote = await fetchTownStalls(this.cfg.townUrl);
-          if (generation !== this.stateGeneration) return cleared();
-          if (!remote.ok) return { text: '鱼市街这会儿连不上，稍后再看看。' };
-          this.townBulletin = remote.bulletin;
-          this.updateTownStallsCache(remote.stalls, myName);
+          if (isHub) {
+            const auth = await this.ensureHubReady(generation);
+            if (generation !== this.stateGeneration) return cleared();
+            if (!auth) return { text: this.hubAuthError || 'Hub 身份认证未就绪。' };
+            const remote = await hubListListings(this.activeHubUrl(), auth.token, { limit: 40 });
+            if (generation !== this.stateGeneration) return cleared();
+            if (!remote.ok) return { text: `鱼市街这会儿连不上（${remote.reason || '网络错误'}），稍后再看看。` };
+            this.updateTownStallsCache(remote.stalls, myName);
+          } else {
+            const remote = await fetchTownStalls(this.cfg.townUrl);
+            if (generation !== this.stateGeneration) return cleared();
+            if (!remote.ok) return { text: '鱼市街这会儿连不上，稍后再看看。' };
+            this.townBulletin = remote.bulletin;
+            this.updateTownStallsCache(remote.stalls, myName);
+          }
           const mine = this.myStallsCache;
           const panLine = this.state.pantry.length
-            ? `储物篮备料：${this.state.pantry.map((p) => `${p.name}×${p.qty}(${p.origin === 'home-grown' ? '自种' : p.origin === 'town-buy' ? `购自${p.fromSeller || '街坊'}` : '早市'})`).join('、')}。`
+            ? `储物篮备料：${this.state.pantry.map((p) => `${p.name}×${p.qty}(${p.origin === 'home-grown' ? '自种' : p.origin === 'town-buy' ? `购自${p.fromSeller || '街坊'}` : p.origin === 'ranch' ? '自家牧场' : '早市'})`).join('、')}。`
             : '储物篮眼下空着（可用 life_farm 种菜收成或去鱼市街买菜囤鲜蔬）。';
           if (!mine.length) return { text: `鱼市街上目前还没有你挂着的摊子。${panLine}想摆摊就传 item 和 price。` };
           return {
@@ -3461,8 +4217,6 @@ export class LifeWorld implements World {
         }
 
         if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去摆摊') };
-        const uid = readMeetUid(this.opts.dataDir);
-        if (!uid) return { text: '缺少本机 uid，没法在鱼市街实名挂摊。' };
         const matchedRecipe = findRecipe(item) ?? (() => {
           const d = (this.state.cookedDishes ?? []).find(
             (x) => x.name === item || x.name.includes(item) || item.includes(x.name),
@@ -3498,20 +4252,57 @@ export class LifeWorld implements World {
         const note = String(args?.note ?? '').trim();
         const effects = normStallEffects(args?.effects, price);
 
-        const res = await postTownStall(this.cfg.townUrl, {
-          uid,
-          pet: myName,
-          item,
-          price,
-          stock,
-          freshVeg: plan.freshVeg,
-          category: plan.category,
-          kind: 'goods',
-          note,
-          ...(effects ? { effects } : {}),
-        });
-        if (generation !== this.stateGeneration) return cleared();
-        if (!res.ok) return { text: res.reason ?? '挂摊没成功。' };
+        let postedId = '';
+        let postedItem = item;
+        let postedPrice = price;
+        let postedStock = stock;
+        let postedEffects: StallEffects | undefined = effects;
+
+        if (isHub) {
+          const auth = await this.ensureHubReady(generation);
+          if (generation !== this.stateGeneration) return cleared();
+          if (!auth) return { text: this.hubAuthError || 'Hub 身份认证未就绪。' };
+          const specHit = this.hubCatalog.items.find((ci) => ci.name === item);
+          const hubRes = await hubCreateListing(this.activeHubUrl(), auth.token, {
+            townId: this.targetHubTownId(),
+            category: plan.category,
+            ...(specHit ? { itemCode: specHit.code } : {}),
+            itemName: item,
+            unitPrice: price,
+            stockTotal: stock,
+            freshVeg: plan.freshVeg,
+            note,
+            effects,
+          });
+          if (generation !== this.stateGeneration) return cleared();
+          if (!hubRes.ok) return { text: hubRes.reason ?? '挂摊没成功。' };
+          postedId = hubRes.id || '';
+          postedItem = hubRes.itemName || item;
+          postedPrice = hubRes.unitPrice ?? price;
+          postedStock = hubRes.stockTotal ?? stock;
+        } else {
+          const uid = readMeetUid(this.opts.dataDir);
+          if (!uid) return { text: '缺少本机 uid，没法在鱼市街实名挂摊。' };
+          const res = await postTownStall(this.cfg.townUrl, {
+            uid,
+            pet: myName,
+            item,
+            price,
+            stock,
+            freshVeg: plan.freshVeg,
+            category: plan.category,
+            kind: 'goods',
+            note,
+            ...(effects ? { effects } : {}),
+          });
+          if (generation !== this.stateGeneration) return cleared();
+          if (!res.ok) return { text: res.reason ?? '挂摊没成功。' };
+          postedId = res.id || '';
+          postedItem = res.item || item;
+          postedPrice = res.price ?? price;
+          postedStock = res.stock ?? stock;
+          postedEffects = res.effects ?? effects;
+        }
 
         let consumedSources: string[] = [];
         let pantryUnitCostSum = 0;
@@ -3535,12 +4326,12 @@ export class LifeWorld implements World {
         }
         const totalEconomicCost = plan.cashCost + pantryUnitCostSum;
         this.state.stallRecords.push({
-          id: res.id || `st-${now.getTime().toString(36)}`,
-          item: res.item || item,
+          id: postedId || `st-${now.getTime().toString(36)}`,
+          item: postedItem,
           category: plan.category,
-          unitPrice: res.price ?? price,
-          stock: res.stock ?? stock,
-          unitCost: Math.max(1, Math.round(totalEconomicCost / Math.max(1, res.stock ?? stock))),
+          unitPrice: postedPrice,
+          stock: postedStock,
+          unitCost: Math.max(1, Math.round(totalEconomicCost / Math.max(1, postedStock))),
           totalCost: plan.cashCost,
           usedPantry: plan.pantryUsed,
           postedAt: now.toISOString(),
@@ -3556,18 +4347,13 @@ export class LifeWorld implements World {
             amount: plan.cashCost,
             source: 'life_stall_cost',
             payee: '摆摊备料',
-            note: `摆摊备货[${STALL_CATEGORY_LABEL[plan.category]}]：${res.item}×${res.stock}`,
+            note: `摆摊备货[${STALL_CATEGORY_LABEL[plan.category]}]：${postedItem}×${postedStock}`,
           });
         }
 
-        const remote = await fetchTownStalls(this.cfg.townUrl);
+        await this.refreshTownMarket(generation);
         if (generation !== this.stateGeneration) return cleared();
-        if (remote.ok) {
-          this.townBulletin = remote.bulletin;
-          this.updateTownStallsCache(remote.stalls, myName);
-        }
-        const finalEffects = res.effects ?? effects;
-        const fxTxt = formatStallEffects(finalEffects);
+        const fxTxt = formatStallEffects(postedEffects);
         const pantryTxt = consumedSources.length ? `（动用了${consumedSources.join('、')}）` : '';
         const refPriceHint = usedSuggestedPrice
           ? `（已自动按菜谱参考摊价 ${price} 元定价）`
@@ -3576,13 +4362,13 @@ export class LifeWorld implements World {
             : '');
         remember(
           this.state,
-          `在鱼市街挂出${STALL_CATEGORY_LABEL[plan.category]}摊：${res.item}（${res.price} 元×${res.stock} 份，本钱 ${plan.cashCost} 元${pantryTxt}）。`,
+          `在${this.town.name}鱼市街挂出${STALL_CATEGORY_LABEL[plan.category]}摊：${postedItem}（${postedPrice} 元×${postedStock} 份，本钱 ${plan.cashCost} 元${pantryTxt}）。`,
           now,
         );
         try { this.store.save(this.state); } catch { /* ignore */ }
         this.broadcastLife(now);
         return {
-          text: `摊子挂上鱼市街了：${res.item} [${STALL_CATEGORY_LABEL[plan.category]}]，定价 ${res.price} 元、共 ${res.stock} 份（id:${res.id}`
+          text: `摊子挂上鱼市街了：${postedItem} [${STALL_CATEGORY_LABEL[plan.category]}]，定价 ${postedPrice} 元、共 ${postedStock} 份（${this.isHubMode() ? `${this.town.name}·` : ''}id:${postedId}`
             + `${fxTxt ? `；买家收益：${fxTxt}` : ''}）${refPriceHint}。`
             + `实扣备货本钱 ${plan.cashCost} 元（${plan.breakdown}${pantryTxt}）、耗精力 ${plan.energyCost}，手上剩 ${Math.round(this.state.money.cash)} 元。`
             + '卖掉后在 life_deals 自动进账；3 天没卖完会过期压在手里亏本。',
@@ -3609,12 +4395,61 @@ export class LifeWorld implements World {
         await this.settleBeforeTool(now);
         const generation = this.stateGeneration;
         const cleared = () => ({ text: '生活档案刚刚被清理，旧查账结果已丢弃。' });
-        if (!parseTownUrls(this.cfg.townUrl).length) {
-          return { text: '还没配置城服务器地址，没有鱼市街成交记录。' };
+        if (!this.hasRemoteServer()) {
+          return { text: '还没配置城服务器或 Hub v1 地址，没有鱼市街成交记录。' };
         }
+        const shouldAck = args?.ack !== false;
+
+        if (this.isHubMode()) {
+          const auth = await this.ensureHubReady(generation);
+          if (generation !== this.stateGeneration) return cleared();
+          if (!auth) return { text: this.hubAuthError || 'Hub 身份认证未就绪。' };
+          const ordRes = await hubListOrders(this.activeHubUrl(), auth.token, { role: 'maker', limit: 30 });
+          if (generation !== this.stateGeneration) return cleared();
+          if (!ordRes.ok) return { text: ordRes.reason ?? '查回执失败了。' };
+
+          const deals: TownDeal[] = ordRes.orders.map((o) => ({
+            id: o.id,
+            orderId: o.id,
+            stallId: o.listingId,
+            item: o.itemName,
+            qty: o.qty,
+            buyerPet: o.takerName || o.takerPetId,
+            note: o.buyerNote || undefined,
+            seen: Boolean(o.settledAt),
+            at: o.createdAt,
+            unitPrice: o.unitPrice,
+            isCrossTown: o.isCrossTown,
+            shippingFee: o.shippingFee,
+            buyerTotal: o.buyerTotal,
+            sellerTownId: o.sellerTownId,
+            buyerTownId: o.buyerTownId ?? undefined,
+          }));
+          const settledRes = this.settleTownDeals(deals, now);
+          const newOnes = deals.filter((d) => !d.seen);
+          if (shouldAck && newOnes.length) {
+            await hubSettleOrders(this.activeHubUrl(), auth.token, newOnes.map((d) => d.id)).catch(() => {});
+            if (generation !== this.stateGeneration) return cleared();
+          }
+          this.myDealsCache = deals.map((d) => (shouldAck ? { ...d, seen: true } : d));
+          this.unseenDealsCount = shouldAck ? 0 : newOnes.length;
+          if (!deals.length) return { text: '鱼市街这边还没有你的摊位成交记录。' };
+
+          const lines = deals.slice(0, 10).map((d) => {
+            const up = this.resolveDealPrice(d);
+            const incTxt = up > 0 ? `（进账 +${up * d.qty} 元${d.isCrossTown ? '·跨城单' : ''}）` : '';
+            return `${d.seen ? '' : '[新] '}${d.buyerPet} 买走 ${d.qty} 份「${d.item}」${incTxt}${d.note ? `（留言：${d.note}）` : ''}`;
+          });
+          const incomeSummary = settledRes.newCount > 0
+            ? `，本次新入账 +${settledRes.newIncome} 元（当前现金 ${Math.round(this.state.money.cash)} 元）`
+            : '';
+          return {
+            text: `最近鱼市街成交回执（共 ${deals.length} 条，新未读 ${newOnes.length} 条${shouldAck && newOnes.length ? '，已标为已读' : ''}${incomeSummary}）：\n${lines.join('\n')}`,
+          };
+        }
+
         const uid = readMeetUid(this.opts.dataDir);
         if (!uid) return { text: '缺少本机 uid，查不到自己的成交回执。' };
-        const shouldAck = args?.ack !== false;
         const res = await fetchTownDeals(this.cfg.townUrl, uid, { ack: shouldAck });
         if (generation !== this.stateGeneration) return cleared();
         if (!res.ok) return { text: res.reason ?? '查回执失败了。' };
@@ -3772,7 +4607,7 @@ export class LifeWorld implements World {
         + 'harvest 采摘成熟作物入储物篮（供下厨按菜谱做菜或上鱼市街卖鲜蔬，顺手涨体质）；'
         + `rent 签约 ${LEASE_PLOT_COUNT} 槽城郊菜地（签约费 ${LEASE_SIGNUP_FEE} 元 + 月租 ${LEASE_MONTHLY_RENT} 元按天扣）；unrent 退租；`
         + 'hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天浇水喂食收蛋奶，或 full 农牧全托管20元/天并自动收菜起塘；prefer_neighbor 默认 true 优先发鱼市街邻里真鱼代管单¥6–15按量计价且6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手；'
-        + 'accept_errand 查看或接取鱼市街街坊发出的邻里代管委托挣钱（不填 errand_id 列出在架委托，传入 16 位纯编号或「最短」即可接单，不扣钱、不占今天正式打工额度）。',
+        + 'accept_errand 查看或接取鱼市街街坊发出的邻里代管委托挣钱（不填 errand_id 列出在架委托，传入委托编号（如 `err_...` 或 16 位编号）或「最短」即可接单，不扣钱、不占今天正式打工额度）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -3801,7 +4636,7 @@ export class LifeWorld implements World {
           },
           errand_id: {
             type: 'string',
-            description: 'accept_errand 时传 16 位邻里委托编号（或填「最短」自动接耗时最短的那份）；不填则先列出当前鱼市街所有可接邻里委托。',
+            description: 'accept_errand 时传邻里委托编号（如 `err_...` 或 16 位编号，或填「最短」自动接耗时最短的那份）；不填则先列出当前鱼市街所有可接邻里委托。',
           },
         },
       },
@@ -3965,7 +4800,7 @@ export class LifeWorld implements World {
         + 'harvest 起塘收鲜鱼（不传 pen_id 自动收熟鱼塘）或指定鸡/牛 pen_id 出栏收土鸡肉/精选牛肉；'
         + `rent 签约城郊农牧场（签约费 ${RANCH_SIGNUP_FEE} 元 + 月租 ${RANCH_MONTHLY_RENT} 元按天扣 8 元）；unrent 退租；`
         + 'hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天，或 full 农牧全托管20元/天；prefer_neighbor 默认 true 优先找鱼市街真鱼代管¥6–15，6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手；'
-        + 'accept_errand 查看或接取鱼市街街坊发出的邻里代管委托挣钱（不填 errand_id 列出在架委托，传入 16 位纯编号或「最短」即可接单，不扣钱、不占今天正式打工额度）。',
+        + 'accept_errand 查看或接取鱼市街街坊发出的邻里代管委托挣钱（不填 errand_id 列出在架委托，传入委托编号（如 `err_...` 或 16 位编号）或「最短」即可接单，不扣钱、不占今天正式打工额度）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -3994,7 +4829,7 @@ export class LifeWorld implements World {
           },
           errand_id: {
             type: 'string',
-            description: 'accept_errand 时传 16 位邻里委托编号（或填「最短」自动接耗时最短的那份）；不填则先列出当前鱼市街所有可接邻里委托。',
+            description: 'accept_errand 时传邻里委托编号（如 `err_...` 或 16 位编号，或填「最短」自动接耗时最短的那份）；不填则先列出当前鱼市街所有可接邻里委托。',
           },
         },
       },
@@ -4708,6 +5543,228 @@ export class LifeWorld implements World {
     };
   }
 
+  private toolMail(): ToolDef {
+    return {
+      name: 'life_mail',
+      description:
+        '接入 Hub v1 多城总服后使用的鱼间信箱与邻里通讯录：'
+        + 'action=inbox 查看私信会话列表、未读条数与同城街坊；'
+        + 'residents 列出本城近期活跃街坊；'
+        + 'read 读出和某位街坊的最近聊天并顺手标记已读；'
+        + 'send 给对方发一条私信或明信片（需同城、市场成交过、互接过委托或已建关系，且未被拉黑）；'
+        + 'relation 设置街坊关系（acquaintance/friend/blocked）。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['action'],
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['inbox', 'residents', 'read', 'send', 'relation'],
+            description: '操作类型：inbox(看信箱和会话)/residents(看本城街坊)/read(读对话并标已读)/send(给街坊写信)/relation(设关系或拉黑)。',
+          },
+          peer: {
+            type: 'string',
+            description: '对方鱼名或 petId（send / read / relation 时传入，也可用 conversation_id）。',
+          },
+          conversation_id: {
+            type: 'string',
+            description: '可选：已知的会话 id（read / send 时可直接指定）。',
+          },
+          message: {
+            type: 'string',
+            description: 'send 时要写过去的正文内容（不超过 1000 字）。',
+          },
+          rel_type: {
+            type: 'string',
+            enum: ['acquaintance', 'friend', 'blocked'],
+            description: 'relation 时设定的关系类型：acquaintance 熟人 / friend 好友 / blocked 拉黑。',
+          },
+        },
+      },
+      tags: ['write'],
+      handler: async (args: any) => {
+        const now = this.now();
+        await this.settleBeforeTool(now);
+        const generation = this.stateGeneration;
+        const cleared = () => ({ text: '生活档案刚刚被清理，这次信箱操作已停止。' });
+        if (!this.isHubMode()) {
+          return { text: '目前还没接入 Hub v1 多城总服（请在设置里填好 hubUrl），鱼间信箱暂未开通。' };
+        }
+        const auth = await this.ensureHubReady(generation);
+        if (generation !== this.stateGeneration) return cleared();
+        if (!auth) return { text: this.hubAuthError || 'Hub 身份认证未就绪。' };
+
+        const hubUrl = this.activeHubUrl();
+        const action = String(args?.action ?? 'inbox').trim();
+
+        const resolveTargetPetId = async (peerRaw: string): Promise<{ petId: string; name: string } | null> => {
+          const q = peerRaw.trim();
+          if (!q) return null;
+          if (/^pet_/i.test(q)) return { petId: q, name: q };
+          const convHit = this.hubConversationsCache.find((c) => c.peer && (c.peer.displayName === q || c.peer.displayName.includes(q)));
+          if (convHit?.peer) return { petId: convHit.peer.petId, name: convHit.peer.displayName };
+          const resHit = this.hubResidentsCache.find((r) => r.displayName === q || r.displayName.includes(q));
+          if (resHit) return { petId: resHit.petId, name: resHit.displayName };
+          const res = await hubGetResidents(hubUrl, auth.token, this.targetHubTownId(), { limit: 30 });
+          if (generation !== this.stateGeneration) return null;
+          if (res.ok) {
+            this.hubResidentsCache = res.residents.map((r) => ({ ...r, street: this.hubStreetDisplay(r.street) }));
+            const hit = this.hubResidentsCache.find((r) => r.displayName === q || r.displayName.includes(q));
+            if (hit) return { petId: hit.petId, name: hit.displayName };
+          }
+          const relRes = await hubListRelations(hubUrl, auth.token);
+          if (generation !== this.stateGeneration) return null;
+          if (relRes.ok) {
+            const hit = relRes.relations.find((r) => r.displayName === q || r.displayName.includes(q) || r.targetPetId === q);
+            if (hit) return { petId: hit.targetPetId, name: hit.displayName };
+          }
+          const compRes = await hubListCompanions(hubUrl, auth.token, 50);
+          if (generation !== this.stateGeneration) return null;
+          if (compRes.ok) {
+            const hit = compRes.companions.find((c) => c.displayName === q || c.displayName.includes(q) || c.petId === q);
+            if (hit) return { petId: hit.petId, name: hit.displayName };
+          }
+          return null;
+        };
+
+        if (action === 'residents') {
+          const res = await hubGetResidents(hubUrl, auth.token, this.targetHubTownId(), { limit: 30 });
+          if (generation !== this.stateGeneration) return cleared();
+          if (!res.ok) return { text: res.reason || '没查到本城居民。' };
+          this.hubResidentsCache = res.residents.map((r) => ({ ...r, street: this.hubStreetDisplay(r.street) }));
+          const others = this.hubResidentsCache.filter((r) => r.petId !== auth.petId);
+          if (!others.length) return { text: `${this.town.name}这会儿还没有其他活跃街坊。` };
+          return {
+            text: `${this.town.name}近期活跃街坊（${others.length} 位）：${others.map((r) => `${r.displayName}（住${r.street}，${r.petId}）`).join('；')}。`,
+          };
+        }
+
+        if (action === 'inbox') {
+          const [convRes, resRes] = await Promise.all([
+            hubListConversations(hubUrl, auth.token),
+            hubGetResidents(hubUrl, auth.token, this.targetHubTownId(), { limit: 30 }),
+          ]);
+          if (generation !== this.stateGeneration) return cleared();
+          if (!convRes.ok) return { text: convRes.reason || '信箱拉取失败。' };
+          this.hubConversationsCache = convRes.conversations;
+          this.hubUnreadMailCount = convRes.conversations.reduce((s, c) => s + (c.unreadCount || 0), 0);
+          if (resRes.ok) {
+            this.hubResidentsCache = resRes.residents.map((r) => ({ ...r, street: this.hubStreetDisplay(r.street) }));
+          }
+          const convLine = convRes.conversations.length
+            ? convRes.conversations.map((c) => {
+              const nm = c.peer?.displayName || c.title || c.id;
+              const unread = c.unreadCount > 0 ? `[未读${c.unreadCount}]` : '';
+              const last = c.lastMessage?.body ? `「${c.lastMessage.body}」` : '（暂无消息）';
+              return `${unread}${nm}(${c.id})：${last}`;
+            }).join('\n')
+            : '信箱里暂时还没有对话。';
+          const neighNames = this.hubResidentsCache.filter((r) => r.petId !== auth.petId).map((r) => r.displayName);
+          return {
+            text: `鱼间信箱（共 ${this.hubUnreadMailCount} 条未读）：\n${convLine}`
+              + (neighNames.length ? `\n${this.town.name}可搭话的街坊：${neighNames.slice(0, 8).join('、')}。` : ''),
+          };
+        }
+
+        if (action === 'read') {
+          let convId = String(args?.conversation_id ?? '').trim();
+          const peerQ = String(args?.peer ?? '').trim();
+          if (!convId && peerQ) {
+            const findHit = () => this.hubConversationsCache.find(
+              (c) => c.peer && (c.peer.petId === peerQ || c.peer.displayName === peerQ || c.peer.displayName.includes(peerQ)),
+            );
+            let hit = findHit();
+            if (!hit) {
+              const cr = await hubListConversations(hubUrl, auth.token);
+              if (generation !== this.stateGeneration) return cleared();
+              if (cr.ok) {
+                this.hubConversationsCache = cr.conversations;
+                this.hubUnreadMailCount = cr.conversations.reduce((s, c) => s + (c.unreadCount || 0), 0);
+                hit = findHit();
+              }
+            }
+            if (hit) convId = hit.id;
+          }
+          if (!convId) return { text: '读信要告诉我要看哪一位街坊（peer）或会话编号（conversation_id）。' };
+          const msgRes = await hubGetMessages(hubUrl, auth.token, convId, { limit: 20 });
+          if (generation !== this.stateGeneration) return cleared();
+          if (!msgRes.ok) return { text: msgRes.reason || '读不到这组对话。' };
+          await hubMarkConversationRead(hubUrl, auth.token, convId);
+          if (generation !== this.stateGeneration) return cleared();
+          const refreshed = await hubListConversations(hubUrl, auth.token);
+          if (generation !== this.stateGeneration) return cleared();
+          if (refreshed.ok) {
+            this.hubConversationsCache = refreshed.conversations;
+            this.hubUnreadMailCount = refreshed.conversations.reduce((s, c) => s + (c.unreadCount || 0), 0);
+          }
+          if (!msgRes.messages.length) return { text: '这个会话里还没有消息。' };
+          const peerName = this.hubConversationsCache.find((c) => c.id === convId)?.peer?.displayName || '对方';
+          return {
+            text: `和${peerName}的最近信件（已标为已读）：\n${msgRes.messages.map((m) => `${m.senderPetId === auth.petId ? '我' : peerName}：${m.body}`).join('\n')}`,
+          };
+        }
+
+        if (action === 'send') {
+          if (isAsleep(this.state, now)) {
+            return { text: asleepRefusal(this.state, now, '给街坊写信') };
+          }
+          const bodyText = String(args?.message ?? '').trim();
+          if (!bodyText) return { text: '写信需要填写 message 正文内容。' };
+          let convId = String(args?.conversation_id ?? '').trim();
+          let peerLabel = String(args?.peer ?? '').trim();
+          if (!convId) {
+            const target = await resolveTargetPetId(peerLabel);
+            if (generation !== this.stateGeneration) return cleared();
+            if (!target) return { text: `没找着名叫「${peerLabel || '?'}」的街坊或旅伴，可以先查 residents 看看有哪些鱼。` };
+            peerLabel = target.name;
+            const openRes = await hubOpenDirectConversation(hubUrl, auth.token, target.petId);
+            if (generation !== this.stateGeneration) return cleared();
+            if (!openRes.ok || !openRes.id) return { text: openRes.reason || '暂时没法和对方开启私信会话。' };
+            convId = openRes.id;
+          }
+          const sent = await hubSendMessage(hubUrl, auth.token, convId, {
+            body: bodyText,
+            msgType: 'text',
+            clientMsgId: `msg-${randomUUID()}`,
+          });
+          if (generation !== this.stateGeneration) return cleared();
+          if (!sent.ok) return { text: sent.reason || '信没发出去。' };
+          const cr = await hubListConversations(hubUrl, auth.token);
+          if (generation !== this.stateGeneration) return cleared();
+          if (cr.ok) {
+            this.hubConversationsCache = cr.conversations;
+            this.hubUnreadMailCount = cr.conversations.reduce((s, c) => s + (c.unreadCount || 0), 0);
+          }
+          remember(this.state, `给${peerLabel || '街坊'}寄去了一条短讯：「${bodyText.slice(0, 40)}」。`, now);
+          this.saveDeliveredState();
+          return { text: `短讯已经寄给${peerLabel || '对方'}啦：「${bodyText}」。` };
+        }
+
+        if (action === 'relation') {
+          if (isAsleep(this.state, now)) {
+            return { text: asleepRefusal(this.state, now, '调整街坊关系') };
+          }
+          const peerQ = String(args?.peer ?? '').trim();
+          const relType = String(args?.rel_type ?? '').trim() as 'acquaintance' | 'friend' | 'blocked';
+          if (!peerQ || !['acquaintance', 'friend', 'blocked'].includes(relType)) {
+            return { text: '设关系请提供 peer（对方名字或 petId）和 rel_type（acquaintance / friend / blocked）。' };
+          }
+          const target = await resolveTargetPetId(peerQ);
+          if (generation !== this.stateGeneration) return cleared();
+          if (!target) return { text: `没找着街坊或旅伴「${peerQ}」。` };
+          const res = await hubSetRelation(hubUrl, auth.token, target.petId, relType);
+          if (generation !== this.stateGeneration) return cleared();
+          if (!res.ok) return { text: res.reason || '关系更新失败。' };
+          const lab = relType === 'friend' ? '好友' : relType === 'blocked' ? '黑名单' : '熟人';
+          return { text: `已把和「${target.name}」的关系设为：${lab}。` };
+        }
+
+        return { text: `不支持的 action「${action}」，可用 inbox / residents / read / send / relation。` };
+      },
+    };
+  }
+
   /**
    * 「她住哪儿」这一行。
    *
@@ -4856,11 +5913,13 @@ export class LifeWorld implements World {
       'life.bulletin': [
         this.otherStallsCache.length ? `鱼市街在售：${this.marketShowcaseLine(3)}` : '',
         this.townBulletin.length ? this.townBulletin.slice(0, 3).join('；') : '',
+        this.hubUnreadMailCount > 0 ? `鱼间信箱有 ${this.hubUnreadMailCount} 封未读来信（life_mail）` : '',
       ].filter(Boolean).join(' ｜ ') || '（今天街口黑板还没有新消息）',
     };
   }
 
   private townSourceLabel(): string {
+    if (this.isHubMode() && this.town.source === 'server') return 'Hub v1 多城';
     return this.town.source === 'server'
       ? '读服务器'
       : this.town.source === 'own'
@@ -4902,21 +5961,35 @@ export class LifeWorld implements World {
 
     /* ---- 本城 ---- */
     const host = (() => {
-      const firstUrl = parseTownUrls(this.cfg.townUrl)[0] ?? '';
+      const firstUrl = this.isHubMode()
+        ? this.activeHubUrl()
+        : (parseTownUrls(this.cfg.townUrl)[0] ?? '');
       try { return new URL(firstUrl).host; } catch { return ''; }
     })();
-    const town: WorldLamp = this.town.source === 'server'
-      ? { label: '本城', state: 'online', hint: `从 ${host} 读的：${this.town.name}` }
-      : this.town.source === 'failed'
+    const town: WorldLamp = this.isHubMode() && this.hubAuthError
+      ? {
+        label: '本城',
+        state: 'error',
+        hint: `Hub v1 身份异常：${this.hubAuthError}`,
+      }
+      : this.town.source === 'server'
         ? {
           label: '本城',
-          state: 'error',
-          hint: `${this.town.problem || '配了地址但读不到'}。城名暂时用内置的，不影响她过日子。`
-            + '会自己重试；一直红就检查设置里那个网址拼对了没有',
+          state: 'online',
+          hint: this.isHubMode()
+            ? `Hub v1 多城（${host}）· ${this.town.name}`
+            : `从 ${host} 读的：${this.town.name}`,
         }
-        : this.town.source === 'own'
-          ? { label: '本城', state: 'offline', hint: `你自己填的${this.town.name}。没配服务器就是这样，**不用管** —— 想改城名去设置里改或填服务器网址` }
-          : { label: '本城', state: 'offline', hint: `用内置的${this.town.name}。没配服务器就是这样，**不用管** —— 想改城名才去填那个网址` };
+        : this.town.source === 'failed'
+          ? {
+            label: '本城',
+            state: 'error',
+            hint: `${this.town.problem || '配了地址但读不到'}。城名暂时用内置的，不影响她过日子。`
+              + '会自己重试；一直红就检查设置里那个网址拼对了没有',
+          }
+          : this.town.source === 'own'
+            ? { label: '本城', state: 'offline', hint: `你自己填的${this.town.name}。没配服务器就是这样，**不用管** —— 想改城名去设置里改或填服务器网址` }
+            : { label: '本城', state: 'offline', hint: `用内置的${this.town.name}。没配服务器就是这样，**不用管** —— 想改城名才去填那个网址` };
 
     /* ---- 旅行 ---- */
     const j = readJourney(this.opts.dataDir, now);
@@ -4974,7 +6047,7 @@ export class LifeWorld implements World {
         {
           id: 'now',
           title: '她此刻',
-          description: '五条需求、职业手艺与装备、当前状态与搬家。',
+          description: '五条需求、职业手艺与装备、当前状态与住处/换街/多城迁居。',
         },
         {
           id: 'career',
@@ -4989,12 +6062,12 @@ export class LifeWorld implements World {
         {
           id: 'relation',
           title: '你和它',
-          description: '来访天次、小物件、旅行对齐与鱼市街摊位回执（只列事实不打分）。',
+          description: '来访天次、小物件、旅行对齐、Hub 同城街坊与鱼间信箱（只列事实不打分）。',
         },
         {
           id: 'market',
           title: '农牧场与鱼市街',
-          description: '种菜与养殖手动打理（18种种子与鸡/牛/鱼养殖）、储物篮、成品菜格与鱼市街摆摊入账。',
+          description: '种菜与养殖手动打理（18种种子与鸡/牛/鱼养殖）、储物篮、成品菜格与跨城鱼市街摆摊入账。',
         },
         {
           id: 'diary',
@@ -5360,18 +6433,49 @@ export class LifeWorld implements World {
             full: calcNeighborErrandQuote(qPlots, qPens, 'full'),
           },
           errandTtlHours: NEIGHBOR_ERRAND_TTL_HOURS,
-          townConnected: parseTownUrls(this.cfg.townUrl).length > 0,
+          townConnected: this.hasRemoteServer(),
         };
       };
 
       if (method === 'snapshot' || method === 'list' || method === '') {
-        if (parseTownUrls(this.cfg.townUrl).length > 0) {
+        if (this.hasRemoteServer()) {
           const emptyCache = !this.otherStallsCache.length && !this.myStallsCache.length && !this.townBulletin.length;
           if (emptyCache || Date.now() - this.lastBulletinFetchMs >= 60_000) {
             await this.refreshTownMarket(this.stateGeneration);
           }
         }
         return marketPayload();
+      }
+
+      if (panel === 'relation') {
+        const raw = (Array.isArray(args) ? args[0] : args) as any;
+        if (method === 'mailRefresh') {
+          if (this.isHubMode()) {
+            await this.refreshTownMarket(this.stateGeneration);
+          }
+          return { ok: true, ...this.panelSnapshot(now) };
+        }
+        if (method === 'mailMessages') {
+          const convId = String(raw?.conversationId ?? '').trim();
+          if (!this.isHubMode()) return { ok: false, reason: '未连接 Hub v1 多城总服', messages: [] };
+          const auth = await this.ensureHubReady(this.stateGeneration);
+          if (!auth) return { ok: false, reason: this.hubAuthError || '身份未就绪', messages: [] };
+          const res = await hubGetMessages(this.activeHubUrl(), auth.token, convId, { limit: 30 });
+          return { ok: res.ok, reason: res.reason || '', lastReadMsgId: res.lastReadMsgId, messages: res.messages };
+        }
+        if (method === 'mailMarkRead') {
+          const convId = String(raw?.conversationId ?? '').trim();
+          if (!this.isHubMode()) return { ok: false, reason: '未连接 Hub v1 多城总服', ...this.panelSnapshot(now) };
+          const auth = await this.ensureHubReady(this.stateGeneration);
+          if (!auth) return { ok: false, reason: this.hubAuthError || '身份未就绪', ...this.panelSnapshot(now) };
+          const mr = await hubMarkConversationRead(this.activeHubUrl(), auth.token, convId);
+          const convRes = await hubListConversations(this.activeHubUrl(), auth.token);
+          if (convRes.ok) {
+            this.hubConversationsCache = convRes.conversations;
+            this.hubUnreadMailCount = convRes.conversations.reduce((s, c) => s + (c.unreadCount || 0), 0);
+          }
+          return { ok: mr.ok, reason: mr.reason || '', ...this.panelSnapshot(now) };
+        }
       }
 
       if (panel === 'market') {
@@ -5552,9 +6656,77 @@ export class LifeWorld implements World {
           await this.push('life.farm', '他刚刚在面板上停雇了农牧帮手。', 'debounce');
           return { ok: true, message: '已辞退农牧帮手', ...marketPayload() };
         }
+        if (method === 'cancelListing') {
+          const generation = this.stateGeneration;
+          const listingId = String(raw?.listingId ?? '').trim();
+          if (!this.isHubMode()) return { ok: false, reason: '仅 Hub v1 模式支持面板一键下架摊位', ...marketPayload() };
+          const auth = await this.ensureHubReady(generation);
+          if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理', ...marketPayload() };
+          if (!auth) return { ok: false, reason: this.hubAuthError || 'Hub 身份未就绪', ...marketPayload() };
+          const res = await hubCancelListing(this.activeHubUrl(), auth.token, listingId);
+          if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理', ...marketPayload() };
+          if (!res.ok) return { ok: false, reason: res.reason || '下架失败', ...marketPayload() };
+          this.myStallsCache = this.myStallsCache.filter((s) => s.id !== listingId);
+          return { ok: true, message: '已下架该摊位余货 ✓', ...marketPayload() };
+        }
+        if (method === 'cancelErrand') {
+          const generation = this.stateGeneration;
+          const errandId = String(raw?.errandId ?? this.state.farmHelper.pendingErrand?.stallId ?? '').trim();
+          if (!this.isHubMode()) return { ok: false, reason: '仅 Hub v1 模式支持撤回委托', ...marketPayload() };
+          if (!errandId) return { ok: false, reason: '当前没有可撤回的在挂委托', ...marketPayload() };
+          const auth = await this.ensureHubReady(generation);
+          if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理', ...marketPayload() };
+          if (!auth) return { ok: false, reason: this.hubAuthError || 'Hub 身份未就绪', ...marketPayload() };
+          const res = await hubCancelErrand(this.activeHubUrl(), auth.token, errandId);
+          if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理', ...marketPayload() };
+          if (!res.ok) return { ok: false, reason: res.reason || '撤回委托失败', ...marketPayload() };
+          const pe = this.state.farmHelper.pendingErrand;
+          let refunded = 0;
+          if (pe && pe.stallId === errandId) {
+            const ref = refundExpiredErrand(this.state, now, {
+              force: true,
+              reason: `面板主动撤回邻里农牧代管委托，预扣 ¥${pe.wage} 已原路退回。`,
+            });
+            refunded = ref?.refunded ?? 0;
+            if (refunded > 0) {
+              appendLedger(this.opts.dataDir, {
+                id: `errand-cancel-${errandId}`,
+                ts: now.toISOString(),
+                kind: 'income',
+                amount: refunded,
+                source: 'farm_errand_refund',
+                payee: '鱼市街托管退回',
+                note: '面板撤回邻里农牧委托，退回预扣工钱',
+              });
+            }
+            this.saveDeliveredState();
+            this.broadcastLife(now);
+          }
+          this.myStallsCache = this.myStallsCache.filter((s) => s.id !== errandId);
+          return {
+            ok: true,
+            message: refunded > 0 ? `已撤回邻里委托并退回预扣 ¥${refunded} ✓` : '已撤回邻里委托 ✓',
+            ...marketPayload(),
+          };
+        }
       }
 
       throw new Error(`${panel === 'market' ? '农牧场与鱼市街' : '你和它'}页不认识这个方法：${method}`);
+    }
+
+    if (method === 'moveTown') {
+      await this.settleBeforeTool(now);
+      const raw = Array.isArray(args) ? args[0] : args;
+      const townId = String(raw?.townId ?? '').trim();
+      const mr = await this.moveHubTown(townId, now, this.stateGeneration);
+      if (mr.ok) {
+        await this.push(
+          'life.moved',
+          `他刚刚在面板上替你迁居到了「${mr.townName}」（落脚${mr.street}，免押金）。`,
+          'flush',
+        );
+      }
+      return { ok: mr.ok, reason: mr.reason || '', ...this.panelSnapshot(now) };
     }
 
     if (method === 'move') {
@@ -5570,7 +6742,8 @@ export class LifeWorld implements World {
         if (sr.ok) {
           try { this.store.save(this.state); } catch { /* 下一帧再存 */ }
           this.broadcastLife(now);
-          if (parseTownUrls(this.cfg.townUrl).length) {
+          if (this.hasRemoteServer()) {
+            this.state.lastJoinedTownAt = '';
             void this.syncTownPresenceAndBulletin(now, this.stateGeneration);
           }
           const modTxt = formatStreetMods(sp?.mods);
@@ -5612,7 +6785,7 @@ export class LifeWorld implements World {
 
     if (method === 'snapshot' || method === '') {
       await this.settleBeforeTool(now);
-      if (parseTownUrls(this.cfg.townUrl).length > 0) {
+      if (this.hasRemoteServer()) {
         await this.refreshTownInfo(this.stateGeneration, { minIntervalMs: 30_000 });
       }
       return this.panelSnapshot(now);
@@ -5629,6 +6802,15 @@ export class LifeWorld implements World {
 
   /** 面板要的那一份快照。抽出来是为了 `move` 之后能直接回同一份，前端只画一次。 */
   private panelSnapshot(now: Date): Record<string, unknown> {
+    if (this.isHubMode() && (!this.hubAuth || this.hubAuthError)) {
+      const diskAuth = readHubAuth(this.opts.dataDir, this.activeHubUrl());
+      const tokenChanged = !this.hubAuthErrorToken || (diskAuth?.token ?? '') !== this.hubAuthErrorToken;
+      if (diskAuth && diskAuth.hubUrl === this.activeHubUrl() && tokenChanged) {
+        this.hubAuth = diskAuth;
+        this.hubAuthError = '';
+        this.hubAuthErrorToken = '';
+      }
+    }
     const j = readJourney(this.opts.dataDir, now);
     this.journey = j;
     const s = snapshot(this.state, now, this.activeExternalWeatherOverride(this.weatherCityName(j)));
@@ -5672,6 +6854,28 @@ export class LifeWorld implements World {
           rules: this.town.rules,
           source: this.town.source,
           custom: this.town.custom,
+          notice: this.town.notice ?? this.hubTownMeta?.notice ?? '',
+          buffs: this.currentTownBuffs(),
+          shipping: this.hubTownMeta?.shipping ?? this.town.shipping ?? {},
+          metaVersion: this.hubTownMeta?.metaVersion ?? this.town.metaVersion ?? 1,
+          hubMode: this.isHubMode(),
+        },
+        hub: {
+          enabled: this.isHubMode(),
+          url: this.activeHubUrl(),
+          petId: this.hubAuth?.petId ?? '',
+          displayName: this.hubAuth?.displayName ?? '',
+          authError: this.hubAuthError,
+          townId: this.isHubMode() ? this.targetHubTownId() : this.town.id,
+          towns: this.hubTownsCache,
+          notice: this.town.notice ?? this.hubTownMeta?.notice ?? '',
+          buffs: this.currentTownBuffs(),
+          shipping: this.hubTownMeta?.shipping ?? this.town.shipping ?? {},
+          catalogVersion: this.hubCatalog.version,
+          specialties: this.hubCatalog.items.filter((i) => i.isSpecialty),
+          residents: this.hubResidentsCache,
+          conversations: this.hubConversationsCache,
+          unreadMail: this.hubUnreadMailCount,
         },
         street: this.state.street,
         streetProfile: findStreetProfile(this.town, this.state.street),

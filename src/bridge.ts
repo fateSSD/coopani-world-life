@@ -256,6 +256,12 @@ export interface TownView {
   source: 'server' | 'builtin' | 'own' | 'failed';
   /** `failed` 时的一句话原因。给灯上的 hint 用。 */
   problem?: string;
+  /** Hub 模式下由城镇返回的附加信息。 */
+  notice?: string;
+  buffs?: Record<string, number>;
+  shipping?: { base_fee?: number; per_extra_qty?: number };
+  metaVersion?: number;
+  hubMode?: boolean;
 }
 
 /**
@@ -861,6 +867,17 @@ export interface TownStall {
   category?: StallCategory;
   note?: string;
   effects?: StallEffects;
+  townId?: string;
+  townName?: string;
+  sellerPetId?: string;
+  isMine?: boolean;
+  isCrossTown?: boolean;
+  estimatedShippingFee?: number;
+  isSpecialty?: boolean;
+  itemCode?: string;
+  estMinutes?: number;
+  errandKind?: string;
+  expiresAt?: string;
 }
 
 export interface TownDeal {
@@ -873,6 +890,12 @@ export interface TownDeal {
   seen: boolean;
   at: string;
   unitPrice?: number;
+  isCrossTown?: boolean;
+  shippingFee?: number;
+  buyerTotal?: number;
+  sellerTownId?: string;
+  buyerTownId?: string;
+  orderId?: string;
 }
 
 /**

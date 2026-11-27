@@ -572,6 +572,10 @@ export interface LifeState {
   freshVegUntil?: string;
   /** 最近一次向 `/town/join` 报到的本地日期（按天去重）。 */
   lastJoinedTownAt?: string;
+  /** Hub v1 模式当前驻留城镇 ID（面板迁居后跨重启持久化）。 */
+  hubTownId?: string;
+  /** Hub v1 模式最近一次入册签名 `${hubUrl}|${townId}|${day}`。 */
+  hubJoinedKey?: string;
   /** 菜园土地与种植槽状态（自带随住处升级 + 城郊租地）。 */
   farm: FarmState;
   /** 动物养殖栏位状态（鸡舍 / 牛棚 / 鱼塘：自带轻量位 + 城郊农牧场）。 */
@@ -1145,6 +1149,8 @@ export function freshState(now: Date = new Date()): LifeState {
     shift: null,
     freshVegUntil: '',
     lastJoinedTownAt: '',
+    hubTownId: '',
+    hubJoinedKey: '',
     farm: freshFarm(),
     ranch: freshRanch(),
     farmHelper: freshFarmHelper(),
@@ -1394,6 +1400,8 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     shift: normShift(s.shift),
     freshVegUntil: typeof s.freshVegUntil === 'string' ? s.freshVegUntil : '',
     lastJoinedTownAt: typeof s.lastJoinedTownAt === 'string' ? s.lastJoinedTownAt : '',
+    hubTownId: typeof s.hubTownId === 'string' ? s.hubTownId.trim() : '',
+    hubJoinedKey: typeof s.hubJoinedKey === 'string' ? s.hubJoinedKey.trim() : '',
     farm: normFarm(s.farm),
     ranch: normRanch(s.ranch),
     farmHelper: normFarmHelper(s.farmHelper),
@@ -3774,6 +3782,7 @@ export function applyStreetMove(
   state.street = target;
   state.home.street = target;
   state.lastJoinedTownAt = '';
+  state.hubJoinedKey = '';
   const modTxt = formatStreetMods(profile?.mods);
   remember(state, `搬到本城的${target}住了${modTxt ? `（${modTxt}）` : ''}。`, now);
   state.updatedAt = now.toISOString();
