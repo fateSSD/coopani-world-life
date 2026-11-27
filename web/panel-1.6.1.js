@@ -239,9 +239,15 @@ const HOME_SLOTS_FALLBACK = {
 };
 
 const BUFF_LABELS = {
+  rent_mult: '房价倍率',
   writing_pay_mult: '写作薪酬',
   cooking_pay_mult: '烹饪薪酬',
   craft_pay_mult: '手作薪酬',
+  labor_pay_mult: '体力薪酬',
+  social_pay_mult: '交际薪酬',
+  admin_pay_mult: '办事薪酬',
+  driving_pay_mult: '驾驶薪酬',
+  photo_pay_mult: '影像薪酬',
   crop_yield_bonus: '农作收成',
   noodle_craft_bonus: '面食手作',
   ranch_yield_bonus: '牧场产出',

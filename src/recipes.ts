@@ -17,7 +17,7 @@ import {
   type PantryItem,
 } from './farm.ts';
 import { CERTS, JOBS, TIER_LABEL, certOf, type JobTier } from './jobs.ts';
-import { EQUIP_CATALOG, SKILL_DOMAIN_LABEL, findEquip, type SkillDomain } from './town-life.ts';
+import { applyYieldBonus, EQUIP_CATALOG, normalizeMoodBonus, SKILL_DOMAIN_LABEL, findEquip, type SkillDomain } from './town-life.ts';
 
 export interface RecipeIngredientReq {
   label: string;
@@ -480,12 +480,17 @@ function pushMemory(state: { tellable: { id: string; text: string; at: string; s
   if (state.tellable.length > 20) state.tellable = state.tellable.slice(-20);
 }
 
+export function isNoodleRecipe(recipe: RecipeDef): boolean {
+  return /noodle|面|粉|饺|饼|包|馒头/i.test(`${recipe.id} ${recipe.name}`);
+}
+
 export function applyCookRecipe(
   state: RecipeHostState,
   recipeQuery: string,
   mode: 'eat' | 'store',
   now: Date,
-): { ok: boolean; reason?: string; recipe?: RecipeDef; mode?: 'eat' | 'store'; paid: number; cash: number; usedSources: string[]; dishQty?: number } {
+  opts: { noodleBonus?: number; foodMoodBonus?: number; craftMoodBonus?: number } = {},
+): { ok: boolean; reason?: string; recipe?: RecipeDef; mode?: 'eat' | 'store'; paid: number; cash: number; usedSources: string[]; dishQty?: number; foodGain?: number; funGain?: number } {
   const recipe = findRecipe(recipeQuery);
   if (!recipe) {
     const sample = RECIPES.slice(0, 6).map((r) => r.name).join('、');
@@ -528,19 +533,32 @@ export function applyCookRecipe(
     state.fitness = Math.min(100, Math.max(5, (state.fitness ?? 25) + recipe.fitnessGain));
   }
 
+  const noodleRaw = Number(opts.noodleBonus) || 0;
+  const noodleActive = noodleRaw !== 0 && isNoodleRecipe(recipe);
+  const noodlePct = noodleActive
+    ? (Math.abs(noodleRaw) < 1 ? Math.max(-0.5, Math.min(2, noodleRaw)) : Math.max(-0.5, Math.min(2, noodleRaw / 100)))
+    : 0;
+  const effFoodGain = Math.max(1, Math.round(recipe.foodGain * (1 + noodlePct)));
+  const effBaseFunGain = Math.max(1, Math.round(recipe.funGain * (1 + noodlePct)));
+  const foodMoodDelta = normalizeMoodBonus(opts.foodMoodBonus);
+  const craftMoodDelta = normalizeMoodBonus(opts.craftMoodBonus);
+
   if (mode === 'store') {
-    const yieldQty = 2;
+    const yieldQty = noodleActive ? applyYieldBonus(2, noodleRaw) : 2;
     state.money.cash -= recipe.fuelCost;
     state.money.spent += recipe.fuelCost;
     state.vitals.energy = Math.max(0, state.vitals.energy - 6);
+    if (craftMoodDelta !== 0) {
+      state.vitals.fun = Math.max(0, Math.min(100, (state.vitals.fun ?? 50) + craftMoodDelta));
+    }
     state.cookedDishes = state.cookedDishes ?? [];
     addCookedDish(state.cookedDishes, {
       recipeId: recipe.id,
       name: recipe.name,
       qty: yieldQty,
       unitCost: Math.max(1, Math.round((unitCostSum + recipe.fuelCost) / yieldQty)),
-      foodGain: recipe.foodGain,
-      funGain: recipe.funGain,
+      foodGain: effFoodGain,
+      funGain: effBaseFunGain,
       ...(recipe.energyGain ? { energyGain: recipe.energyGain } : {}),
       ...(recipe.cleanGain ? { cleanGain: recipe.cleanGain } : {}),
       tier: recipe.tier,
@@ -554,12 +572,13 @@ export function applyCookRecipe(
       kind: 'good',
       expiresAt: new Date(now.getTime() + 4 * 3_600_000).toISOString(),
     });
-    pushMemory(state, `用${usedSources.join('、')}做了 2 份「${recipe.name}」，收进成品菜格留着吃或拿去鱼市街摆摊。`, now);
+    pushMemory(state, `用${usedSources.join('、')}做了 ${yieldQty} 份「${recipe.name}」，收进成品菜格留着吃或拿去鱼市街摆摊。`, now);
     state.updatedAt = now.toISOString();
-    return { ok: true, recipe, mode: 'store', paid: recipe.fuelCost, cash: state.money.cash, usedSources, dishQty: yieldQty };
+    return { ok: true, recipe, mode: 'store', paid: recipe.fuelCost, cash: state.money.cash, usedSources, dishQty: yieldQty, foodGain: effFoodGain, funGain: effBaseFunGain };
   }
 
   // mode === 'eat'：进入耗时烹饪活动，按分钟渐进结算高饱腹高心情
+  const effFunGain = Math.max(1, effBaseFunGain + foodMoodDelta + craftMoodDelta);
   const m = Math.max(10, recipe.minutes);
   const untilIso = new Date(now.getTime() + m * 60_000).toISOString();
   state.asleepFrom = '';
@@ -572,8 +591,8 @@ export function applyCookRecipe(
     until: untilIso,
     minutes: m,
     perMin: {
-      food: recipe.foodGain / m,
-      fun: recipe.funGain / m,
+      food: effFoodGain / m,
+      fun: effFunGain / m,
       energy: ((recipe.energyGain ?? -2) / m),
       clean: ((recipe.cleanGain ?? -1) / m),
     },
@@ -585,13 +604,14 @@ export function applyCookRecipe(
   };
   pushMemory(state, `用${usedSources.join('、')}开火做「${recipe.name}」。`, now);
   state.updatedAt = now.toISOString();
-  return { ok: true, recipe, mode: 'eat', paid: 0, cash: state.money.cash, usedSources };
+  return { ok: true, recipe, mode: 'eat', paid: 0, cash: state.money.cash, usedSources, foodGain: effFoodGain, funGain: effFunGain };
 }
 
 export function applyEatCookedDish(
   state: RecipeHostState,
   dishQuery: string,
   now: Date,
+  opts: { foodMoodBonus?: number } = {},
 ): { ok: boolean; reason?: string; dishName?: string; minutes?: number } {
   const dishes = state.cookedDishes ?? [];
   if (!dishes.length) {
@@ -613,6 +633,8 @@ export function applyEatCookedDish(
   }
 
   consumeCookedDish(dishes, 1, target.name);
+  const foodMoodDelta = normalizeMoodBonus(opts.foodMoodBonus);
+  const effFunGain = Math.max(0, target.funGain + foodMoodDelta);
   const m = 20;
   state.asleepFrom = '';
   state.asleepUntil = '';
@@ -625,7 +647,7 @@ export function applyEatCookedDish(
     minutes: m,
     perMin: {
       food: target.foodGain / m,
-      fun: target.funGain / m,
+      fun: effFunGain / m,
       energy: (target.energyGain ?? 0) / m,
       clean: (target.cleanGain ?? 0) / m,
     },

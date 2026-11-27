@@ -24,7 +24,7 @@
 - **18 种菜园与鸡牛鱼养殖**：家里种植槽或城郊菜地种 18 种慢熟果蔬粮薯；鸡舍/牛棚/鱼塘养鸡收蛋、养牛挤奶、起塘收鱼（大肥鱼是鲸鱼不算鱼，放心养鱼）；支持雇帮手或发同城邻里代管委托。
 - **跨城鱼市街与同城代管委托**：全网跨城摊位展示（同城免邮、跨城按件计 `shippingFee`，卖家实收仅入 `itemSubtotal`、不含快递费，订单通过 `/v1/market/orders/settle` 结算）；农牧代管委托严格限定同城街坊互助（跨城 `403 ERRAND_TOWN_MISMATCH`）。
 - **鱼间私信与街坊关系**：通过 `life_mail` 查看同城街坊、读写鱼间私信（支持 `clientMsgId` 幂等）、设置熟人/好友关系；新私信通过 `life.social` 事件提醒，且不自动清除未读数，仅在显式阅读/面板标已读时消除。
-- **全新七页签手账 UI（`web/panel-1.6.0.js`）**：
+- **全新七页签手账 UI（`web/panel-1.6.1.js`）**：
   1. `now`（此刻）：五条状态、城邦徽标/公告/Buff、住处/街道/迁城切换、「给点零花钱」折叠赠与栏与「芦花塘信用社（只读）」卡片；
   2. `career`（职业与工坊）：出工岗位（含城邦加成日薪预览）、考证通过率条、菜谱工坊；
   3. `wants`（她惦记的）：常态 / 留意 / 想要 / 悬着 / 约定（只读视图）；
@@ -67,7 +67,7 @@
 
 ```bash
 # 校验新版手账面板语法
-node --check web/panel-1.6.0.js
+node --check web/panel-1.6.1.js
 
 # 全部单元测试与 Hub v1.1 本地 mock 集成测试
 node --import 'file:///E:/Coopanion/resources/app/node_modules/tsx/dist/loader.mjs' --test test/*.test.mjs

@@ -1133,8 +1133,8 @@ test('ensureHubAuth 409 竞态自愈 + panel-1.5.0 独立报错区 lf-alert 与 
     assert.equal(missed.ok, false);
     assert.equal(missed.code, 'LEGACY_UID_CLAIMED');
 
-    // 验证 panel-1.6.0.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
-    const panelMod = await import(`../web/panel-1.6.0.js?alertbuff=${Date.now()}`);
+    // 验证 panel-1.6.1.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
+    const panelMod = await import(`../web/panel-1.6.1.js?alertbuff=${Date.now()}`);
     const root = new FakeNode('div');
     root.ownerDocument = fakeDoc;
     fakeDoc.body.append(root);
@@ -1487,7 +1487,7 @@ test('Life P2 回归：冷启动跨扩展锁、睡眠静默、热切清缓存、
     assert.equal(w.townBulletin.length, 0);
     await w.stop();
 
-    // 5) panel-1.6.0.js：点击「刷新信箱」时同步刷新已展开对话气泡
+    // 5) panel-1.6.1.js：点击「刷新信箱」时同步刷新已展开对话气泡
     class MiniNode {
       constructor(nodeType, tagName) {
         this.nodeType = nodeType;
@@ -1570,5 +1570,277 @@ test('Life P2 回归：冷启动跨扩展锁、睡眠静默、热切清缓存、
     await mock.close();
     rmSync(dir, { recursive: true, force: true });
     rmSync(dirLock, { recursive: true, force: true });
+  }
+});
+
+test('城市 Buff 全量生效：rent_mult 房价调控、7 项 _bonus 数值结算与 16 项面板汉化', async () => {
+  const dir = mkDir();
+  const diaryDir = mkDir();
+  const mock = await startMockHub();
+  const now = new Date('2026-11-27T11:00:00.000+08:00');
+  const prevDoc = globalThis.document;
+  try {
+    const {
+      clampRentMult, effectiveHomeMonthly, applyYieldBonus, normalizeMoodBonus,
+      addPantryItem, applyHarvest, applyCollectRanch, applyHarvestRanch,
+    } = await import('../src/state.ts');
+
+    // 1) 房价倍率纯函数边界与数值
+    assert.equal(clampRentMult(0), 1);
+    assert.equal(clampRentMult(-2), 1);
+    assert.equal(clampRentMult(Number.NaN), 1);
+    assert.equal(clampRentMult(0.1), 0.3);
+    assert.equal(clampRentMult(8), 5);
+    assert.equal(effectiveHomeMonthly('urban-village', 1.3), 585);
+    assert.equal(effectiveHomeMonthly('old', 1.3), 1560);
+    assert.equal(effectiveHomeMonthly('new', 1.3), 3380);
+    assert.equal(effectiveHomeMonthly('villa', 1.3), 10140);
+    assert.equal(effectiveHomeMonthly('urban-village', 0.8), 360);
+    assert.equal(effectiveHomeMonthly('urban-village', 0.3), 135);
+    assert.equal(applyYieldBonus(4, -0.5), 2);
+    assert.equal(normalizeMoodBonus(0.15), 3);
+
+    // 2) 配置城市 buffs（兰州 1.3 倍房价 + 全套农牧面食心情/体力加成；北京 0.8 倍房价）
+    mock.state.towns['lanzhou-reedpond'].buffs = {
+      rent_mult: 1.3,
+      crop_yield_bonus: 0.1,
+      noodle_craft_bonus: 0.15,
+      ranch_yield_bonus: 0.2,
+      fish_yield_bonus: 1,
+      craft_mood_bonus: 2,
+      food_mood_bonus: 3,
+      writing_mood_bonus: 2,
+      labor_pay_mult: 1.1,
+    };
+    mock.state.towns.beijing.buffs = {
+      rent_mult: 0.8,
+      writing_pay_mult: 1.08,
+      craft_mood_bonus: 2,
+    };
+
+    const cfg = { ...LIFE_DEFAULTS(), enabled: true, hubUrl: mock.url, hubTownId: 'lanzhou-reedpond', diaryDir };
+    const w = new LifeWorld({ cfg, dataDir: dir, botName: '大肥鱼', now: () => now });
+    await w.start(makeSilentHost());
+
+    // 启动后月租与 moveQuotes 均按 rent_mult = 1.3 实时折算
+    assert.equal(w.state.home.monthly, 585);
+    let snap = await w.webUi().invoke('now', 'snapshot');
+    const qMap = Object.fromEntries(snap.moveQuotes.map((q) => [q.tier, q]));
+    assert.equal(qMap['urban-village'].monthly, 585);
+    assert.equal(qMap.old.monthly, 1560);
+    assert.equal(qMap.old.deposit, 3120);
+    assert.equal(qMap.new.monthly, 3380);
+    assert.equal(qMap.villa.monthly, 10140);
+
+    // 搬去老小区应扣 3120 押金、月租写入 1560
+    w.state.money.cash = 4000;
+    const moveTool = w.tools().find((t) => t.name === 'life_move');
+    await moveTool.handler({ tier: 'old' });
+    assert.equal(w.state.home.tier, 'old');
+    assert.equal(w.state.home.monthly, 1560);
+    assert.equal(w.state.money.cash, 880);
+
+    // 3) crop_yield_bonus（+10% 增产）
+    w.state.farm.plots.push({
+      id: 'plot_buff_1',
+      seedId: 'sweet_potato',
+      name: '蜜薯',
+      plantedAt: new Date(now.getTime() - 48 * 3_600_000).toISOString(),
+      matureAt: new Date(now.getTime() - 60_000).toISOString(),
+      waterCount: 0,
+      lastWaterAt: '',
+      baseYield: 3,
+      source: 'home',
+    });
+    const baseHarvest = applyHarvest(structuredClone(w.state), 'plot_buff_1', now);
+    const farmTool = w.tools().find((t) => t.name === 'life_farm');
+    await farmTool.handler({ action: 'harvest', plot_id: 'plot_buff_1' });
+    const boostedVeg = w.state.pantry.find((p) => p.itemId === 'sweet_potato')?.qty ?? 0;
+    assert.equal(boostedVeg, baseHarvest.totalQty + 1, 'crop_yield_bonus=0.1 应从 3 份增产到 4 份');
+
+    // 4) ranch_yield_bonus（+20% 蛋奶）与 fish_yield_bonus（+1 塘鱼）
+    w.state.ranch.pens.push(
+      {
+        id: 'pen_hen_buff',
+        animalId: 'hen',
+        group: 'chicken',
+        name: '散养土鸡',
+        startedAt: new Date(now.getTime() - 48 * 3_600_000).toISOString(),
+        matureAt: new Date(now.getTime() + 24 * 3_600_000).toISOString(),
+        fedAt: '',
+        fedDay: '',
+        lastCollectedAt: new Date(now.getTime() - 30 * 3_600_000).toISOString(),
+        feedCount: 0,
+        fedCycleBonus: false,
+        source: 'home',
+      },
+      {
+        id: 'pen_fish_buff',
+        animalId: 'grass_carp',
+        group: 'fish',
+        name: '清水草鱼',
+        startedAt: new Date(now.getTime() - 120 * 3_600_000).toISOString(),
+        matureAt: new Date(now.getTime() - 60_000).toISOString(),
+        fedAt: '',
+        fedDay: '',
+        lastCollectedAt: '',
+        feedCount: 0,
+        fedCycleBonus: false,
+        source: 'home',
+      },
+    );
+    const baseEgg = applyCollectRanch(structuredClone(w.state), 'pen_hen_buff', now).totalQty;
+    const baseFish = applyHarvestRanch(structuredClone(w.state), 'pen_fish_buff', now).totalQty;
+    assert.ok(baseEgg >= 2, '测试夹具：散养土鸡基准产出应 >= 2');
+    assert.ok(baseFish >= 3, '测试夹具：清水草鱼基准产出应 >= 3');
+    const ranchTool = w.tools().find((t) => t.name === 'life_ranch');
+    await ranchTool.handler({ action: 'collect', pen_id: 'pen_hen_buff' });
+    await ranchTool.handler({ action: 'harvest', pen_id: 'pen_fish_buff' });
+    const gotEgg = w.state.pantry.find((p) => p.itemId === 'egg')?.qty ?? 0;
+    const gotFish = w.state.pantry.find((p) => p.itemId === 'fresh_fish')?.qty ?? 0;
+    assert.ok(gotEgg > baseEgg, 'ranch_yield_bonus 应提高蛋奶收集量');
+    assert.equal(gotFish, baseFish + 1, 'fish_yield_bonus=1 应额外多收 1 份鲜鱼');
+
+    // 5) noodle_craft_bonus + craft_mood_bonus + food_mood_bonus + writing_mood_bonus
+    addPantryItem(w.state.pantry, {
+      itemId: 'scallion', kind: 'herb', name: '香葱与罗勒', qty: 3, freshVeg: true, origin: 'home-grown', unitCost: 2, acquiredAt: now.toISOString(),
+    });
+    addPantryItem(w.state.pantry, {
+      itemId: 'potato', kind: 'starch', name: '黄心土豆', qty: 3, freshVeg: true, origin: 'home-grown', unitCost: 2, acquiredAt: now.toISOString(),
+    });
+    w.state.vitals.fun = 50;
+    w.state.vitals.energy = 80;
+    const cookTool = w.tools().find((t) => t.name === 'life_cook');
+    const noodleStore = await cookTool.handler({ action: 'cook', recipe: '葱油拌面', mode: 'store' });
+    assert.match(noodleStore.text, /做好了 3 份/, 'noodle_craft_bonus=0.15 应使面食备菜从 2 份增产至 3 份');
+    const noodleDish = w.state.cookedDishes.find((d) => d.recipeId === 'scallion_noodles');
+    assert.ok(noodleDish && noodleDish.foodGain > 35 && noodleDish.funGain > 7);
+    assert.equal(w.state.vitals.fun, 52, 'store 备菜时 craft_mood_bonus=2 应即时生效');
+
+    const potatoStore = await cookTool.handler({ action: 'cook', recipe: '椒盐烤土豆', mode: 'store' });
+    assert.match(potatoStore.text, /做好了 2 份/, '非面食菜谱不应吃到 noodle_craft_bonus');
+
+    const potatoEat = await cookTool.handler({ action: 'cook', recipe: '椒盐烤土豆', mode: 'eat' });
+    assert.match(potatoEat.text, /娱乐 \+13/, '烤土豆基础娱乐 8 + food_mood_bonus 3 + craft_mood_bonus 2 = 13');
+    w.state.activity = null;
+
+    // 写日记验证 writing_mood_bonus = 2
+    const funBeforeDiary = w.state.vitals.fun;
+    const diaryTool = w.tools().find((t) => t.name === 'life_diary_write');
+    const diaryRes = await diaryTool.handler({ body: '今天菜园丰收，算清楚了城市物价。' });
+    assert.match(diaryRes.text, /写作心情 \+2/);
+    assert.equal(w.state.vitals.fun, funBeforeDiary + 2);
+
+    // 后 5 个职业域倍率之一（labor_pay_mult = 1.1）在 life_work 生效（搬货 90 -> 99）
+    const workTool = w.tools().find((t) => t.name === 'life_work');
+    const workOut = await workTool.handler({ what: '搬货' });
+    assert.match(workOut.text, /标准工钱 99 元/);
+    w.state.activity = null;
+
+    // 6) 迁居去 0.8 倍房价的北京后，state.home.monthly 自动跟着调低（1200 * 0.8 = 960）
+    mock.state.residencyTownId = 'beijing';
+    await moveTool.handler({ town: 'beijing' });
+    assert.equal(w.state.home.monthly, 960);
+
+    // 7) panel-1.6.1.js 对 rent_mult 与后 5 项职业倍率正确输出中文芯片且无裸英文键
+    class MiniNode {
+      constructor(nodeType, tagName) {
+        this.nodeType = nodeType;
+        this.tagName = String(tagName || 'div').toUpperCase();
+        this.children = [];
+        this.listeners = {};
+        this.className = '';
+        this._text = '';
+        this.style = {};
+        this.disabled = false;
+        this.type = '';
+        this.title = '';
+        this.id = '';
+      }
+      get textContent() { return this.nodeType === 3 ? this._text : this._text + this.children.map((c) => c.textContent).join(''); }
+      set textContent(v) { this._text = String(v ?? ''); this.children = []; }
+      get innerHTML() { return ''; }
+      set innerHTML(v) { if (!v) { this.children = []; this._text = ''; } }
+      append(...nodes) { for (const n of nodes) if (n) this.children.push(typeof n === 'string' ? new MiniNode(3, '') : n); }
+      prepend(...nodes) { this.children = [...nodes.filter(Boolean), ...this.children]; }
+      setAttribute(k, v) { if (k === 'id') this.id = String(v); }
+      addEventListener(ev, fn) { (this.listeners[ev] ??= []).push(fn); }
+      findAll(pred, out = []) {
+        if (pred(this)) out.push(this);
+        for (const c of this.children) if (c instanceof MiniNode) c.findAll(pred, out);
+        return out;
+      }
+    }
+    const doc = {
+      head: new MiniNode(1, 'head'),
+      body: new MiniNode(1, 'body'),
+      createElement(t) { return new MiniNode(1, t); },
+      createTextNode(s) { const n = new MiniNode(3, ''); n._text = String(s ?? ''); return n; },
+      getElementById(id) { return this.head.findAll((n) => n.id === id)[0] || this.body.findAll((n) => n.id === id)[0] || null; },
+    };
+    doc.head.ownerDocument = doc;
+    doc.body.ownerDocument = doc;
+    globalThis.document = doc;
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const panelMod = await import(`../${pkg.cortico.webUiClient}?buffspanel=${Date.now()}`);
+    const nowRoot = new MiniNode(1, 'div');
+    nowRoot.ownerDocument = doc;
+    const uiSnap = {
+      version: '1.6.0',
+      at: now.toISOString(),
+      herNow: now.toISOString(),
+      knowledge: 0,
+      fitness: 25,
+      town: {
+        id: 'beijing',
+        name: '北京',
+        source: 'server',
+        buffs: {
+          rent_mult: 1.2,
+          labor_pay_mult: 1.1,
+          social_pay_mult: 1.05,
+          admin_pay_mult: 1.06,
+          driving_pay_mult: 0.9,
+          photo_pay_mult: 1.04,
+        },
+        shipping: { base_fee: 6, per_extra_qty: 1 },
+      },
+      hub: { enabled: true, towns: [] },
+      vitals: w.state.vitals,
+      low: [],
+      goals: [],
+      conditions: [],
+      moodlets: [],
+      overdue: [],
+      pending: [],
+      home: w.state.home,
+      job: { what: '', daily: 120, certs: [], days: 0 },
+      money: w.state.money,
+      skills: {},
+      streetQuotes: [],
+      moveQuotes: [],
+    };
+    await panelMod.default.panels.now.mount({
+      root: nowRoot,
+      language: 'zh',
+      invoke: async () => uiSnap,
+      timeout: () => 0,
+    });
+    assert.match(nowRoot.textContent, /房价倍率 \+20%/);
+    assert.match(nowRoot.textContent, /体力薪酬 \+10%/);
+    assert.match(nowRoot.textContent, /驾驶薪酬 -10%/);
+    assert.match(nowRoot.textContent, /影像薪酬 \+4%/);
+    assert.ok(!nowRoot.textContent.includes('rent_mult'));
+    assert.ok(!nowRoot.textContent.includes('labor_pay_mult'));
+    assert.ok(!nowRoot.textContent.includes('driving_pay_mult'));
+    assert.ok(!nowRoot.textContent.includes('photo_pay_mult'));
+
+    await w.stop();
+  } finally {
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
+    await mock.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(diaryDir, { recursive: true, force: true });
   }
 });

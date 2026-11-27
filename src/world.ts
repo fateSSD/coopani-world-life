@@ -25,6 +25,7 @@ import {
   countPendingFarmWork, calcNeighborErrandQuote, parseErrandMinutes, recordPostedNeighborErrand,
   applyNeighborErrandCompleted, refundExpiredErrand, applyHireHelper, applyUnhireHelper,
   findRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
+  clampRentMult, effectiveHomeMonthly, normalizeMoodBonus,
   jobGate, localDateKey, noteVisit, quoteMove, readyGoals,
   DEFAULT_DAILY_GIFT_CAP, LOAN_PRODUCTS, LOAN_RESERVE_CASH,
   activeLoansTotalDue, applyBorrowLoan, applyRepayLoan, applyUserCashGift,
@@ -502,6 +503,34 @@ export class LifeWorld implements World {
     return this.town.buffs ?? {};
   }
 
+  private currentRentMult(): number {
+    return clampRentMult(Number(this.currentTownBuffs().rent_mult));
+  }
+
+  private syncTownRent(): void {
+    const rentMult = this.currentRentMult();
+    const targetMonthly = effectiveHomeMonthly(this.state.home.tier, rentMult);
+    if (this.state.home.monthly !== targetMonthly) {
+      this.state.home.monthly = targetMonthly;
+      this.stateSaveDirty = true;
+    }
+    if (rentMult !== 1) {
+      for (const g of this.state.goals) {
+        if (!g.done && g.id.startsWith('g-home-')) {
+          const t = g.id.slice('g-home-'.length) as HomeTier;
+          if (t in HOME_TIER_COST) {
+            const q = quoteMove(this.state, t, rentMult);
+            if (g.need !== q.deposit) {
+              g.need = q.deposit;
+              g.what = `攒够 ${q.deposit}，搬到${HOME_TIER_LABEL[t]}`;
+              this.stateSaveDirty = true;
+            }
+          }
+        }
+      }
+    }
+  }
+
   private async ensureHubReady(generation: number): Promise<HubAuthRecord | null> {
     const hubUrl = this.activeHubUrl();
     if (!hubUrl) return null;
@@ -787,6 +816,7 @@ export class LifeWorld implements World {
           if (townRes.meta) this.hubTownMeta = townRes.meta;
           this.lastTownFetchMs = Date.now();
           this.ensureTownStreet(auth?.petId);
+          this.syncTownRent();
           if (this.stateSaveDirty && !this.stateCleared) {
             this.saveDeliveredState();
             this.broadcastLife(this.now());
@@ -804,6 +834,7 @@ export class LifeWorld implements World {
           : { ...BUILTIN_TOWN, source: 'failed', problem: townRes.reason || 'Hub v1 暂不可达' };
         this.lastTownFetchMs = Date.now();
         this.ensureTownStreet();
+        this.syncTownRent();
         return false;
       }
 
@@ -816,6 +847,7 @@ export class LifeWorld implements World {
       this.town = fresh;
       this.lastTownFetchMs = Date.now();
       this.ensureTownStreet();
+      this.syncTownRent();
       if (this.stateSaveDirty && !this.stateCleared) {
         this.saveDeliveredState();
         this.broadcastLife(this.now());
@@ -1546,6 +1578,7 @@ export class LifeWorld implements World {
       this.town = await readTown(this.cfg.townUrl, this.cfg.homeCity);
       this.lastTownFetchMs = Date.now();
       this.ensureTownStreet();
+      this.syncTownRent();
     }
     if (this.stateSaveDirty && !this.stateCleared) this.saveDeliveredState();
     this.lastWeatherCfgKey = this.weatherCfgKey();
@@ -1836,6 +1869,7 @@ export class LifeWorld implements World {
       }
       if (generation !== this.stateGeneration) return;
       this.ensureTownStreet();
+      this.syncTownRent();
       this.log?.info(`模拟鱼生：本城改成了 ${this.town.name}（${this.townSourceLabel()}）`);
     }
     await this.syncTownPresenceAndBulletin(now, generation);
@@ -3093,6 +3127,22 @@ export class LifeWorld implements World {
           await this.settleAdvanceEffects(r.advanced, now, generation);
           if (generation !== this.stateGeneration) return { text: '生活档案刚刚被清理，这次动作的旧结算已取消，请重新操作。' };
         }
+        if (this.state.activity?.kind === 'act' && this.state.activity.minutes > 0) {
+          const buffs = this.currentTownBuffs();
+          let moodDelta = 0;
+          if (['eat', 'feast', 'instant', 'cook', 'supper', 'tea', 'cafe'].includes(kindId)) {
+            moodDelta += normalizeMoodBonus(Number(buffs.food_mood_bonus));
+          }
+          if (['craft_shop', 'miniature', 'paint', 'cook'].includes(kindId)) {
+            moodDelta += normalizeMoodBonus(Number(buffs.craft_mood_bonus));
+          }
+          if (['study', 'museum'].includes(kindId)) {
+            moodDelta += normalizeMoodBonus(Number(buffs.writing_mood_bonus));
+          }
+          if (moodDelta !== 0) {
+            this.state.activity.perMin.fun = (this.state.activity.perMin.fun ?? 0) + moodDelta / this.state.activity.minutes;
+          }
+        }
         if (r.cost > 0) {
           appendLedger(this.opts.dataDir, {
             id: `act-${kindId}-${now.getTime().toString(36)}`,
@@ -3231,6 +3281,16 @@ export class LifeWorld implements World {
           expectedPay = boosted;
           const pct = Math.round((mult - 1) * 100);
           buffNote = `（含${this.town.name}风貌加成 ${pct >= 0 ? `+${pct}` : pct}%）`;
+        }
+        if (this.state.activity?.kind === 'work' && this.state.activity.minutes > 0 && def) {
+          const moodBonus = def.domain === 'craft'
+            ? normalizeMoodBonus(Number(buffs.craft_mood_bonus))
+            : def.domain === 'writing'
+              ? normalizeMoodBonus(Number(buffs.writing_mood_bonus))
+              : 0;
+          if (moodBonus !== 0) {
+            this.state.activity.perMin.fun = (this.state.activity.perMin.fun ?? 0) + moodBonus / this.state.activity.minutes;
+          }
         }
 
         if (r.materialPaid && r.materialPaid > 0) {
@@ -3393,6 +3453,7 @@ export class LifeWorld implements World {
       || pickedStreet;
     this.state.street = finalStreet;
     this.state.home.street = finalStreet;
+    this.syncTownRent();
     this.state.lastJoinedTownAt = localDateKey(now);
     this.state.hubTownId = this.hubTownId;
     this.state.hubJoinedKey = `${hubUrl}|${this.hubTownId}|${localDateKey(now)}`;
@@ -3478,7 +3539,7 @@ export class LifeWorld implements World {
           if (!(tier in HOME_TIER_COST)) {
             return { text: `没有「${tier}」这一档。能搬的：城中村 / 老小区 / 新小区 / 别墅区。` };
           }
-          const r = applyMove(this.state, tier as HomeTier, now);
+          const r = applyMove(this.state, tier as HomeTier, now, this.currentRentMult());
           if (!r.ok) return { text: notes.length ? `${notes.join(' ')} ${r.reason ?? '换房档没成。'}` : (r.reason ?? '搬不了。') };
           if (r.deposit > 0) {
             appendLedger(this.opts.dataDir, {
@@ -4896,7 +4957,8 @@ export class LifeWorld implements World {
         }
 
         if (action === 'harvest') {
-          const r = applyHarvest(this.state, String(args?.plot_id ?? '').trim(), now);
+          const yieldBonus = Number(this.currentTownBuffs().crop_yield_bonus) || 0;
+          const r = applyHarvest(this.state, String(args?.plot_id ?? '').trim(), now, { yieldBonus });
           if (!r.ok) return { text: r.reason ?? '暂时还不能收成。' };
           if (generation !== this.stateGeneration) return cleared();
           this.syncFarmReminderNags(now);
@@ -5092,7 +5154,8 @@ export class LifeWorld implements World {
         }
 
         if (action === 'collect') {
-          const r = applyCollectRanch(this.state, String(args?.pen_id ?? '').trim(), now);
+          const yieldBonus = Number(this.currentTownBuffs().ranch_yield_bonus) || 0;
+          const r = applyCollectRanch(this.state, String(args?.pen_id ?? '').trim(), now, { yieldBonus });
           if (!r.ok) return { text: r.reason ?? '暂时还没产出蛋奶。' };
           if (generation !== this.stateGeneration) return cleared();
           this.syncFarmReminderNags(now);
@@ -5103,7 +5166,11 @@ export class LifeWorld implements World {
         }
 
         if (action === 'harvest') {
-          const r = applyHarvestRanch(this.state, String(args?.pen_id ?? '').trim(), now);
+          const buffs = this.currentTownBuffs();
+          const r = applyHarvestRanch(this.state, String(args?.pen_id ?? '').trim(), now, {
+            ranchYieldBonus: Number(buffs.ranch_yield_bonus) || 0,
+            fishYieldBonus: Number(buffs.fish_yield_bonus) || 0,
+          });
           if (!r.ok) return { text: r.reason ?? '暂时还不能起塘/出栏。' };
           if (generation !== this.stateGeneration) return cleared();
           this.syncFarmReminderNags(now);
@@ -5191,7 +5258,12 @@ export class LifeWorld implements World {
 
         if (action === 'cook') {
           const mode = args?.mode === 'store' ? 'store' : 'eat';
-          const r = applyCookRecipe(this.state, String(args?.recipe ?? '').trim(), mode, now);
+          const buffs = this.currentTownBuffs();
+          const r = applyCookRecipe(this.state, String(args?.recipe ?? '').trim(), mode, now, {
+            noodleBonus: Number(buffs.noodle_craft_bonus) || 0,
+            foodMoodBonus: Number(buffs.food_mood_bonus) || 0,
+            craftMoodBonus: Number(buffs.craft_mood_bonus) || 0,
+          });
           if (!r.ok) return { text: r.reason ?? '这次没做成这道菜。' };
           if (generation !== this.stateGeneration) return cleared();
           if (r.paid > 0) {
@@ -5214,12 +5286,14 @@ export class LifeWorld implements World {
             };
           }
           return {
-            text: `起锅用${r.usedSources.join('、')}做「${r.recipe?.name}」了，预计 ${r.recipe?.minutes} 分钟出锅开吃（回饱腹 +${r.recipe?.foodGain}、娱乐 +${r.recipe?.funGain}）。`,
+            text: `起锅用${r.usedSources.join('、')}做「${r.recipe?.name}」了，预计 ${r.recipe?.minutes} 分钟出锅开吃（回饱腹 +${r.foodGain ?? r.recipe?.foodGain}、娱乐 +${r.funGain ?? r.recipe?.funGain}）。`,
           };
         }
 
         if (action === 'eat_dish') {
-          const r = applyEatCookedDish(this.state, String(args?.dish ?? '').trim(), now);
+          const r = applyEatCookedDish(this.state, String(args?.dish ?? '').trim(), now, {
+            foodMoodBonus: Number(this.currentTownBuffs().food_mood_bonus) || 0,
+          });
           if (!r.ok) return { text: r.reason ?? '没热成成品菜。' };
           if (generation !== this.stateGeneration) return cleared();
           this.saveDeliveredState();
@@ -5685,12 +5759,17 @@ export class LifeWorld implements World {
           body,
         });
         if (!res.path) return { text: res.problem ?? '生活日记没写进去。' };
+        const writingMoodDelta = normalizeMoodBonus(Number(this.currentTownBuffs().writing_mood_bonus));
+        if (writingMoodDelta !== 0) {
+          this.state.vitals.fun = Math.max(0, Math.min(100, this.state.vitals.fun + writingMoodDelta));
+        }
         remember(this.state, '写了今天的生活日记。', now);
         try { this.store.save(this.state); } catch { /* ignore */ }
+        const moodHint = writingMoodDelta !== 0 ? `（${this.town.name}写作心情 ${writingMoodDelta >= 0 ? `+${writingMoodDelta}` : writingMoodDelta}）` : '';
         return {
           text: res.problem
-            ? `生活日记只存到本机了（${res.problem}）：${res.path}`
-            : `写好了，${key} 的生活日记已经存进 ${res.path}。`,
+            ? `生活日记只存到本机了（${res.problem}）：${res.path}${moodHint}`
+            : `写好了，${key} 的生活日记已经存进 ${res.path}。${moodHint}`,
         };
       },
     };
@@ -6774,7 +6853,8 @@ export class LifeWorld implements World {
           return { ok: true, message: r.watered > 1 ? `已帮忙浇完 ${r.watered} 块地 ✓` : '已帮忙浇水 ✓', ...marketPayload() };
         }
         if (method === 'harvest') {
-          const r = applyHarvest(this.state, String(raw?.plotId ?? '').trim(), now, { byUser: true });
+          const yieldBonus = Number(this.currentTownBuffs().crop_yield_bonus) || 0;
+          const r = applyHarvest(this.state, String(raw?.plotId ?? '').trim(), now, { byUser: true, yieldBonus });
           if (!r.ok) return { ok: false, reason: r.reason || '还没熟呢。', ...marketPayload() };
           this.syncFarmReminderNags(now);
           this.saveDeliveredState();
@@ -6842,7 +6922,8 @@ export class LifeWorld implements World {
           return { ok: true, message: r.fed > 1 ? `已喂完 ${r.fed} 栏（饲料 -¥${r.paid}）✓` : `已喂食（饲料 -¥${r.paid}）✓`, ...marketPayload() };
         }
         if (method === 'ranchCollect') {
-          const r = applyCollectRanch(this.state, String(raw?.penId ?? '').trim(), now, { byUser: true });
+          const yieldBonus = Number(this.currentTownBuffs().ranch_yield_bonus) || 0;
+          const r = applyCollectRanch(this.state, String(raw?.penId ?? '').trim(), now, { byUser: true, yieldBonus });
           if (!r.ok) return { ok: false, reason: r.reason || '暂无可收蛋奶。', ...marketPayload() };
           this.syncFarmReminderNags(now);
           this.saveDeliveredState();
@@ -6852,7 +6933,12 @@ export class LifeWorld implements World {
           return { ok: true, message: `已收集 ${gotTxt} ✓`, ...marketPayload() };
         }
         if (method === 'ranchHarvest') {
-          const r = applyHarvestRanch(this.state, String(raw?.penId ?? '').trim(), now, { byUser: true });
+          const buffs = this.currentTownBuffs();
+          const r = applyHarvestRanch(this.state, String(raw?.penId ?? '').trim(), now, {
+            byUser: true,
+            ranchYieldBonus: Number(buffs.ranch_yield_bonus) || 0,
+            fishYieldBonus: Number(buffs.fish_yield_bonus) || 0,
+          });
           if (!r.ok) return { ok: false, reason: r.reason || '暂不可起塘/出栏。', ...marketPayload() };
           this.syncFarmReminderNags(now);
           this.saveDeliveredState();
@@ -7057,7 +7143,7 @@ export class LifeWorld implements World {
       if (!(tier in HOME_TIER_COST)) {
         return { ok: false, reason: `没有「${tier}」这一档。`, ...this.panelSnapshot(now) };
       }
-      const r = applyMove(this.state, tier as HomeTier, now);
+      const r = applyMove(this.state, tier as HomeTier, now, this.currentRentMult());
       if (r.ok) {
         if (r.deposit > 0) {
           appendLedger(this.opts.dataDir, {
@@ -7330,10 +7416,13 @@ export class LifeWorld implements World {
          * 四档的搬家报价。**面板要能在按之前把价说清** ——
          * 「还差 2200」写在按钮旁边，比点一下弹「钱不够」好得多。
          */
-        moveQuotes: (['urban-village', 'old', 'new', 'villa'] as HomeTier[]).map((t) => {
-          const q = quoteMove(this.state, t);
-          return { ...q, current: t === this.state.home.tier };
-        }),
+        moveQuotes: (() => {
+          const rentMult = this.currentRentMult();
+          return (['urban-village', 'old', 'new', 'villa'] as HomeTier[]).map((t) => {
+            const q = quoteMove(this.state, t, rentMult);
+            return { ...q, current: t === this.state.home.tier };
+          });
+        })(),
       };
     }
   }

@@ -9,6 +9,7 @@ import {
   addPantryItem, farmPlotView, findSeed,
   type FarmHomeTier, type FarmState, type IngredientKind, type PantryItem,
 } from './farm.ts';
+import { applyYieldBonus } from './town-life.ts';
 
 export type AnimalGroup = 'chicken' | 'cow' | 'fish';
 
@@ -527,7 +528,7 @@ export function applyCollectRanch(
   state: RanchHostState,
   penId: string,
   now: Date,
-  opts: { byUser?: boolean } = {},
+  opts: { byUser?: boolean; yieldBonus?: number } = {},
 ): { ok: boolean; reason?: string; collected: { name: string; qty: number }[]; totalQty: number } {
   if (!state.ranch.pens.length) {
     return { ok: false, reason: '还没有在养的动物，先去放养土鸡或奶牛吧。', collected: [], totalQty: 0 };
@@ -556,7 +557,7 @@ export function applyCollectRanch(
   for (const { pen, view } of candidates) {
     const def = findAnimal(pen.animalId);
     if (!def || !def.cycleProductId || !def.cycleProductName) continue;
-    const qty = view.collectableQty;
+    const qty = applyYieldBonus(view.collectableQty, opts.yieldBonus);
     const unitCost = calcCycleProductUnitCost(def, pen, qty);
     addPantryItem(state.pantry, {
       itemId: def.cycleProductId,
@@ -592,7 +593,7 @@ export function applyHarvestRanch(
   state: RanchHostState,
   penId: string,
   now: Date,
-  opts: { byUser?: boolean } = {},
+  opts: { byUser?: boolean; ranchYieldBonus?: number; fishYieldBonus?: number } = {},
 ): { ok: boolean; reason?: string; harvested: { name: string; qty: number }[]; totalQty: number } {
   if (!state.ranch.pens.length) {
     return { ok: false, reason: '养殖栏位眼下都空着呢。', harvested: [], totalQty: 0 };
@@ -637,7 +638,8 @@ export function applyHarvestRanch(
   for (const pen of candidates) {
     const def = findAnimal(pen.animalId) ?? ANIMALS[0];
     const view = ranchPenView(pen, now);
-    const qty = view.harvestYield;
+    const yieldBonus = pen.group === 'fish' ? opts.fishYieldBonus : opts.ranchYieldBonus;
+    const qty = applyYieldBonus(view.harvestYield, yieldBonus);
     const unitCost = calcHarvestProductUnitCost(def, pen, qty);
     addPantryItem(state.pantry, {
       itemId: def.harvestProductId,

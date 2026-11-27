@@ -76,6 +76,7 @@ export { skyFromExternal, type ExternalWeatherOverride, type WeatherSky };
 import {
   SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, findCourse, findEquip,
   rollWorkGrade, solarTermOf, streetWindowOf, marketCatalogOf, isLateNightQuiet, buildDreamSlice,
+  applyYieldBonus, normalizeMoodBonus,
   type SkillDomain, type SolarTermInfo, type StreetWindow, type MarketItem,
 } from './town-life.ts';
 import {
@@ -120,6 +121,7 @@ export type {
 };
 export {
   SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, solarTermOf, streetWindowOf, rollWorkGrade,
+  applyYieldBonus, normalizeMoodBonus,
   HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_SIGNUP_FEE, LEASE_MONTHLY_RENT,
   SEEDS, STALL_CATEGORY_LABEL, STALL_RULES_GUIDE,
   homeFarmSlots, totalFarmSlots, findSeed, farmPlotView, addPantryItem, pantryCount, pantryCountByIds,
@@ -284,6 +286,18 @@ export const HOME_TIER_COST: Record<HomeTier, number> = {
   new: 2600,
   villa: 7800,
 };
+
+/** 城市房价/房租倍率夹紧范围：[0.3, 5.0]，非法或 <=0 返回 1（按基准价）。 */
+export function clampRentMult(raw?: number): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return 1;
+  return Math.max(0.3, Math.min(5, Math.round(raw * 1000) / 1000));
+}
+
+/** 计算叠加城市 `rent_mult` 后的实际月租（基准价 * 倍率，最低保底 50 元）。 */
+export function effectiveHomeMonthly(tier: HomeTier, rentMult = 1): number {
+  const m = clampRentMult(rentMult);
+  return m === 1 ? HOME_TIER_COST[tier] : Math.max(50, Math.round(HOME_TIER_COST[tier] * m));
+}
 
 /**
  * 搬进去要押几个月。
@@ -3705,6 +3719,8 @@ export interface MoveQuote {
   tier: HomeTier;
   label: string;
   monthly: number;
+  baseMonthly: number;
+  rentMult: number;
   /** 一次性押金。老房子的押金**不退**，所以实际要准备的是这个数。 */
   deposit: number;
   ok: boolean;
@@ -3720,14 +3736,18 @@ export interface MoveQuote {
  * 单独拆出来是因为**面板要在按之前就把价说清**。让人点一下才知道
  * 「钱不够」，比在旁边写着「还差 1800」难受得多。
  */
-export function quoteMove(state: LifeState, tier: HomeTier): MoveQuote {
-  const monthly = HOME_TIER_COST[tier];
+export function quoteMove(state: LifeState, tier: HomeTier, rentMult = 1): MoveQuote {
+  const m = clampRentMult(rentMult);
+  const baseMonthly = HOME_TIER_COST[tier];
+  const monthly = effectiveHomeMonthly(tier, m);
   const deposit = monthly * MOVING_DEPOSIT_MONTHS;
   const short = Math.max(0, deposit - state.money.cash);
   return {
     tier,
     label: HOME_TIER_LABEL[tier],
     monthly,
+    baseMonthly,
+    rentMult: m,
     deposit,
     ok: short === 0,
     short,
@@ -3763,7 +3783,7 @@ export interface MoveResult {
  * `tenure` 不变。买房是另一件事（要一次付两年租金当房价），一期不做 ——
  * 半做的话会出现「她买了房，但我们没算过房价和月供」这种半截状态。
  */
-export function applyMove(state: LifeState, tier: HomeTier, now: Date): MoveResult {
+export function applyMove(state: LifeState, tier: HomeTier, now: Date, rentMult = 1): MoveResult {
   if (isBusy(state, now)) {
     return {
       ok: false,
@@ -3779,7 +3799,7 @@ export function applyMove(state: LifeState, tier: HomeTier, now: Date): MoveResu
       from, to: tier, deposit: 0, cash: state.money.cash,
     };
   }
-  const q = quoteMove(state, tier);
+  const q = quoteMove(state, tier, rentMult);
   if (!q.ok) {
     return {
       ok: false,

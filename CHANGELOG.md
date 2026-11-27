@@ -1,5 +1,15 @@
 # 变更记录
 
+## 1.6.1 — 2026-11-27（城市房价倍率 `rent_mult` 热调控 + 7 项 `_bonus` 数值实装 + 16 项 Buff 全量汉化）
+
+- **城市房价倍率 `rent_mult` 热调控**（`src/state.ts`、`src/world.ts`、`test/hub-v1.test.mjs`）：
+  - 以现有四档基准月租（`450 / 1200 / 2600 / 7800`，押二）为基准新增 `rent_mult` 倍率（区间 `0.3`–`5`，实际月租最低 `50` 元），在启动、刷新城镇信息、心跳热更新与迁城时同步当前月租及未完成的攒房租目标，并接入 `life_move`、面板搬家与 `moveQuotes`。
+- **原 7 项 `_bonus` 城市 Buff 真实接入数值结算**（`src/town-life.ts`、`src/farm.ts`、`src/ranch.ts`、`src/recipes.ts`、`src/world.ts`）：
+  - 产出类：`crop_yield_bonus`、`ranch_yield_bonus`、`fish_yield_bonus` 与 `noodle_craft_bonus`（面食饱腹/娱乐倍率与囤货增产）接入对应农牧收获、挤奶捡蛋与下厨流程。
+  - 心情类：`food_mood_bonus`、`craft_mood_bonus` 与 `writing_mood_bonus` 接入下厨/吃喝、手作、学习、写作/手作打工与日记流程。
+- **16 项 Buff 全量汉化与面板三同步**（`web/panel-1.6.1.js`、`package.json`、`README.md`）：
+  - 补齐 `rent_mult` 与后 5 项职业倍率（`labor_pay_mult`、`social_pay_mult`、`admin_pay_mult`、`driving_pay_mult`、`photo_pay_mult`）的中文标签，并三同步升级面板至 `web/panel-1.6.1.js`。
+
 ## 1.6.0 — 2026-11-27（芦花塘信用社微息借贷 + 用户零花钱赠与 + 农牧省略 id 批量照料与傍晚提醒）
 
 - **芦花塘信用社单机微息借贷闭环**（`src/loan.ts`、`src/state.ts`、`src/world.ts`、`describe.json`、`ENV_PROMPT.md`、`web/panel-1.6.0.js`）：

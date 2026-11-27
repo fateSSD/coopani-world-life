@@ -5,6 +5,8 @@
  * 种子目录与作物名称不含鱼虾蟹贝海鲜。淡水食用鱼的养殖与烹饪统一在 ranch.ts / recipes.ts 处理。
  */
 
+import { applyYieldBonus } from './town-life.ts';
+
 export type FarmHomeTier = 'urban-village' | 'old' | 'new' | 'villa';
 
 export const HOME_FARM_SLOTS: Record<FarmHomeTier, number> = {
@@ -949,7 +951,7 @@ export function applyHarvest(
   state: FarmHostState,
   plotId: string,
   now: Date,
-  opts: { byUser?: boolean } = {},
+  opts: { byUser?: boolean; yieldBonus?: number } = {},
 ): { ok: boolean; reason?: string; harvested: { name: string; qty: number }[]; totalQty: number } {
   if (!state.farm.plots.length) {
     return { ok: false, reason: '地里还空着，先播种再等成熟收成吧。', harvested: [], totalQty: 0 };
@@ -987,7 +989,7 @@ export function applyHarvest(
   const harvestedIds = new Set<string>();
   for (const p of candidates) {
     const view = farmPlotView(p, now);
-    const qty = view.expectedYield;
+    const qty = applyYieldBonus(view.expectedYield, opts.yieldBonus);
     const seed = findSeed(p.seedId);
     const unitCost = Math.max(1, Math.round((seed?.price ?? 8) / qty));
     addPantryItem(state.pantry, {

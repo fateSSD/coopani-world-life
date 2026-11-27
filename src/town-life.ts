@@ -347,3 +347,25 @@ export function buildDreamSlice(opts: {
   }
   return `[梦] 昨晚乱七八糟梦到白天的事（${anchor.slice(0, 18)}），梦里${place}。`;
 }
+
+/** 根据城市收成加成计算实际产出份数（<1 按百分比向上增产，>=1 按整份加减，保底 1 份）。 */
+export function applyYieldBonus(baseQty: number, bonus?: number): number {
+  const base = Math.max(1, Math.round(Number(baseQty) || 1));
+  if (typeof bonus !== 'number' || !Number.isFinite(bonus) || bonus === 0) return base;
+  if (Math.abs(bonus) < 1) {
+    if (bonus > 0) {
+      return base + Math.max(1, Math.ceil(base * Math.min(3, bonus)));
+    }
+    return Math.max(1, Math.floor(base * (1 + Math.max(-0.8, bonus))));
+  }
+  return Math.max(1, base + Math.round(Math.max(-20, Math.min(20, bonus))));
+}
+
+/** 将城市心情加成（<1 按 *20 折算为点数，>=1 直接取整）规整为 [-15, 20] 区间内的整数。 */
+export function normalizeMoodBonus(raw?: number): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw === 0) return 0;
+  const val = Math.abs(raw) < 1
+    ? (raw > 0 ? Math.max(1, Math.round(raw * 20)) : Math.min(-1, Math.round(raw * 20)))
+    : Math.round(raw);
+  return Math.max(-15, Math.min(20, val));
+}

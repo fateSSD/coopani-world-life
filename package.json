@@ -1,6 +1,6 @@
 {
   "name": "coopani-world-life",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "type": "module",
   "description": "模拟鱼生 · 桌面伴侣的真实人生与多城联机：芦花塘信用社微息借贷、零花钱赠与、Hub v1 多城迁居与跨城鱼市街、18种菜园与鸡牛鱼批量照料及七页签手账 UI。（需 Coopani 0.2.22+｜QQ 群 284525159）",
   "author": {
@@ -38,7 +38,7 @@
     "api": 6,
     "displayName": "模拟鱼生",
     "describe": "describe.json",
-    "webUiClient": "web/panel-1.6.0.js",
+    "webUiClient": "web/panel-1.6.1.js",
     "tags": [
       "companion",
       "internal-state"
