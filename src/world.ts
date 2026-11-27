@@ -3265,7 +3265,7 @@ export class LifeWorld implements World {
             text: `现在可接的活（挑一个填进 what）：${fallback.map((a) => `${a.name}（${a.pay}元/${a.minutes}分钟${a.equip ? '·自备家伙' : ''}）`).join('、')}。`,
           };
         }
-        const r = applyWork(this.state, what, now, phase);
+        const r = applyWork(this.state, what, now, phase, phase === 'home' ? this.currentStreetMods() : undefined);
         if (!r.ok) return { text: r.reason ?? '今天去不了。' };
 
         const buffs = this.currentTownBuffs();

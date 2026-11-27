@@ -35,7 +35,7 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, mk
 import { dirname, join } from 'node:path';
 import { skyFromExternal, type ExternalWeatherOverride, type WeatherSky } from './config.ts';
 import { type JobDef, findJob, certOf, CERTS, jobAllowedAt } from './jobs.ts';
-import { type StreetMods, type StreetProfile, formatStreetMods } from './bridge.ts';
+import { type StreetMods, type StreetProfile, formatStreetMods, normStreetMods } from './bridge.ts';
 import {
   DEFAULT_DAILY_GIFT_CAP,
   freshGiftCash,
@@ -489,9 +489,10 @@ export interface ActiveTask {
   costPerMin?: number;
   costAcc?: number;
   costPaid?: number;
-  /** 仅 work 用：干满应得工资与档位。 */
+  /** 仅 work 用：干满应得工资与档位，以及开工时本城街道加成快照（防收工前切街套利）。 */
   workPay?: number;
   workTier?: 'odd' | 'skilled' | 'certified' | 'professional';
+  workStreetMods?: StreetMods;
   /** 仅接单真鱼邻里代管用：完工零花钱与雇主名字（不占当日正式打工额度）。 */
   errandPay?: number;
   errandEmployer?: string;
@@ -901,8 +902,8 @@ export interface AdvanceExt {
   streetMods?: StreetMods;
 }
 
-/** 街道对本城日常五维衰减的乘数：+10% 增益 -> 衰减率 ×0.90；-10% 减益 -> 衰减率 ×1.10。 */
-export function streetDecayFactor(mods: StreetMods | undefined, key: VitalKey): number {
+/** 街道对本城日常五维（及体质退化）衰减的乘数：+10% 增益 -> 衰减率 ×0.90；-10% 减益 -> 衰减率 ×1.10。 */
+export function streetDecayFactor(mods: StreetMods | undefined, key: VitalKey | 'fit'): number {
   const pct = Number(mods?.[key] ?? 0);
   if (!Number.isFinite(pct) || pct === 0) return 1;
   return Math.max(0.5, Math.min(1.5, 1 - pct / 100));
@@ -1515,6 +1516,7 @@ function normActivity(a: unknown, now: Date): ActiveTask | null {
   const u = Date.parse(String(o.until ?? ''));
   if (!Number.isFinite(f) || !Number.isFinite(u) || u <= f || f > now.getTime()) return null;
   if (o.kind !== 'act' && o.kind !== 'work') return null;
+  const workStreetMods = o.kind === 'work' && o.workStreetMods ? normStreetMods(o.workStreetMods) : undefined;
   return {
     kind: o.kind,
     id: String(o.id ?? ''),
@@ -1529,6 +1531,7 @@ function normActivity(a: unknown, now: Date): ActiveTask | null {
     costPaid: Number.isFinite(Number(o.costPaid)) ? Number(o.costPaid) : 0,
     workPay: Number.isFinite(Number(o.workPay)) ? Number(o.workPay) : 0,
     workTier: o.workTier,
+    ...(workStreetMods && Object.keys(workStreetMods).length > 0 ? { workStreetMods } : {}),
     ...(Number.isFinite(Number(o.errandPay)) && Number(o.errandPay) > 0
       ? { errandPay: Math.round(Number(o.errandPay)) }
       : {}),
@@ -1872,8 +1875,9 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
               ? 0
               : Math.round((actTask.workPay ?? 0) * g.mult);
           }
-          if (earned > 0 && sMods) {
-            earned = Math.max(0, Math.round(earned * streetGainFactor(sMods, 'work')));
+          const workMods = actTask.workStreetMods ?? sMods;
+          if (earned > 0 && workMods) {
+            earned = Math.max(0, Math.round(earned * streetGainFactor(workMods, 'work')));
           }
 
           let loanGarnished: LoanGarnishResult | undefined;
@@ -1892,7 +1896,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
               state.skills[def.domain] = Math.min(100, (state.skills[def.domain] ?? 0) + gain);
             }
             if (PHYSICAL_JOB_IDS.has(actTask.id)) {
-              state.fitness = Math.min(FITNESS_MAX, state.fitness + 1.5);
+              state.fitness = Math.min(FITNESS_MAX, state.fitness + 1.5 * streetGainFactor(workMods, 'fit'));
             }
           }
 
@@ -1941,7 +1945,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             errandEarned = Math.round(actTask.errandPay);
             state.money.cash += errandEarned;
             state.money.earned += errandEarned;
-            state.fitness = Math.min(FITNESS_MAX, state.fitness + 0.3);
+            state.fitness = Math.min(FITNESS_MAX, state.fitness + 0.3 * streetGainFactor(sMods, 'fit'));
             remember(
               state,
               `帮街坊${actTask.errandEmployer || '邻居'}照料农牧场完工，挣了 ${errandEarned} 元零花钱。`,
@@ -1951,7 +1955,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             const actDef = ACTS[actTask.id];
             if (!outOfCash) {
               const fitGain = actDef?.fit ?? 0;
-              if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain);
+              if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain * streetGainFactor(sMods, 'fit'));
               const craftGain = actDef?.craft ?? 0;
               if (craftGain > 0) {
                 state.skills = state.skills ?? {};
@@ -2067,7 +2071,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
     state.knowledge = Math.max(0, state.knowledge - KNOWLEDGE_DECAY_PER_HOUR * hours);
   }
   if (state.fitness > FITNESS_MIN) {
-    state.fitness = Math.max(FITNESS_MIN, state.fitness - FITNESS_DECAY_PER_HOUR * hours);
+    state.fitness = Math.max(FITNESS_MIN, state.fitness - FITNESS_DECAY_PER_HOUR * hours * streetDecayFactor(sMods, 'fit'));
   }
 
   /*
@@ -3144,6 +3148,7 @@ export function applyWork(
   what: string,
   now: Date,
   phase: 'home' | 'staying' | 'traveling' = 'home',
+  streetMods?: StreetMods,
 ): WorkResult {
   if (isBusy(state, now)) {
     return {
@@ -3248,6 +3253,7 @@ export function applyWork(
         earnedSoFar: 0,
       }
     : null;
+  const workStreetMods = phase === 'home' && streetMods ? normStreetMods(streetMods) : undefined;
   state.activity = {
     kind: 'work',
     id: state.job.id || 'custom-work',
@@ -3265,6 +3271,7 @@ export function applyWork(
     knowPerMin: load.know > 0 ? load.know / m : 0,
     workPay: pay,
     workTier: tier,
+    ...(workStreetMods && Object.keys(workStreetMods).length > 0 ? { workStreetMods } : {}),
   };
 
   state.updatedAt = now.toISOString();

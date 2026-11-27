@@ -833,8 +833,8 @@ export default {
 
         let moveTip = null;
         let giftTip = null;
-        const MOD_SHORT = { food: '饱', energy: '精', clean: '洁', fun: '娱', social: '社', know: '识', work: '钱' };
-        const MOD_FULL = { food: '饱腹', energy: '精力', clean: '清爽', fun: '娱乐', social: '社交', know: '见识', work: '工钱' };
+        const MOD_SHORT = { food: '饱', energy: '精', clean: '洁', fun: '娱', social: '社', know: '识', work: '钱', fit: '体' };
+        const MOD_FULL = { food: '饱腹', energy: '精力', clean: '清爽', fun: '娱乐', social: '社交', know: '见识', work: '工钱', fit: '体质' };
 
         const drawWho = (d) => {
           whoCard.innerHTML = '';

@@ -192,7 +192,7 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
 /* 本城：她住在哪儿                                                     */
 /* ------------------------------------------------------------------ */
 
-export type StreetModKey = 'food' | 'energy' | 'clean' | 'fun' | 'social' | 'know' | 'work';
+export type StreetModKey = 'food' | 'energy' | 'clean' | 'fun' | 'social' | 'know' | 'work' | 'fit';
 export type StreetMods = Partial<Record<StreetModKey, number>>;
 
 export interface StreetProfile {
@@ -209,15 +209,16 @@ export const STREET_MOD_LABEL: Record<StreetModKey, string> = {
   social: '社交',
   know: '见识',
   work: '工钱',
+  fit: '体质',
 };
 
-const STREET_MOD_KEYS: readonly StreetModKey[] = ['food', 'energy', 'clean', 'fun', 'social', 'know', 'work'];
+const STREET_MOD_KEYS: readonly StreetModKey[] = ['food', 'energy', 'clean', 'fun', 'social', 'know', 'work', 'fit'];
 
 const DEFAULT_STREET_PROFILES: readonly StreetProfile[] = [
   {
     name: '南滨河路',
-    desc: '傍着黄河长廊与水车园，清晨有带露水的早市，傍晚河风吹散暑气，散步慢跑最养人，就是河滩风大容易沾灰。',
-    mods: { energy: 10, fun: 10, clean: -10 },
+    desc: '傍着黄河长廊与水车园，清晨有带露水的早市，傍晚河风吹散暑气，沿河散步慢跑最养体格，就是河滩风大容易沾灰。',
+    mods: { fit: 15, energy: 5, clean: -10 },
   },
   {
     name: '张掖路',
@@ -231,8 +232,28 @@ const DEFAULT_STREET_PROFILES: readonly StreetProfile[] = [
   },
   {
     name: '雁滩路',
-    desc: '河滩果园改出来的生活片区，菜摊果铺便宜实在，周末还有旧货集与夜唱摊子，吃喝消遣划算，就是离老城中心稍远。',
-    mods: { food: 15, fun: 10, work: -5 },
+    desc: '河滩果园改出来的慢节奏生活片区，菜摊果铺便宜实在，夜里清静睡得最沉，就是离老城中心稍远、活儿少些。',
+    mods: { energy: 15, food: 5, work: -10 },
+  },
+  {
+    name: '正宁路',
+    desc: '兰州最有名的夜市小吃街，牛奶鸡蛋醪糟、烤串与酿皮从傍晚香到半夜，吃喝解闷最痛快，就是油烟重、天天宵夜疏于活动。',
+    mods: { food: 15, fun: 10, clean: -10, fit: -5 },
+  },
+  {
+    name: '庆阳路',
+    desc: '贯通东方红广场与南关的核心商圈干道，写字楼与商铺密集、接活赚钱和长见识最快，就是节奏紧、一天下来耗神又枯燥。',
+    mods: { work: 15, know: 10, energy: -10, fun: -5 },
+  },
+  {
+    name: '甘南路',
+    desc: '兰州最有名的酒吧与驻唱街区，入夜霓虹亮起、乐队与桌游馆扎堆，解闷交友最热闹，就是静不下心看书、久坐少锻炼。',
+    mods: { fun: 15, social: 10, know: -5, fit: -5 },
+  },
+  {
+    name: '安宁西路',
+    desc: '大学城与十里桃乡所在的新街区，林荫大道宽敞干爽、操场和校园氛围好，住着最清爽体面也爱运动，就是离主城商圈远、活儿略少。',
+    mods: { clean: 15, fit: 10, work: -5 },
   },
 ];
 
@@ -360,7 +381,7 @@ export const BUILTIN_TOWN: TownView = {
   name: '兰州',
   origin: '黄河自西向东穿城，两岸黄土山梁夹着长长一溜灯火，铁桥横在河面上。'
     + '早上出门沿着河边走两步就能吃碗热面，晚上不管走多远，望见河谷里的灯就知道到家了。',
-  streets: ['南滨河路', '张掖路', '皋兰路', '雁滩路'],
+  streets: DEFAULT_STREET_PROFILES.map((p) => p.name),
   streetProfiles: DEFAULT_STREET_PROFILES.map((p) => ({ name: p.name, desc: p.desc, mods: { ...p.mods } })),
   rules: ['河里的不吃河里的', '货不过夜', '价自己定，别人说贵你就听着', '赊账记在心里，不记在账上'],
   custom: false,

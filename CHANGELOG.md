@@ -1,5 +1,15 @@
 # 变更记录
 
+## 1.6.2 — 2026-11-27（兰州 8 条街道加权平衡扩容 + 体质街道双边倍率 + 打工开工街道快照）
+
+- **兰州街道扩容至 8 条并按加权预算平衡**（`src/bridge.ts`、`test/stage23.test.mjs`、`sight-cf/src/worker.js`）：
+  - 保留张掖路（社交主页 `+15%`）、皋兰路（见识主页 `+15%`），将南滨河路转为体质主场（`fit +15% / energy +5% / clean -10%`），雁滩路调整为精力主场（`energy +15% / food +5% / work -10%`），新增正宁路（饱腹主场 `food +15% / fun +10% / clean -10% / fit -5%`）、庆阳路（工钱主场）、甘南路（娱乐主场）与安宁西路（清爽主场），实现 8 条街 × 8 项属性一对一主场分工，加权净分全部收敛在 `12.0 ~ 14.5` 走廊且无 `work > 0 && energy > 0` 组合。
+- **街道 `fit`（体质）双边倍率接入与防切街套利快照**（`src/bridge.ts`、`src/state.ts`、`src/world.ts`）：
+  - `STREET_MOD_KEYS` 新增 `fit`（体质），`advance()` 中锻炼、体力工作与邻里代管涨体质同步乘 `streetGainFactor(sMods, 'fit')`，日常体质缓慢退化同步乘 `streetDecayFactor(sMods, 'fit')`。
+  - `applyWork()` 在本地居家开工时将当时街道倍率快照写入 `state.activity.workStreetMods`，防止收工前瞬切高薪街套利。
+- **面板缓存三同步与回归验证**（`package.json`、`web/panel-1.6.2.js`、`test/hub-v1.test.mjs`）：
+  - `web/panel-1.6.2.js` 补齐 `fit` 中英文缩写/全称标签并完成版本三同步升级；`stage23.test.mjs` 新增 8 街加权净分守卫、`fit` 双边倍率及开工快照防套利单测。
+
 ## 1.6.1 — 2026-11-27（城市房价倍率 `rent_mult` 热调控 + 7 项 `_bonus` 数值实装 + 16 项 Buff 全量汉化）
 
 - **城市房价倍率 `rent_mult` 热调控**（`src/state.ts`、`src/world.ts`、`test/hub-v1.test.mjs`）：

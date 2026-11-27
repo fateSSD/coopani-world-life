@@ -1133,8 +1133,8 @@ test('ensureHubAuth 409 竞态自愈 + panel-1.5.0 独立报错区 lf-alert 与 
     assert.equal(missed.ok, false);
     assert.equal(missed.code, 'LEGACY_UID_CLAIMED');
 
-    // 验证 panel-1.6.1.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
-    const panelMod = await import(`../web/panel-1.6.1.js?alertbuff=${Date.now()}`);
+    // 验证 panel-1.6.2.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
+    const panelMod = await import(`../web/panel-1.6.2.js?alertbuff=${Date.now()}`);
     const root = new FakeNode('div');
     root.ownerDocument = fakeDoc;
     fakeDoc.body.append(root);
@@ -1487,7 +1487,7 @@ test('Life P2 回归：冷启动跨扩展锁、睡眠静默、热切清缓存、
     assert.equal(w.townBulletin.length, 0);
     await w.stop();
 
-    // 5) panel-1.6.1.js：点击「刷新信箱」时同步刷新已展开对话气泡
+    // 5) panel-1.6.2.js：点击「刷新信箱」时同步刷新已展开对话气泡
     class MiniNode {
       constructor(nodeType, tagName) {
         this.nodeType = nodeType;
@@ -1742,7 +1742,7 @@ test('城市 Buff 全量生效：rent_mult 房价调控、7 项 _bonus 数值结
     await moveTool.handler({ town: 'beijing' });
     assert.equal(w.state.home.monthly, 960);
 
-    // 7) panel-1.6.1.js 对 rent_mult 与后 5 项职业倍率正确输出中文芯片且无裸英文键
+    // 7) panel-1.6.2.js 对 rent_mult 与后 5 项职业倍率正确输出中文芯片且无裸英文键
     class MiniNode {
       constructor(nodeType, tagName) {
         this.nodeType = nodeType;

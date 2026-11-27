@@ -858,11 +858,13 @@ test('鱼市街摆摊自定义 effects 与买摊叠加五维/见识/体质/邻�
   }
 });
 
-test('审查回归：睡眠回精不再与 streetDecay 抵消，精力 +10% 街道显著高于无加成与 -10% 街道', async () => {
+test('审查回归：睡眠回精不再与 streetDecay 抵消，精力 +15%/+5% 街道显著高于无加成与 -10% 街道', async () => {
   const { BUILTIN_TOWN } = await import('../src/bridge.ts');
+  const yantan = BUILTIN_TOWN.streetProfiles.find((p) => p.name === '雁滩路');
   const nanbin = BUILTIN_TOWN.streetProfiles.find((p) => p.name === '南滨河路');
   const zhangye = BUILTIN_TOWN.streetProfiles.find((p) => p.name === '张掖路');
-  assert.equal(nanbin?.mods?.energy, 10);
+  assert.equal(yantan?.mods?.energy, 15);
+  assert.equal(nanbin?.mods?.energy, 5);
   assert.equal(zhangye?.mods?.energy, -10);
 
   const runSleep4h = (streetMods) => {
@@ -878,22 +880,31 @@ test('审查回归：睡眠回精不再与 streetDecay 抵消，精力 +10% 街�
   };
 
   const eNone = runSleep4h(undefined);
+  const eTop = runSleep4h(yantan.mods);
   const ePlus = runSleep4h(nanbin.mods);
   const eMinus = runSleep4h(zhangye.mods);
 
   assert.equal(eNone, 70, '无加成白昼睡 4 小时应回 40 点（30 -> 70）');
-  assert.equal(ePlus, 74, '精力 +10% 街道睡 4 小时应回 44 点（30 -> 74）');
+  assert.equal(eTop, 76, '精力 +15% 街道睡 4 小时应回 46 点（30 -> 76）');
+  assert.equal(ePlus, 72, '精力 +5% 街道睡 4 小时应回 42 点（30 -> 72）');
   assert.equal(eMinus, 66, '精力 -10% 街道睡 4 小时应回 36 点（30 -> 66）');
-  assert.ok(ePlus > eNone && eNone > eMinus);
+  assert.ok(eTop > ePlus && ePlus > eNone && eNone > eMinus);
 });
 
-test('审查回归：DEFAULT_STREET_PROFILES 结构完整且与服务端 worker.js 一致（不漂移）', async () => {
+test('审查回归：DEFAULT_STREET_PROFILES 结构完整（8 街含正宁路与体质加成）且与服务端 worker.js 一致（不漂移）', async () => {
   const { BUILTIN_TOWN } = await import('../src/bridge.ts');
-  assert.equal(BUILTIN_TOWN.streetProfiles.length, 4);
+  assert.equal(BUILTIN_TOWN.streetProfiles.length, 8);
+  const weights = { work: 1.6, energy: 1.5, food: 1.2, fun: 1.0, clean: 0.9, fit: 0.9, social: 0.8, know: 0.8 };
   for (const p of BUILTIN_TOWN.streetProfiles) {
     assert.ok(p.name && p.desc && p.desc.length >= 10, `街道画像不完整：${p.name}`);
     assert.ok(p.mods && Object.keys(p.mods).length > 0, `街道缺乏 mods：${p.name}`);
+    const net = Math.round(
+      Object.entries(p.mods).reduce((acc, [k, v]) => acc + Number(v) * (weights[k] ?? 1), 0) * 10,
+    ) / 10;
+    assert.ok(net >= 12 && net <= 15, `街道 ${p.name} 加权净分 ${net} 越出 [12, 15]`);
+    assert.equal(Boolean((p.mods.work ?? 0) > 0 && (p.mods.energy ?? 0) > 0), false, `街道 ${p.name} 不应工钱与精力同正`);
   }
+  assert.ok(BUILTIN_TOWN.streetProfiles.some((p) => p.name === '正宁路' && p.mods.fit === -5));
 
   const workerUrl = new URL('../../../2026-10-31-11-15-27/coopani-world-journey/cloud/sight-cf/src/worker.js', import.meta.url);
   if (existsSync(workerUrl)) {
@@ -907,6 +918,68 @@ test('审查回归：DEFAULT_STREET_PROFILES 结构完整且与服务端 worker.
       'life BUILTIN_TOWN.streetProfiles 与 worker.js DEFAULT_STREET_PROFILES 必须一字不差同步',
     );
   }
+});
+
+test('街道体质双边倍率：fit 加成同时作用于锻炼收益与日常退化，且打工按开工街道快照防切街套利', async () => {
+  const { BUILTIN_TOWN } = await import('../src/bridge.ts');
+  const nanbin = BUILTIN_TOWN.streetProfiles.find((p) => p.name === '南滨河路');
+  const zhengning = BUILTIN_TOWN.streetProfiles.find((p) => p.name === '正宁路');
+  const yantan = BUILTIN_TOWN.streetProfiles.find((p) => p.name === '雁滩路');
+  const qingyang = BUILTIN_TOWN.streetProfiles.find((p) => p.name === '庆阳路');
+
+  // 1) 锻炼增长（workout +3 fit / 60min）
+  const runWorkout = (streetMods) => {
+    const t0 = new Date('2026-11-23T02:00:00Z');
+    const t1 = new Date(t0.getTime() + 60 * 60_000);
+    const s = freshState(t0);
+    s.fitness = 25;
+    s.vitals = { food: 90, energy: 90, clean: 90, fun: 90, social: 90 };
+    const r = applyAct(s, 'workout', t0);
+    assert.equal(r.ok, true);
+    advance(s, t1, streetMods ? { streetMods } : undefined);
+    return Number(s.fitness.toFixed(4));
+  };
+  assert.equal(runWorkout(undefined), 27.98);
+  assert.equal(runWorkout(nanbin.mods), 28.433);
+  assert.equal(runWorkout(zhengning.mods), 27.829);
+
+  // 2) 24h 日常退化（0.02/h * 24 = 0.48）
+  const runDecay24h = (streetMods) => {
+    const t0 = new Date('2026-11-23T02:00:00Z');
+    const t24 = new Date(t0.getTime() + 24 * 3_600_000);
+    const s = freshState(t0);
+    s.fitness = 50;
+    advance(s, t24, streetMods ? { streetMods } : undefined);
+    return Number(s.fitness.toFixed(4));
+  };
+  const fNone = runDecay24h(undefined);
+  const fPlus = runDecay24h(nanbin.mods);
+  const fMinus = runDecay24h(zhengning.mods);
+  assert.equal(fNone, 49.52);
+  assert.equal(fPlus, 49.592);
+  assert.equal(fMinus, 49.496);
+  assert.ok(fPlus > fNone && fNone > fMinus);
+
+  // 3) 开工街道快照防收工前切街套利（护工日薪 210，无浮动）
+  const tStart = new Date('2026-11-23T02:00:00Z');
+  const tEnd = new Date(tStart.getTime() + 360 * 60_000);
+  const sLow = freshState(tStart);
+  sLow.job.certs = ['护工证'];
+  sLow.vitals = { food: 90, energy: 90, clean: 90, fun: 90, social: 90 };
+  const wLow = applyWork(sLow, '护工', tStart, 'home', yantan.mods);
+  assert.equal(wLow.ok, true);
+  // 收工时切到庆阳路（work +15%），仍按开工时的雁滩路（work -10%）结算
+  const resLow = advance(sLow, tEnd, { phase: 'home', streetMods: qingyang.mods });
+  assert.equal(resLow.completed[0].workEarned, 189);
+
+  const sHigh = freshState(tStart);
+  sHigh.job.certs = ['护工证'];
+  sHigh.vitals = { food: 90, energy: 90, clean: 90, fun: 90, social: 90 };
+  const wHigh = applyWork(sHigh, '护工', tStart, 'home', qingyang.mods);
+  assert.equal(wHigh.ok, true);
+  // 收工时切回雁滩路，仍按开工时的庆阳路（work +15%）结算
+  const resHigh = advance(sHigh, tEnd, { phase: 'home', streetMods: yantan.mods });
+  assert.equal(resHigh.completed[0].workEarned, 241);
 });
 
 test('审查回归：panelSnapshot().journey 与面板代码透出游轮舱位（seatId / seat / seatMult）', async () => {
