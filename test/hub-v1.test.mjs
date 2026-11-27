@@ -1133,8 +1133,8 @@ test('ensureHubAuth 409 竞态自愈 + panel-1.5.0 独立报错区 lf-alert 与 
     assert.equal(missed.ok, false);
     assert.equal(missed.code, 'LEGACY_UID_CLAIMED');
 
-    // 验证 panel-1.6.2.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
-    const panelMod = await import(`../web/panel-1.6.2.js?alertbuff=${Date.now()}`);
+    // 验证 panel-1.6.3.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
+    const panelMod = await import(`../web/panel-1.6.3.js?alertbuff=${Date.now()}`);
     const root = new FakeNode('div');
     root.ownerDocument = fakeDoc;
     fakeDoc.body.append(root);
@@ -1721,7 +1721,17 @@ test('城市 Buff 全量生效：rent_mult 房价调控、7 项 _bonus 数值结
     assert.match(potatoStore.text, /做好了 2 份/, '非面食菜谱不应吃到 noodle_craft_bonus');
 
     const potatoEat = await cookTool.handler({ action: 'cook', recipe: '椒盐烤土豆', mode: 'eat' });
-    assert.match(potatoEat.text, /娱乐 \+13/, '烤土豆基础娱乐 8 + food_mood_bonus 3 + craft_mood_bonus 2 = 13');
+    const eatQualBonus = potatoEat.text.includes('【臻品】')
+      ? 16
+      : potatoEat.text.includes('【精品】')
+        ? 15
+        : potatoEat.text.includes('【良品】')
+          ? 14
+          : 13;
+    assert.ok(
+      potatoEat.text.includes(`娱乐 +${eatQualBonus}`),
+      `烤土豆基础娱乐 8×品相 + food_mood_bonus 3 + craft_mood_bonus 2 应为 +${eatQualBonus}，实得：${potatoEat.text}`,
+    );
     w.state.activity = null;
 
     // 写日记验证 writing_mood_bonus = 2

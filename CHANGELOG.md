@@ -1,5 +1,20 @@
 # 变更记录
 
+## 1.6.3 — 2026-11-28（心情机制显性化 + 30 职业/5 专属工坊/四档产出品质 + 生病静养与每日照料 + 联动与审计修复）
+
+- **好心情/坏心情与她惦记的内容显性化**（`src/state.ts`、`src/town-life.ts`、`src/world.ts`、`web/panel-1.6.3.js`）：
+  - `moodSummary()` 收口为心情效果唯一真源（清除未消费的死字段），混合好坏心情时统一按净权重计算倍率与文案说明：正向（`1.04x` / `1.08x`）提高工作报酬、学习效率与休息回复，负向降低社交/动作回复效率；在工作结薪、学习、休息与面板中直出心情影响标签。
+  - 扩充「她惦记的」常态与意向表达密度，合并展示主动留意事项、想买/想办目标、想去城市（接 `journey-public.json`）、悬着未决与已约定事项。
+- **30 职业扩容、熟练度倍率与四档产出品质**（`src/jobs.ts`、`src/town-life.ts`、`src/farm.ts`、`src/recipes.ts`、`src/state.ts`、`describe.json`）：
+  - 职业表由 20 扩至 30 个（零鱼/海鲜词守卫），考证目录新增「摄影证」（共 10 张证），同步更新 `describe.json` 与 `ENV_PROMPT.md`。
+  - 工作引入熟练度倍率 `skillPayMultiplier()`（`1.0x → 1.5x`）与四档产出品质（`普通 / 良品 / 精品 / 臻品`）：高熟练度提高时薪与高品阶概率，摆摊与存菜按品质折价/增益；下厨 `applyCookRecipe()` 与存菜 `CookedDishItem` 同步品质分级并优先取用高品质菜肴。
+  - 「职业与工坊」面板（`web/panel-1.6.3.js`）升级为 5 个只读工坊子页签（`烹饪 / 摄影 / 手作 / 写作 / 驾驶与执照`），统一展示熟练度、倍率与最近高品质产出。
+- **生病静养系统与每日照料闭环**（`src/state.ts`、`src/world.ts`、`web/panel-1.6.3.js`、`test/stage23.test.mjs`）：
+  - 新增 `overwork`（连续高强度劳累触发，36 小时）与 `cold`（受凉，72 小时）生病静养状态，与 `injury` 等共同接入统一 `sickRefusal()` 门禁：生病期间禁止出工、考证、出门与逛集市，仅允许在家照料菜园/牧场或休养；离线追补期间触发并走完的 `overwork` 会记入 `pendingNotices` 提醒。
+  - 新增 `applyUserCare()` 与「此刻」面板每日照料卡片（每日 1 次：吃药 / 炖汤 / 陪护，加速恢复；多病症并存时仅当全部清空才宣告痊愈），广播 `life-public.json` 增加 `sickUntil` / `sickReason` 供 `journey` 联动拦截；修复照料按钮回调误写 `apply(res)` 导致 `ReferenceError` 的 P0 缺陷，并用无头 DOM 真点击守卫。
+- **跨城与发版校验修复**（`src/bridge.ts`、`web/panel-1.6.3.js`、`test/hub-v1.test.mjs`、`test/smoke.mjs`）：
+  - 面板 `web/panel-1.6.3.js` 与 `package.json` / `cortico.webUiClient` 完成 1.6.3 三同步，补齐 8 街加权平衡与全量回归用例。
+
 ## 1.6.2 — 2026-11-27（兰州 8 条街道加权平衡扩容 + 体质街道双边倍率 + 打工开工街道快照）
 
 - **兰州街道扩容至 8 条并按加权预算平衡**（`src/bridge.ts`、`test/stage23.test.mjs`、`sight-cf/src/worker.js`）：

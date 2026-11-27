@@ -17,7 +17,11 @@ import {
   type PantryItem,
 } from './farm.ts';
 import { CERTS, JOBS, TIER_LABEL, certOf, type JobTier } from './jobs.ts';
-import { applyYieldBonus, EQUIP_CATALOG, normalizeMoodBonus, SKILL_DOMAIN_LABEL, findEquip, type SkillDomain } from './town-life.ts';
+import {
+  applyYieldBonus, EQUIP_CATALOG, normalizeMoodBonus, SKILL_DOMAIN_LABEL, findEquip,
+  jobOutputOf, qualityOdds, rollWorkQuality, skillPayMultiplier,
+  type OutputQualityId, type SkillDomain, type WorkOutputItem,
+} from './town-life.ts';
 
 export interface RecipeIngredientReq {
   label: string;
@@ -387,6 +391,7 @@ export interface RecipeHostState {
   } | null;
   tellable: { id: string; text: string; at: string; said: boolean }[];
   moodlets: { id: string; source: string; text: string; kind: 'good' | 'bad'; expiresAt: string }[];
+  workOutputs?: WorkOutputItem[];
   updatedAt: string;
 }
 
@@ -489,8 +494,21 @@ export function applyCookRecipe(
   recipeQuery: string,
   mode: 'eat' | 'store',
   now: Date,
-  opts: { noodleBonus?: number; foodMoodBonus?: number; craftMoodBonus?: number } = {},
-): { ok: boolean; reason?: string; recipe?: RecipeDef; mode?: 'eat' | 'store'; paid: number; cash: number; usedSources: string[]; dishQty?: number; foodGain?: number; funGain?: number } {
+  opts: { noodleBonus?: number; foodMoodBonus?: number; craftMoodBonus?: number; roll?: number } = {},
+): {
+  ok: boolean;
+  reason?: string;
+  recipe?: RecipeDef;
+  mode?: 'eat' | 'store';
+  paid: number;
+  cash: number;
+  usedSources: string[];
+  dishQty?: number;
+  foodGain?: number;
+  funGain?: number;
+  quality?: OutputQualityId;
+  qualityLabel?: string;
+} {
   const recipe = findRecipe(recipeQuery);
   if (!recipe) {
     const sample = RECIPES.slice(0, 6).map((r) => r.name).join('、');
@@ -527,6 +545,20 @@ export function applyCookRecipe(
     unitCostSum += res.totalUnitCost;
   }
 
+  const cookExp = state.skills?.cooking ?? 0;
+  const cookTrained = state.trained?.cooking ?? 0;
+  const nowMs = now.getTime();
+  const activeMoods = state.moodlets.filter((m) => Date.parse(m.expiresAt) > nowMs);
+  const goodCnt = activeMoods.filter((m) => m.kind === 'good').length;
+  const badCnt = activeMoods.filter((m) => m.kind === 'bad').length;
+  const moodPolarity: 'good' | 'bad' | 'neutral' = goodCnt > badCnt ? 'good' : (badCnt > 0 ? 'bad' : 'neutral');
+  const cookQual = rollWorkQuality(cookExp, {
+    trainedCount: cookTrained,
+    moodPolarity,
+    roll: opts.roll,
+  });
+  const qualFoodFunFactor = 1 + (cookQual.valueMult - 1) * 0.45;
+
   state.skills = state.skills ?? {};
   state.skills.cooking = Math.min(100, (state.skills.cooking ?? 0) + 1.5);
   if (recipe.fitnessGain && recipe.fitnessGain > 0) {
@@ -538,8 +570,8 @@ export function applyCookRecipe(
   const noodlePct = noodleActive
     ? (Math.abs(noodleRaw) < 1 ? Math.max(-0.5, Math.min(2, noodleRaw)) : Math.max(-0.5, Math.min(2, noodleRaw / 100)))
     : 0;
-  const effFoodGain = Math.max(1, Math.round(recipe.foodGain * (1 + noodlePct)));
-  const effBaseFunGain = Math.max(1, Math.round(recipe.funGain * (1 + noodlePct)));
+  const effFoodGain = Math.max(1, Math.round(recipe.foodGain * (1 + noodlePct) * qualFoodFunFactor));
+  const effBaseFunGain = Math.max(1, Math.round(recipe.funGain * (1 + noodlePct) * qualFoodFunFactor));
   const foodMoodDelta = normalizeMoodBonus(opts.foodMoodBonus);
   const craftMoodDelta = normalizeMoodBonus(opts.craftMoodBonus);
 
@@ -562,6 +594,8 @@ export function applyCookRecipe(
       ...(recipe.energyGain ? { energyGain: recipe.energyGain } : {}),
       ...(recipe.cleanGain ? { cleanGain: recipe.cleanGain } : {}),
       tier: recipe.tier,
+      quality: cookQual.id,
+      qualityLabel: cookQual.label,
       cookedAt: now.toISOString(),
     });
     state.moodlets = state.moodlets.filter((m) => m.source !== 'cook');
@@ -572,9 +606,9 @@ export function applyCookRecipe(
       kind: 'good',
       expiresAt: new Date(now.getTime() + 4 * 3_600_000).toISOString(),
     });
-    pushMemory(state, `用${usedSources.join('、')}做了 ${yieldQty} 份「${recipe.name}」，收进成品菜格留着吃或拿去鱼市街摆摊。`, now);
+    pushMemory(state, `用${usedSources.join('、')}做了 ${yieldQty} 份【${cookQual.label}】「${recipe.name}」，收进成品菜格留着吃或拿去鱼市街摆摊。`, now);
     state.updatedAt = now.toISOString();
-    return { ok: true, recipe, mode: 'store', paid: recipe.fuelCost, cash: state.money.cash, usedSources, dishQty: yieldQty, foodGain: effFoodGain, funGain: effBaseFunGain };
+    return { ok: true, recipe, mode: 'store', paid: recipe.fuelCost, cash: state.money.cash, usedSources, dishQty: yieldQty, foodGain: effFoodGain, funGain: effBaseFunGain, quality: cookQual.id, qualityLabel: cookQual.label };
   }
 
   // mode === 'eat'：进入耗时烹饪活动，按分钟渐进结算高饱腹高心情
@@ -586,7 +620,7 @@ export function applyCookRecipe(
   state.activity = {
     kind: 'act',
     id: 'cook',
-    label: `制作并享用「${recipe.name}」`,
+    label: `制作并享用「${recipe.name}」（${cookQual.label}）`,
     from: now.toISOString(),
     until: untilIso,
     minutes: m,
@@ -602,9 +636,9 @@ export function applyCookRecipe(
     mood: { text: recipe.moodText, kind: 'good', hours: 4 },
     scene: `家里灶台前（用${usedSources.join('、')}做${recipe.name}）`,
   };
-  pushMemory(state, `用${usedSources.join('、')}开火做「${recipe.name}」。`, now);
+  pushMemory(state, `用${usedSources.join('、')}开火做了【${cookQual.label}】「${recipe.name}」。`, now);
   state.updatedAt = now.toISOString();
-  return { ok: true, recipe, mode: 'eat', paid: 0, cash: state.money.cash, usedSources, foodGain: effFoodGain, funGain: effFunGain };
+  return { ok: true, recipe, mode: 'eat', paid: 0, cash: state.money.cash, usedSources, foodGain: effFoodGain, funGain: effFunGain, quality: cookQual.id, qualityLabel: cookQual.label };
 }
 
 export function applyEatCookedDish(
@@ -624,15 +658,26 @@ export function applyEatCookedDish(
   if (Number.isFinite(busyUntil) && busyUntil > now.getTime()) {
     return { ok: false, reason: `这会儿正忙着「${state.activity?.label ?? '休息'}」，腾出手再热饭吃。` };
   }
+  const qRank = (qual?: string) => (qual === 'exquisite' ? 3 : qual === 'fine' ? 2 : qual === 'good' ? 1 : 0);
   const q = String(dishQuery || '').trim().toLowerCase();
-  const target = q
-    ? dishes.find((d) => d.qty > 0 && (d.name.toLowerCase() === q || d.recipeId.toLowerCase() === q || d.name.toLowerCase().includes(q)))
-    : dishes.find((d) => d.qty > 0);
+  const matching = dishes
+    .filter((d) => d.qty > 0 && (!q || d.name.toLowerCase() === q || d.recipeId.toLowerCase() === q || d.name.toLowerCase().includes(q)))
+    .sort((a, b) => {
+      if (q) {
+        const ae = a.name.toLowerCase() === q || a.recipeId.toLowerCase() === q ? 0 : 1;
+        const be = b.name.toLowerCase() === q || b.recipeId.toLowerCase() === q ? 0 : 1;
+        if (ae !== be) return ae - be;
+      }
+      return qRank(b.quality) - qRank(a.quality);
+    });
+  const target = matching[0];
   if (!target) {
-    return { ok: false, reason: `成品菜格里没找到「${dishQuery}」，现有：${dishes.map((d) => `${d.name}×${d.qty}`).join('、')}。` };
+    return { ok: false, reason: `成品菜格里没找到「${dishQuery}」，现有：${dishes.map((d) => `${d.qualityLabel ? `【${d.qualityLabel}】` : ''}${d.name}×${d.qty}`).join('、')}。` };
   }
 
-  consumeCookedDish(dishes, 1, target.name);
+  consumeCookedDish(dishes, 1, target.id);
+  const qualTag = target.qualityLabel ? `【${target.qualityLabel}】` : '';
+  const displayName = `${qualTag}${target.name}`;
   const foodMoodDelta = normalizeMoodBonus(opts.foodMoodBonus);
   const effFunGain = Math.max(0, target.funGain + foodMoodDelta);
   const m = 20;
@@ -641,7 +686,7 @@ export function applyEatCookedDish(
   state.activity = {
     kind: 'act',
     id: 'eat',
-    label: `加热吃「${target.name}」`,
+    label: `加热吃「${displayName}」`,
     from: now.toISOString(),
     until: new Date(now.getTime() + m * 60_000).toISOString(),
     minutes: m,
@@ -651,18 +696,18 @@ export function applyEatCookedDish(
       energy: (target.energyGain ?? 0) / m,
       clean: (target.cleanGain ?? 0) / m,
     },
-    mood: { text: `热了一碗之前做的「${target.name}」，省事又合胃口`, kind: 'good', hours: 3 },
-    scene: `家里餐桌前（热吃自制${target.name}）`,
+    mood: { text: `热了一碗之前做的「${displayName}」，省事又合胃口`, kind: 'good', hours: 3 },
+    scene: `家里餐桌前（热吃自制${displayName}）`,
   };
-  pushMemory(state, `热了成品菜格里的「${target.name}」当一顿正餐。`, now);
+  pushMemory(state, `热了成品菜格里的「${displayName}」当一顿正餐。`, now);
   state.updatedAt = now.toISOString();
-  return { ok: true, dishName: target.name, minutes: m };
+  return { ok: true, dishName: displayName, minutes: m };
 }
 
-function calcCertChance(knowledge: number, need: number): number {
-  if (!(need > 0)) return 0.9;
-  const p = 0.15 + 0.75 * (knowledge / need);
-  return Math.max(0.15, Math.min(0.9, p));
+function calcCertChance(knowledge: number, need: number, moodDelta = 0): number {
+  const base = !(need > 0) ? 0.9 : Math.max(0.15, Math.min(0.9, 0.15 + 0.75 * (knowledge / need)));
+  if (!moodDelta) return base;
+  return Math.max(0.1, Math.min(0.95, base + moodDelta));
 }
 
 export interface CareerOverview {
@@ -687,6 +732,9 @@ export interface CareerOverview {
     label: string;
     exp: number;
     trained: number;
+    payMult: number;
+    payBonusPct: number;
+    odds: Record<OutputQualityId, number>;
   }[];
   gear: {
     id: string;
@@ -701,11 +749,15 @@ export interface CareerOverview {
     name: string;
     tier: JobTier;
     tierLabel: string;
+    domain: SkillDomain;
     domainLabel: string;
+    basePay: number;
     pay: number;
+    hourlyPay: number;
     minutes: number;
     place: string;
     materialCost: number;
+    outputName: string;
     qualified: boolean;
     missing: string[];
   }[];
@@ -728,36 +780,57 @@ export interface CareerOverview {
   }[];
   pantrySummary: { itemId: string; name: string; qty: number; kind: string }[];
   cookedDishes: CookedDishItem[];
+  workOutputs: WorkOutputItem[];
+  hasLicense: boolean;
 }
 
-export function buildCareerOverview(state: {
-  job: { what: string; id: string; daily: number; certs: string[]; days: number };
-  knowledge: number;
-  skills?: Partial<Record<SkillDomain, number>>;
-  trained?: Partial<Record<SkillDomain, number>>;
-  gear?: string[];
-  pantry: PantryItem[];
-  cookedDishes?: CookedDishItem[];
-}): CareerOverview {
+export function buildCareerOverview(
+  state: {
+    job: { what: string; id: string; daily: number; certs: string[]; days: number };
+    knowledge: number;
+    skills?: Partial<Record<SkillDomain, number>>;
+    trained?: Partial<Record<SkillDomain, number>>;
+    gear?: string[];
+    moodlets?: { kind: 'good' | 'bad'; expiresAt: string }[];
+    pantry: PantryItem[];
+    cookedDishes?: CookedDishItem[];
+    workOutputs?: WorkOutputItem[];
+  },
+  now: Date = new Date(),
+): CareerOverview {
   const ownedCerts = new Set(state.job?.certs ?? []);
   const ownedGear = new Set(state.gear ?? []);
   const know = Math.round((state.knowledge ?? 0) * 10) / 10;
+  const nowMs = now.getTime();
+  const activeMoods = (state.moodlets ?? []).filter((m) => Date.parse(m.expiresAt) > nowMs);
+  const goodMoodCnt = activeMoods.filter((m) => m.kind === 'good').length;
+  const badMoodCnt = activeMoods.filter((m) => m.kind === 'bad').length;
+  const moodPolarity: 'good' | 'bad' | 'neutral' = goodMoodCnt > badMoodCnt ? 'good' : (badMoodCnt > 0 ? 'bad' : 'neutral');
+  const certMoodDelta = moodPolarity === 'good' ? 0.08 : (moodPolarity === 'bad' ? -0.08 : 0);
 
   const certs = CERTS.map((c) => ({
     name: c.name,
     owned: ownedCerts.has(c.name),
     price: c.price,
     need: c.need,
-    chancePct: Math.round(calcCertChance(know, c.need) * 100),
+    chancePct: Math.round(calcCertChance(know, c.need, certMoodDelta) * 100),
     unlockJobs: JOBS.filter((j) => j.cert === c.name).map((j) => j.name),
   }));
 
-  const skills = (Object.keys(SKILL_DOMAIN_LABEL) as SkillDomain[]).map((domain) => ({
-    domain,
-    label: SKILL_DOMAIN_LABEL[domain],
-    exp: Math.round(Number(state.skills?.[domain] ?? 0) * 10) / 10,
-    trained: Math.round(Number(state.trained?.[domain] ?? 0)),
-  }));
+  const skills = (Object.keys(SKILL_DOMAIN_LABEL) as SkillDomain[]).map((domain) => {
+    const exp = Math.round(Number(state.skills?.[domain] ?? 0) * 10) / 10;
+    const trained = Math.round(Number(state.trained?.[domain] ?? 0));
+    const payMult = skillPayMultiplier(exp);
+    return {
+      domain,
+      label: SKILL_DOMAIN_LABEL[domain],
+      exp,
+      trained,
+      payMult,
+      payBonusPct: Math.round((payMult - 1) * 100),
+      odds: qualityOdds(exp, { trainedCount: trained, moodPolarity }),
+    };
+  });
 
   const gear = EQUIP_CATALOG.map((e) => ({
     id: e.id,
@@ -781,17 +854,25 @@ export function buildCareerOverview(state: {
     if (j.days && state.job.days < j.days) {
       missing.push(`需出工满 ${j.days} 天(差 ${j.days - state.job.days} 天)`);
     }
+    const domainExp = Number(state.skills?.[j.domain] ?? 0);
+    const effPay = Math.max(1, Math.round(j.pay * skillPayMultiplier(domainExp)));
+    const hourlyPay = Math.max(1, Math.round(effPay / Math.max(0.5, j.minutes / 60)));
+    const outSpec = jobOutputOf(j.id);
     const placeLabel = j.place === 'anywhere' ? '随地可接' : j.place === 'destination' ? '外地短活' : '本地';
     return {
       id: j.id,
       name: j.name,
       tier: j.tier,
       tierLabel: TIER_LABEL[j.tier],
+      domain: j.domain,
       domainLabel: SKILL_DOMAIN_LABEL[j.domain] ?? j.domain,
-      pay: j.pay,
+      basePay: j.pay,
+      pay: effPay,
+      hourlyPay,
       minutes: j.minutes,
       place: placeLabel,
       materialCost: j.materialCost ?? 0,
+      outputName: outSpec?.name ?? '',
       qualified: missing.length === 0,
       missing,
     };
@@ -841,5 +922,7 @@ export function buildCareerOverview(state: {
     recipes,
     pantrySummary: [...pantryMap.values()],
     cookedDishes: [...(state.cookedDishes ?? [])],
+    workOutputs: [...(state.workOutputs ?? [])].slice(-40).reverse(),
+    hasLicense: ownedCerts.has('驾照'),
   };
 }

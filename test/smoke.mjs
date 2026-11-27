@@ -1775,7 +1775,7 @@ console.log('\n[57] 菜谱分级（烤红薯免证 vs 厨师招牌菜）、成�
 
   // 职业面板概览聚合检查
   const ov = buildCareerOverview(s);
-  ok(ov.certs.length === 9 && ov.certs.find((c) => c.name === '厨师证')?.owned === true, 'buildCareerOverview 准确汇总 9 张证与持有状态');
+  ok(ov.certs.length === 10 && ov.certs.find((c) => c.name === '厨师证')?.owned === true, 'buildCareerOverview 准确汇总 10 张证与持有状态');
   ok(ov.recipes.find((r) => r.id === 'roast_sweet_potato')?.unlocked === true, '家常简食在职业面板保持解锁');
   ok(ov.recipes.find((r) => r.id === 'tomato_beef_stew')?.canCook === true, '持证且余料充足时厨师招牌菜标记材料齐可做');
 }

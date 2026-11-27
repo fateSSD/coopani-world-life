@@ -77,7 +77,8 @@ import {
   SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, findCourse, findEquip,
   rollWorkGrade, solarTermOf, streetWindowOf, marketCatalogOf, isLateNightQuiet, buildDreamSlice,
   applyYieldBonus, normalizeMoodBonus,
-  type SkillDomain, type SolarTermInfo, type StreetWindow, type MarketItem,
+  OUTPUT_QUALITY_META, jobOutputOf, qualityOdds, rollWorkQuality, skillPayMultiplier,
+  type OutputQualityId, type SkillDomain, type SolarTermInfo, type StreetWindow, type MarketItem, type WorkOutputItem,
 } from './town-life.ts';
 import {
   HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_SIGNUP_FEE, LEASE_MONTHLY_RENT,
@@ -111,7 +112,7 @@ import {
 } from './recipes.ts';
 
 export type {
-  SkillDomain, SolarTermInfo, StreetWindow, MarketItem,
+  SkillDomain, SolarTermInfo, StreetWindow, MarketItem, OutputQualityId, WorkOutputItem,
   FarmState, FarmPlot, FarmPlotView, PantryItem, CookedDishItem, IngredientKind,
   StallCategory, StallRecord, StallPlanResult, SeedDef,
   AnimalGroup, AnimalDef, RanchPen, RanchState, RanchPenView,
@@ -121,6 +122,7 @@ export type {
 };
 export {
   SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, solarTermOf, streetWindowOf, rollWorkGrade,
+  OUTPUT_QUALITY_META, jobOutputOf, qualityOdds, rollWorkQuality, skillPayMultiplier,
   applyYieldBonus, normalizeMoodBonus,
   HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_SIGNUP_FEE, LEASE_MONTHLY_RENT,
   SEEDS, STALL_CATEGORY_LABEL, STALL_RULES_GUIDE,
@@ -170,6 +172,68 @@ export interface Moodlet {
   kind: 'good' | 'bad';
   /** ISO8601。到点自己失效，不需要谁来清。 */
   expiresAt: string;
+}
+
+/** 好坏心情此刻汇总出来的实际生效效果（不画进度条，只明算机制权重）。 */
+export interface MoodEffectSummary {
+  polarity: 'good' | 'bad' | 'neutral';
+  goodCount: number;
+  badCount: number;
+  decayMult: Partial<Record<VitalKey, number>>;
+  studyMult: number;
+  fitMult: number;
+  certDelta: number;
+  workScoreDelta: number;
+  label: string;
+  effectsText: string;
+}
+
+/** 汇总当前仍未过期的情绪，算出好/坏心情对衰减、读书、锻炼、考证与出工的影响。 */
+export function moodSummary(state: LifeState, now: Date): MoodEffectSummary {
+  const nowMs = now.getTime();
+  const active = state.moodlets.filter((m) => Date.parse(m.expiresAt) > nowMs);
+  const goodCount = active.filter((m) => m.kind === 'good').length;
+  const badCount = active.filter((m) => m.kind === 'bad').length;
+  if (goodCount > badCount) {
+    return {
+      polarity: 'good',
+      goodCount,
+      badCount,
+      decayMult: { fun: 0.85, social: 0.85 },
+      studyMult: 1.15,
+      fitMult: 1.15,
+      certDelta: 0.08,
+      workScoreDelta: 0.14,
+      label: '心情不错',
+      effectsText: '娱乐/社交衰减 -15% · 读书/锻炼 +15% · 考证 +8% · 出工更易出彩',
+    };
+  }
+  if (badCount > 0 && badCount >= goodCount) {
+    return {
+      polarity: 'bad',
+      goodCount,
+      badCount,
+      decayMult: { energy: 1.15, fun: 1.15 },
+      studyMult: 0.85,
+      fitMult: 1,
+      certDelta: -0.08,
+      workScoreDelta: -0.12,
+      label: '心情低落',
+      effectsText: '精力/娱乐衰减 +15% · 读书 -15% · 考证 -8% · 出工更易失手',
+    };
+  }
+  return {
+    polarity: 'neutral',
+    goodCount,
+    badCount,
+    decayMult: {},
+    studyMult: 1,
+    fitMult: 1,
+    certDelta: 0,
+    workScoreDelta: 0,
+    label: '平稳',
+    effectsText: '',
+  };
 }
 
 /** 得过一阵的状态。有起止，不是布尔开关。 */
@@ -646,6 +710,19 @@ export interface LifeState {
   loans: LoanRecord[];
   /** 用户日常零花钱赠与记录与今日累计。 */
   giftCash: GiftCashState;
+  /** 工作产出物品质仓库（普通 / 良品 / 精品 / 臻品）。 */
+  workOutputs: WorkOutputItem[];
+  /** 生病静养期间的用户每日照料记录（每天限一次）。 */
+  sickCare: { dayKey: string; count: number; history: SickCareRecord[] };
+}
+
+export interface SickCareRecord {
+  id: string;
+  at: string;
+  kind: CareItemId;
+  label: string;
+  hoursCut: number;
+  recovered: boolean;
 }
 
 export interface PendingNotice {
@@ -898,8 +975,154 @@ export interface AdvanceExt {
   seat?: string;
   journeyCity?: string;
   gradeRoll?: number;
+  qualityRoll?: number;
   dreamRoll?: number;
   streetMods?: StreetMods;
+}
+
+/** 必须闭门静养、禁止出家门的病症 id。 */
+export const SICK_REST_IDS = new Set<Condition['id']>(['cold', 'overwork']);
+
+/** 闭门生病静养期间允许在家里做的生活动作；其馀外出类动作一律拦下。 */
+export const SICK_HOME_ALLOWED_ACTS = new Set([
+  'wake', 'cancel', 'sleep', 'nap', 'rest', 'instant', 'cook', 'wash', 'tidy', 'chat', 'study', 'play', 'miniature',
+]);
+
+export type CareItemId = 'medicine' | 'soup' | 'towel';
+
+export interface CareItemDef {
+  id: CareItemId;
+  label: string;
+  hoursCut: number;
+  energyGain: number;
+  foodGain: number;
+  cleanGain: number;
+  funGain: number;
+  memoryText: string;
+  note: string;
+}
+
+export const CARE_ITEMS: readonly CareItemDef[] = [
+  {
+    id: 'medicine',
+    label: '买药送来',
+    hoursCut: 18,
+    energyGain: 12,
+    foodGain: 4,
+    cleanGain: 4,
+    funGain: 12,
+    memoryText: '他买了退烧感冒药和温水送过来，药劲上来浑身松快了不少。',
+    note: '缩短病程 18 小时 · 精力+12 · 心情+12',
+  },
+  {
+    id: 'soup',
+    label: '熬热姜枣粥',
+    hoursCut: 12,
+    energyGain: 10,
+    foodGain: 28,
+    cleanGain: 2,
+    funGain: 16,
+    memoryText: '他蹲在灶台旁慢慢熬了锅热乎乎的红糖姜枣粥端到床边。',
+    note: '缩短病程 12 小时 · 饱腹+28 · 心情+16',
+  },
+  {
+    id: 'towel',
+    label: '温毛巾陪歇着',
+    hoursCut: 10,
+    energyGain: 18,
+    foodGain: 2,
+    cleanGain: 18,
+    funGain: 14,
+    memoryText: '他拧了热毛巾敷额头又倒温水陪在床边照看，安心睡了一会儿。',
+    note: '缩短病程 10 小时 · 精力+18 · 清爽+18 · 心情+14',
+  },
+];
+
+export function activeSickCondition(state: LifeState, now: Date): Condition | null {
+  const nowMs = now.getTime();
+  return state.conditions.find((c) => SICK_REST_IDS.has(c.id) && Date.parse(c.until) > nowMs) ?? null;
+}
+
+export function isHouseboundSick(state: LifeState, now: Date): Condition | null {
+  return activeSickCondition(state, now);
+}
+
+/** 若正处于感冒/过劳闭门静养期，返回拒绝对话；未生病返回 null。 */
+export function sickRefusal(state: LifeState, now: Date, what: string): string | null {
+  const sick = isHouseboundSick(state, now);
+  if (!sick) return null;
+  const nowMs = now.getTime();
+  const hoursLeft = Math.max(1, Math.ceil((Date.parse(sick.until) - nowMs) / 3_600_000));
+  const activeConds = state.conditions
+    .filter((c) => Date.parse(c.until) > nowMs)
+    .map((c) => c.text)
+    .join('；');
+  return `你这会儿正在生病静养（${activeConds || sick.text}，还剩约 ${hoursLeft} 小时），出不了家门「${what}」——最多只能在家歇着或照料自家菜园动植物。`;
+}
+
+export function normWorkOutputs(raw: unknown): WorkOutputItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: WorkOutputItem[] = [];
+  for (const x of raw) {
+    if (!x || typeof x !== 'object') continue;
+    const o = x as Partial<WorkOutputItem>;
+    const jobId = String(o.jobId ?? '').trim();
+    const name = String(o.name ?? '').trim();
+    const quality: OutputQualityId = (o.quality === 'good' || o.quality === 'fine' || o.quality === 'exquisite')
+      ? o.quality
+      : 'common';
+    if (!jobId || !name) continue;
+    const meta = OUTPUT_QUALITY_META[quality];
+    out.push({
+      id: typeof o.id === 'string' && o.id ? o.id : `wo-${out.length + 1}`,
+      jobId,
+      jobName: typeof o.jobName === 'string' && o.jobName ? o.jobName : jobId,
+      domain: (typeof o.domain === 'string' && o.domain in SKILL_DOMAIN_LABEL ? o.domain : 'craft') as SkillDomain,
+      name,
+      quality,
+      qualityLabel: typeof o.qualityLabel === 'string' && o.qualityLabel ? o.qualityLabel : meta.label,
+      value: Math.max(1, Math.round(Number(o.value) || 10)),
+      count: Math.max(1, Math.round(Number(o.count) || 1)),
+      createdAt: typeof o.createdAt === 'string' ? o.createdAt : '',
+    });
+  }
+  return out.slice(-40);
+}
+
+export function addWorkOutput(
+  list: WorkOutputItem[],
+  item: Omit<WorkOutputItem, 'id' | 'count'>,
+): WorkOutputItem {
+  const hit = list.find((x) => x.jobId === item.jobId && x.name === item.name && x.quality === item.quality);
+  if (hit) {
+    hit.count += 1;
+    hit.value = Math.max(hit.value, item.value);
+    hit.createdAt = item.createdAt;
+    return hit;
+  }
+  const created: WorkOutputItem = {
+    id: `wo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    ...item,
+    count: 1,
+  };
+  list.push(created);
+  if (list.length > 40) list.splice(0, list.length - 40);
+  return created;
+}
+
+export function normSickCare(raw: unknown): { dayKey: string; count: number; history: SickCareRecord[] } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { dayKey: '', count: 0, history: [] };
+  const o = raw as { dayKey?: unknown; count?: unknown; history?: unknown };
+  const history = Array.isArray(o.history)
+    ? o.history
+      .filter((x): x is SickCareRecord => Boolean(x && typeof x === 'object' && typeof (x as any).kind === 'string'))
+      .slice(-20)
+    : [];
+  return {
+    dayKey: typeof o.dayKey === 'string' ? o.dayKey : '',
+    count: Math.max(0, Math.round(Number(o.count) || 0)),
+    history,
+  };
 }
 
 /** 街道对本城日常五维（及体质退化）衰减的乘数：+10% 增益 -> 衰减率 ×0.90；-10% 减益 -> 衰减率 ×1.10。 */
@@ -1216,6 +1439,8 @@ export function freshState(now: Date = new Date()): LifeState {
     settledDeals: [],
     loans: [],
     giftCash: freshGiftCash(now),
+    workOutputs: [],
+    sickCare: { dayKey: '', count: 0, history: [] },
   };
 }
 
@@ -1469,6 +1694,8 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     settledDeals: normSettledDeals(s.settledDeals),
     loans: normLoans(s.loans, now),
     giftCash: normGiftCash(s.giftCash, now),
+    workOutputs: normWorkOutputs(s.workOutputs),
+    sickCare: normSickCare(s.sickCare),
   };
 }
 
@@ -1646,6 +1873,7 @@ export interface CompletedTask {
   shiftSummary?: string;
   errandEmployer?: string;
   loanGarnished?: LoanGarnishResult;
+  outputItem?: WorkOutputItem;
 }
 
 export interface AdvanceResult {
@@ -1780,6 +2008,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
 
   let actHours = 0;
   const completed: CompletedTask[] = [];
+  const workCaught: Condition[] = [];
   const actTask = state.activity && state.activity.id !== 'sleep' ? state.activity : null;
   if (actTask) {
     const aFrom = Date.parse(actTask.from);
@@ -1793,6 +2022,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
 
       const hasStomach = state.conditions.some((c) => c.id === 'stomach');
       const hasHangover = state.conditions.some((c) => c.id === 'hangover');
+      const activeMood = moodSummary(state, new Date(fromMs));
       const reliefOf = (key: VitalKey): number =>
         key === 'energy' ? 1 : (HOME_TIER_RELIEF[state.home.tier] ?? 1);
 
@@ -1815,7 +2045,10 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
       }
 
       if (actTask.knowPerMin && actTask.knowPerMin > 0 && state.knowledge < KNOWLEDGE_MAX) {
-        state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + actTask.knowPerMin * actualMins * streetGainFactor(sMods, 'know'));
+        state.knowledge = Math.min(
+          KNOWLEDGE_MAX,
+          state.knowledge + actTask.knowPerMin * actualMins * streetGainFactor(sMods, 'know') * activeMood.studyMult,
+        );
       }
 
       /* 按流逝分钟扣钱（整数元累进，不留浮点尾巴）。 */
@@ -1848,9 +2081,10 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
           let gradeText: string | undefined;
           let gradeKind: ReturnType<typeof rollWorkGrade>['grade'] | undefined;
 
+          const workMood = !outOfCash && def ? moodSummary(state, endAt) : null;
           if (outOfCash) {
             earned = Math.round((actTask.workPay ?? 0) * ratio * 0.6);
-          } else if (def?.hasVariance) {
+          } else if (def?.hasVariance && workMood) {
             const exp = def.domain ? (state.skills[def.domain] ?? 0) : 0;
             const trainedCnt = def.domain ? (state.trained[def.domain] ?? 0) : 0;
             const endMs = endAt.getTime();
@@ -1861,8 +2095,9 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
               energy: state.vitals.energy,
               hasBadCond: state.conditions.length > 0,
               hasHangover: state.conditions.some((c) => c.id === 'hangover'),
-              hasBadMood: state.moodlets.some((m) => m.kind === 'bad' && Date.parse(m.expiresAt) > endMs),
-              hasGoodMood: state.moodlets.some((m) => m.kind === 'good' && Date.parse(m.expiresAt) > endMs),
+              hasBadMood: workMood.polarity === 'bad',
+              hasGoodMood: workMood.polarity === 'good',
+              moodScoreDelta: workMood.workScoreDelta,
               hasFreshVeg,
               domain: def.domain,
               jobName: actTask.label,
@@ -1896,7 +2131,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
               state.skills[def.domain] = Math.min(100, (state.skills[def.domain] ?? 0) + gain);
             }
             if (PHYSICAL_JOB_IDS.has(actTask.id)) {
-              state.fitness = Math.min(FITNESS_MAX, state.fitness + 1.5 * streetGainFactor(workMods, 'fit'));
+              state.fitness = Math.min(FITNESS_MAX, state.fitness + 1.5 * streetGainFactor(workMods, 'fit') * activeMood.fitMult);
             }
           }
 
@@ -1909,13 +2144,49 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             state.shift = null;
           }
 
+          let outputItem: WorkOutputItem | undefined;
+          const outSpec = !outOfCash && gradeKind !== 'smash' && def ? jobOutputOf(actTask.id) : null;
+          if (!outOfCash && gradeKind !== 'smash' && def && outSpec && workMood) {
+            const exp = def.domain ? (state.skills[def.domain] ?? 0) : 0;
+            const trainedCnt = def.domain ? (state.trained[def.domain] ?? 0) : 0;
+            const q = rollWorkQuality(exp, {
+              trainedCount: trainedCnt,
+              moodPolarity: workMood.polarity,
+              roll: ext?.qualityRoll ?? ext?.gradeRoll,
+            });
+            state.workOutputs = state.workOutputs ?? [];
+            outputItem = addWorkOutput(state.workOutputs, {
+              jobId: actTask.id,
+              jobName: actTask.label,
+              domain: def.domain,
+              name: outSpec.name,
+              quality: q.id,
+              qualityLabel: q.label,
+              value: Math.max(1, Math.round(outSpec.basePrice * q.valueMult)),
+              createdAt: endAt.toISOString(),
+            });
+          }
+
+          if (!outOfCash && state.vitals.energy <= CRITICAL && !state.conditions.some((c) => c.id === 'overwork')) {
+            const ov: Condition = {
+              id: 'overwork',
+              since: endAt.toISOString(),
+              until: new Date(endAt.getTime() + 1.5 * 86_400_000).toISOString(),
+              text: '过劳静养。浑身乏力，不能出家门，最多只能在家照料菜园动植物。',
+            };
+            state.conditions.push(ov);
+            workCaught.push(ov);
+            remember(state, '连着出工累过头了，需要闭门静养一阵，最多在家照料动植物。', endAt);
+          }
+
+          const outText = outputItem ? `，做出【${outputItem.qualityLabel}】${outputItem.name}` : '';
           const recText = shiftSummary
-            ? `${actTask.label}收工：${shiftSummary}。`
+            ? `${actTask.label}收工：${shiftSummary}${outText}。`
             : gradeKind === 'smash' && def?.materialCost && def.materialCost > 0
               ? `${actTask.label}（${gradeLabel}），客人退了货一分没挣到，前面垫的 ${def.materialCost} 元本钱没收回来。`
               : gradeLabel
-                ? `${actTask.label}（${gradeLabel}），挣了 ${earned} 元。`
-                : `${actTask.label}，挣了 ${earned} 元。`;
+                ? `${actTask.label}（${gradeLabel}），挣了 ${earned} 元${outText}。`
+                : `${actTask.label}，挣了 ${earned} 元${outText}。`;
           remember(state, recText, endAt);
           completed.push({
             kind: 'work',
@@ -1927,6 +2198,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             gradeLabel,
             gradeText,
             shiftSummary,
+            ...(outputItem ? { outputItem } : {}),
             ...(loanGarnished ? { loanGarnished } : {}),
           });
         } else {
@@ -1945,7 +2217,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             errandEarned = Math.round(actTask.errandPay);
             state.money.cash += errandEarned;
             state.money.earned += errandEarned;
-            state.fitness = Math.min(FITNESS_MAX, state.fitness + 0.3 * streetGainFactor(sMods, 'fit'));
+            state.fitness = Math.min(FITNESS_MAX, state.fitness + 0.3 * streetGainFactor(sMods, 'fit') * activeMood.fitMult);
             remember(
               state,
               `帮街坊${actTask.errandEmployer || '邻居'}照料农牧场完工，挣了 ${errandEarned} 元零花钱。`,
@@ -1955,7 +2227,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             const actDef = ACTS[actTask.id];
             if (!outOfCash) {
               const fitGain = actDef?.fit ?? 0;
-              if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain * streetGainFactor(sMods, 'fit'));
+              if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain * streetGainFactor(sMods, 'fit') * activeMood.fitMult);
               const craftGain = actDef?.craft ?? 0;
               if (craftGain > 0) {
                 state.skills = state.skills ?? {};
@@ -2039,6 +2311,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
     return stayingTier ? HOTEL_TIER_RELIEF[stayingTier] : (HOME_TIER_RELIEF[state.home.tier] ?? 1);
   };
 
+  const decayMood = moodSummary(state, now);
   for (const key of Object.keys(DECAY_PER_HOUR) as VitalKey[]) {
     /* 精力不衰减，是**另算回升** —— 锁死的话她睡八小时醒来还是原值。 */
     const sleepDelta = key === 'energy'
@@ -2049,12 +2322,13 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
       ? (travelMult?.energy ?? 1)
       : (key === 'food' ? (travelMult?.food ?? 1) : 1);
     const streetDecay = streetDecayFactor(sMods, key);
+    const moodDecay = decayMood.decayMult[key] ?? 1;
     /* 睡眠回精（sleepDelta > 0）的街道增益已计入 energyRegenMult，不再叠加衰减乘数 */
     const sleepStreet = sleepDelta > 0 ? 1 : streetDecay;
     const awakeUsed = key === 'energy' ? awakeHours : effectiveAwakeHours;
     const sleepUsed = key === 'energy' ? sleepHours : (sleepHours + nightSlept);
     const v = state.vitals[key]
-      - DECAY_PER_HOUR[key] * relief * modeFactor * streetDecay * awakeUsed
+      - DECAY_PER_HOUR[key] * relief * modeFactor * streetDecay * moodDecay * awakeUsed
       + sleepDelta * relief * sleepStreet * sleepUsed;
     state.vitals[key] = clamp100(v);
   }
@@ -2250,13 +2524,18 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
 
   /* 新得的病。 */
   const caught: Condition[] = [];
+  for (const wc of workCaught) {
+    if (Date.parse(wc.until) > now.getTime() && !caught.some((x) => x.id === wc.id)) {
+      caught.push(wc);
+    }
+  }
   const has = (id: Condition['id']) => state.conditions.some((c) => c.id === id);
   if (!has('cold') && state.vitals.energy < CRITICAL && state.vitals.clean < CRITICAL) {
     const c: Condition = {
       id: 'cold',
       since: iso,
       until: new Date(now.getTime() + 3 * 86_400_000).toISOString(),
-      text: '感冒了。有点晕，鼻子不通。',
+      text: '感冒静养。有点晕，鼻子不通，不能出家门，最多只能在家照料菜园动植物。',
     };
     state.conditions.push(c);
     caught.push(c);
@@ -2265,8 +2544,8 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
     const c: Condition = {
       id: 'overwork',
       since: iso,
-      until: new Date(now.getTime() + 1 * 86_400_000).toISOString(),
-      text: '过劳。歇一天，什么都提不起劲。',
+      until: new Date(now.getTime() + 1.5 * 86_400_000).toISOString(),
+      text: '过劳静养。浑身乏力，不能出家门，最多只能在家照料菜园动植物。',
     };
     state.conditions.push(c);
     caught.push(c);
@@ -2768,6 +3047,20 @@ export function applyAct(
     };
   }
 
+  /* 感冒/过劳闭门静养期间：只能在家休息、洗漱、简单吃食、读书/居家消遣或照料菜园动植物，禁止出门类动作。 */
+  const sick = isHouseboundSick(state, now);
+  if (sick && act.id !== 'wake' && act.id !== 'cancel' && !SICK_HOME_ALLOWED_ACTS.has(act.id)) {
+    const hoursLeft = Math.max(1, Math.ceil((Date.parse(sick.until) - now.getTime()) / 3_600_000));
+    return {
+      ok: false,
+      reason: `你这会儿正在生病静养（${sick.text}，还剩约 ${hoursLeft} 小时），出不了家门去「${act.label}」—— 只能在家歇着（sleep/nap/rest）、自己煮热食或照料菜园动植物。`,
+      vitals: state.vitals,
+      mood: null,
+      cost: 0,
+      cash: state.money.cash,
+    };
+  }
+
   /* 旅途/通勤物理约束：车上不能洗澡做饭，跨城赶路不能去做本地居家活动；游轮/河轮/观光专列/房车按载具条件放行。 */
   if (journey?.phase === 'traveling') {
     if (isRiverCruiseJourney(journey)) {
@@ -3141,6 +3434,7 @@ export interface WorkResult {
   minutes?: number;
   expectedPay?: number;
   materialPaid?: number;
+  skillPayMult?: number;
 }
 
 export function applyWork(
@@ -3154,6 +3448,16 @@ export function applyWork(
     return {
       ok: false,
       reason: busyRefusal(state, now, '出工'),
+      earned: 0,
+      cash: state.money.cash,
+      vitals: state.vitals,
+    };
+  }
+  const sickR = sickRefusal(state, now, '干活');
+  if (sickR) {
+    return {
+      ok: false,
+      reason: sickR,
       earned: 0,
       cash: state.money.cash,
       vitals: state.vitals,
@@ -3185,6 +3489,7 @@ export function applyWork(
     : (state.job.id ? findJob(state.job.id) : null);
 
   let pay: number;
+  let skillMult = 1;
   let label: string;
   let load: JobDef['load'];
   let minutes: number;
@@ -3193,6 +3498,19 @@ export function applyWork(
   if (def) {
     const gate = jobGate(state, def, phase);
     if (gate) {
+      if (def.cert && !state.job.certs.includes(def.cert)) {
+        const cObj = certOf(def.cert);
+        const cPrice = cObj?.price ?? 0;
+        const blocked: PendingBlock = state.money.cash < cPrice
+          ? 'money'
+          : (cObj && state.knowledge < cObj.need ? 'time' : 'doubt');
+        noteAutoPending(state, { what: `考${def.cert}（接「${def.name}」用）`, blocked, cost: blocked === 'money' ? cPrice : 0 }, now, def.cert);
+      } else if (def.equip && !state.gear.includes(def.equip)) {
+        const eq = findEquip(def.equip);
+        if (eq) {
+          noteAutoWant(state, { what: `买「${eq.name}」（¥${eq.price}，接「${def.name}」用）`, kind: 'thing', scale: eq.price >= 300 ? 'big' : 'small', note: `接${def.name}要用` }, now, eq.name);
+        }
+      }
       return { ok: false, reason: gate, earned: 0, cash: state.money.cash, vitals: state.vitals };
     }
     mat = def.materialCost ?? 0;
@@ -3205,7 +3523,9 @@ export function applyWork(
         vitals: state.vitals,
       };
     }
-    pay = def.pay;
+    const domainExp = def.domain ? (state.skills[def.domain] ?? 0) : 0;
+    skillMult = skillPayMultiplier(domainExp);
+    pay = Math.max(1, Math.round(def.pay * skillMult));
     label = def.name;
     load = def.load;
     minutes = def.minutes;
@@ -3284,6 +3604,94 @@ export function applyWork(
     minutes: m,
     expectedPay: pay,
     materialPaid: mat,
+    skillPayMult: skillMult,
+  };
+}
+
+export interface UserCareResult {
+  ok: boolean;
+  reason?: string;
+  item?: CareItemDef;
+  recoveredNow?: boolean;
+  hoursLeftAfter?: number;
+  vitals?: Vitals;
+}
+
+/** 用户在面板对生病静养中的她进行每日一次的照料（买药 / 熬热姜枣粥 / 温毛巾陪歇）。 */
+export function applyUserCare(state: LifeState, kind: string, now: Date): UserCareResult {
+  const item = CARE_ITEMS.find((x) => x.id === kind);
+  if (!item) {
+    return { ok: false, reason: `没有「${kind}」这种照料方式。` };
+  }
+  const nowMs = now.getTime();
+  const active = state.conditions
+    .filter((c) => SICK_REST_IDS.has(c.id) && Date.parse(c.until) > nowMs)
+    .sort((a, b) => Date.parse(b.until) - Date.parse(a.until));
+  if (!active.length) {
+    return { ok: false, reason: '她这会儿身体好好的，不需要特别用药照料。' };
+  }
+  const today = localDateKey(now);
+  state.sickCare = state.sickCare ?? { dayKey: '', count: 0, history: [] };
+  if (state.sickCare.dayKey === today && state.sickCare.count >= 1) {
+    return { ok: false, reason: '今天已经照料过一次了，让她喝口温水好好歇着，明天再来看护吧。' };
+  }
+
+  const cutMs = item.hoursCut * 3_600_000;
+  const remaining: Condition[] = [];
+  for (const c of state.conditions) {
+    if (!SICK_REST_IDS.has(c.id)) {
+      remaining.push(c);
+      continue;
+    }
+    const nextUntil = Date.parse(c.until) - cutMs;
+    if (nextUntil > nowMs) {
+      remaining.push({ ...c, until: new Date(nextUntil).toISOString() });
+    }
+  }
+  state.conditions = remaining;
+  const stillSick = remaining.filter((c) => SICK_REST_IDS.has(c.id) && Date.parse(c.until) > nowMs);
+  const allRecovered = stillSick.length === 0;
+
+  state.vitals.energy = clamp100(state.vitals.energy + item.energyGain);
+  state.vitals.food = clamp100(state.vitals.food + item.foodGain);
+  state.vitals.clean = clamp100(state.vitals.clean + item.cleanGain);
+  state.vitals.fun = clamp100(state.vitals.fun + item.funGain);
+
+  state.moodlets = state.moodlets.filter((m) => m.source !== 'care');
+  state.moodlets.push({
+    id: `m-care-${nowMs.toString(36)}`,
+    source: 'care',
+    text: `被用心照料着，${allRecovered ? '烧退身轻好得差不多了' : '身子骨暖和舒坦了许多'}`,
+    kind: 'good',
+    expiresAt: new Date(nowMs + 6 * 3_600_000).toISOString(),
+  });
+
+  state.sickCare = {
+    dayKey: today,
+    count: (state.sickCare.dayKey === today ? state.sickCare.count : 0) + 1,
+    history: [
+      ...(state.sickCare.history ?? []),
+      {
+        id: `care-${nowMs.toString(36)}`,
+        at: now.toISOString(),
+        kind: item.id,
+        label: item.label,
+        hoursCut: item.hoursCut,
+        recovered: allRecovered,
+      },
+    ].slice(-20),
+  };
+
+  remember(state, item.memoryText, now);
+  state.updatedAt = now.toISOString();
+  const maxUntil = stillSick.length ? Math.max(...stillSick.map((c) => Date.parse(c.until))) : 0;
+  const hoursLeftAfter = maxUntil > nowMs ? Math.max(1, Math.ceil((maxUntil - nowMs) / 3_600_000)) : 0;
+  return {
+    ok: true,
+    item,
+    recoveredNow: allRecovered,
+    hoursLeftAfter,
+    vitals: state.vitals,
   };
 }
 
@@ -3343,6 +3751,80 @@ export interface CertResult {
   passed?: boolean;
   /** 这一次的通过概率（0–1），给回执用。 */
   chance?: number;
+  /** 好坏心情对本次考证概率的加减标注（平静时省略）。 */
+  moodNote?: string;
+}
+
+/**
+ * 在真实遇阻或心动时自然写入「她惦记的」（不伪造日常，不挤占她/用户自己记的条目）。
+ */
+function noteAutoWant(
+  state: LifeState,
+  item: { what: string; kind: Want['kind']; scale: Want['scale']; note: string },
+  now: Date,
+  matchKey?: string,
+): void {
+  const key = matchKey || item.what;
+  const existing = state.wants.find(
+    (w) => w.what === item.what || (key && w.what.includes(key)) || item.what.includes(w.what),
+  );
+  if (existing) {
+    if (existing.id.startsWith('w-auto-')) {
+      existing.what = item.what;
+      existing.scale = item.scale;
+      if (item.note) existing.note = item.note;
+    }
+    return;
+  }
+  if (state.wants.length >= 12) return;
+  state.wants.push({
+    id: `w-auto-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    what: item.what,
+    scale: item.scale,
+    kind: item.kind,
+    since: now.toISOString(),
+    note: item.note,
+  });
+}
+
+function noteAutoPending(
+  state: LifeState,
+  item: { what: string; blocked: PendingBlock; cost: number },
+  now: Date,
+  matchKey?: string,
+): void {
+  const nowMs = now.getTime();
+  state.pending = state.pending.filter((x) => Date.parse(x.expiresAt) > nowMs);
+  const key = matchKey || item.what;
+  const existing = state.pending.find(
+    (x) => x.what === item.what || (key && x.what.includes(key)) || item.what.includes(x.what),
+  );
+  const expiresAt = new Date(nowMs + PENDING_TTL_DAYS * 86_400_000).toISOString();
+  if (existing) {
+    if (existing.id.startsWith('p-auto-')) {
+      existing.what = item.what;
+      existing.blocked = item.blocked;
+      existing.cost = item.cost;
+      existing.expiresAt = expiresAt;
+    }
+    return;
+  }
+  if (state.pending.length >= MAX_PENDING) return;
+  state.pending.push({
+    id: `p-auto-${nowMs.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    what: item.what,
+    blocked: item.blocked,
+    cost: item.cost,
+    since: now.toISOString(),
+    expiresAt,
+  });
+}
+
+function clearMatchingWantAndPending(state: LifeState, keywords: string[]): void {
+  const kws = keywords.filter((k) => k && k.trim().length > 0);
+  if (!kws.length) return;
+  state.wants = state.wants.filter((w) => !w.id.startsWith('w-auto-') || !kws.some((k) => w.what.includes(k)));
+  state.pending = state.pending.filter((p) => !p.id.startsWith('p-auto-') || !kws.some((k) => p.what.includes(k)));
 }
 
 /**
@@ -3352,33 +3834,18 @@ export interface CertResult {
  * 「明知道考不过还非要去」变成一个纯亏的按钮。
  * `need` 那一档到 `0.9`，**封顶不封 1** —— 考试永远有一成失手，
  * 这样「读过书」是提高胜算，不是买通。
+ * 第 3 参为心情修正（好心情 +0.08 / 坏心情 -0.08），不传时保持原始口径。
  */
-export function certChance(knowledge: number, need: number): number {
-  if (!(need > 0)) return 0.9;
-  const p = 0.15 + 0.75 * (knowledge / need);
-  return Math.max(0.15, Math.min(0.9, p));
+export function certChance(knowledge: number, need: number, moodDelta = 0): number {
+  const base = !(need > 0)
+    ? 0.9
+    : Math.max(0.15, Math.min(0.9, 0.15 + 0.75 * (knowledge / need)));
+  if (!moodDelta) return base;
+  return Math.max(0.1, Math.min(0.95, base + moodDelta));
 }
 
 /**
  * 去考一张证。
- *
- * ## 为什么考证要花钱
- *
- * 不然「我有护工证」只是一句话。花了钱，它就是一个真的取舍：
- * 手上有 3000，是去考一张 600 的驾照（之后日薪从 90 变 230），还是先搬去老小区？
- *
- * ## 为什么现在还要考得过（2026-11-17）
- *
- * 加了「见识」之后，`life_cert` 从「交钱就发证」变成**真的考试**：
- * 通过率由见识和这张证的难度决定（`certChance`）。考砸了报名费照扣 ——
- * 这是这条路上唯一的风险，也是「先读书还是先攒钱」这个取舍成立的原因。
- *
- * ## 为什么只花一天、不占出工日
- *
- * 占的话，`job.lastAt` 一写，「今天已经出过工」就提前判死了 —— 一个字段两种含义，
- * 迟早出错。所以考证只扣精力（−20），不碰 `lastAt`。
- *
- * `roll` 是给测试用的：不传就真掷骰子。**别在业务代码里传它。**
  */
 export function applyCert(state: LifeState, name: string, now: Date, roll?: number): CertResult {
   if (isBusy(state, now)) {
@@ -3389,6 +3856,10 @@ export function applyCert(state: LifeState, name: string, now: Date, roll?: numb
       cash: state.money.cash,
     };
   }
+  const sickR = sickRefusal(state, now, '出门考证');
+  if (sickR) {
+    return { ok: false, reason: sickR, paid: 0, cash: state.money.cash };
+  }
   const c = certOf(name);
   if (!c) {
     const list = CERTS.map((x) => `${x.name}（${x.price} 元，要见识 ${x.need}）`).join('、');
@@ -3397,12 +3868,6 @@ export function applyCert(state: LifeState, name: string, now: Date, roll?: numb
   if (state.job.certs.includes(c.name)) {
     return { ok: false, reason: `你已经考过${c.name}了。`, paid: 0, cash: state.money.cash };
   }
-  /*
-   * 一天一张只考一次。
-   *
-   * 不加这道闸，考砸之后会连着再考 —— 钱照扣，几次就烧光 3000，
-   * 而用户看到的是「她在考证中心反复刷卡」。一天，是给她一个「明天再说」的间隔。
-   */
   const day = localDateKey(now);
   if (state.certLast?.[c.name] === day) {
     return {
@@ -3413,6 +3878,7 @@ export function applyCert(state: LifeState, name: string, now: Date, roll?: numb
     };
   }
   if (state.money.cash < c.price) {
+    noteAutoPending(state, { what: `考${c.name}`, blocked: 'money', cost: c.price }, now, c.name);
     return {
       ok: false,
       reason: `${c.name}要 ${c.price} 元，你手上只有 ${Math.round(state.money.cash)} 元。`,
@@ -3421,7 +3887,13 @@ export function applyCert(state: LifeState, name: string, now: Date, roll?: numb
     };
   }
 
-  const chance = certChance(state.knowledge, c.need);
+  const mood = moodSummary(state, now);
+  const chance = certChance(state.knowledge, c.need, mood.certDelta);
+  const moodNote = mood.polarity === 'good'
+    ? '好心情加持 +8%'
+    : mood.polarity === 'bad'
+      ? '坏心情拖累 -8%'
+      : undefined;
   /* 先扣钱再掷骰子 —— 报名费是去考之前就交的，不是考过才交。 */
   state.money.cash -= c.price;
   state.money.spent += c.price;
@@ -3433,15 +3905,12 @@ export function applyCert(state: LifeState, name: string, now: Date, roll?: numb
 
   if (passed) {
     state.job.certs.push(c.name);
+    clearMatchingWantAndPending(state, [c.name]);
     remember(state, `考下了${c.name}，花了 ${c.price} 元。`, now);
     state.updatedAt = now.toISOString();
-    return { ok: true, passed: true, chance, cert: c.name, paid: c.price, cash: state.money.cash };
+    return { ok: true, passed: true, chance, cert: c.name, paid: c.price, cash: state.money.cash, ...(moodNote ? { moodNote } : {}) };
   }
 
-  /*
-   * 考砸了。**钱和精力不退，情绪要挂** ——
-   * 不挂情绪的话，这件事在她心里等于没发生，第二天会原样再来一次。
-   */
   state.moodlets = state.moodlets.filter((m) => m.source !== 'cert-fail');
   state.moodlets.push({
     id: `m-cert-${now.getTime().toString(36)}`,
@@ -3450,9 +3919,19 @@ export function applyCert(state: LifeState, name: string, now: Date, roll?: numb
     kind: 'bad',
     expiresAt: new Date(now.getTime() + 6 * 3_600_000).toISOString(),
   });
+  noteAutoPending(
+    state,
+    {
+      what: `重考${c.name}（见识需 ${c.need}）`,
+      blocked: state.knowledge < c.need ? 'doubt' : 'money',
+      cost: c.price,
+    },
+    now,
+    c.name,
+  );
   remember(state, `${c.name}没考过，${c.price} 元的报名费也没了。`, now);
   state.updatedAt = now.toISOString();
-  return { ok: true, passed: false, chance, cert: c.name, paid: c.price, cash: state.money.cash };
+  return { ok: true, passed: false, chance, cert: c.name, paid: c.price, cash: state.money.cash, ...(moodNote ? { moodNote } : {}) };
 }
 
 /** 报名培训课或购置生活/跑单装备、轻载具的结果。 */
@@ -3474,6 +3953,10 @@ export function applyLearn(state: LifeState, what: string, now: Date): LearnResu
   if (isBusy(state, now)) {
     return { ok: false, reason: busyRefusal(state, now, '上课/添置家伙'), paid: 0, cash: state.money.cash };
   }
+  const sickR = sickRefusal(state, now, '出门上课/添置家伙');
+  if (sickR) {
+    return { ok: false, reason: sickR, paid: 0, cash: state.money.cash };
+  }
   const q = String(what || '').trim();
   const eq = q ? findEquip(q) : null;
   if (eq) {
@@ -3481,11 +3964,18 @@ export function applyLearn(state: LifeState, what: string, now: Date): LearnResu
       return { ok: false, reason: `「${eq.name}」你已经有了，不用重复买。`, paid: 0, cash: state.money.cash };
     }
     if (state.money.cash < eq.price) {
+      noteAutoWant(
+        state,
+        { what: `买「${eq.name}」（¥${eq.price}）`, kind: 'thing', scale: eq.price >= 300 ? 'big' : 'small', note: '差钱没买成' },
+        now,
+        eq.name,
+      );
       return { ok: false, reason: `「${eq.name}」要 ${eq.price} 元，你手上只有 ${Math.round(state.money.cash)} 元。`, paid: 0, cash: state.money.cash };
     }
     state.money.cash -= eq.price;
     state.money.spent += eq.price;
     state.gear.push(eq.id);
+    clearMatchingWantAndPending(state, [eq.name]);
     remember(state, `添置了「${eq.name}」，花了 ${eq.price} 元。`, now);
     state.updatedAt = now.toISOString();
     return { ok: true, kind: 'equip', name: eq.name, paid: eq.price, cash: state.money.cash };
@@ -3502,6 +3992,12 @@ export function applyLearn(state: LifeState, what: string, now: Date): LearnResu
       };
     }
     if (state.money.cash < course.price) {
+      noteAutoWant(
+        state,
+        { what: `上「${course.name}」（¥${course.price}）`, kind: 'thing', scale: course.price >= 200 ? 'big' : 'small', note: '差学费没报成' },
+        now,
+        course.name,
+      );
       return {
         ok: false,
         reason: `「${course.name}」学费 ${course.price} 元，你手上只有 ${Math.round(state.money.cash)} 元。`,
@@ -3516,6 +4012,7 @@ export function applyLearn(state: LifeState, what: string, now: Date): LearnResu
     const nextExp = clamp100((state.skills[course.domain] ?? 0) + course.expGain);
     state.skills[course.domain] = nextExp;
     state.trained[course.domain] = (state.trained[course.domain] ?? 0) + 1;
+    clearMatchingWantAndPending(state, [course.name]);
     remember(state, `去上了「${course.name}」，花了 ${course.price} 元，${SKILL_DOMAIN_LABEL[course.domain]}熟练度到了 ${Math.round(nextExp)}。`, now);
     state.updatedAt = now.toISOString();
     return {
@@ -3798,6 +4295,10 @@ export function applyMove(state: LifeState, tier: HomeTier, now: Date, rentMult 
       from: state.home.tier, to: tier, deposit: 0, cash: state.money.cash,
     };
   }
+  const sickR = sickRefusal(state, now, '出门搬家');
+  if (sickR) {
+    return { ok: false, reason: sickR, from: state.home.tier, to: tier, deposit: 0, cash: state.money.cash };
+  }
   const from = state.home.tier;
   if (tier === from) {
     return {
@@ -3808,6 +4309,15 @@ export function applyMove(state: LifeState, tier: HomeTier, now: Date, rentMult 
   }
   const q = quoteMove(state, tier, rentMult);
   if (!q.ok) {
+    const coveredByGoal = state.goals.some((g) => !g.done && g.what.includes(q.label));
+    if (!coveredByGoal) {
+      noteAutoWant(
+        state,
+        { what: `搬到${q.label}（押金 ¥${q.deposit}）`, kind: 'thing', scale: 'big', note: '攒押金搬家' },
+        now,
+        `搬到${q.label}`,
+      );
+    }
     return {
       ok: false,
       reason: `搬去${q.label}要押两个月 ${q.deposit} 元，你手上只有 ${state.money.cash} 元，还差 ${q.short} 元。`,
@@ -3820,6 +4330,7 @@ export function applyMove(state: LifeState, tier: HomeTier, now: Date, rentMult 
   state.home.tier = tier;
   state.home.monthly = q.monthly;
   state.home.since = now.toISOString();
+  clearMatchingWantAndPending(state, [`搬到${q.label}`]);
 
   /*
    * 搬到位的目标标成达成。
@@ -3860,6 +4371,10 @@ export function applyStreetMove(
   if (isBusy(state, now)) {
     return { ok: false, reason: busyRefusal(state, now, '换条街搬家'), from, to: target };
   }
+  const sickR = sickRefusal(state, now, '出门换街搬家');
+  if (sickR) {
+    return { ok: false, reason: sickR, from, to: target };
+  }
   const valid = streets.map((s) => s.trim()).filter(Boolean);
   if (!valid.length) {
     return { ok: false, reason: '当前城市还没有划分具体街道，暂时没法换街。', from, to: target };
@@ -3894,6 +4409,7 @@ export interface Snapshot {
   low: { key: VitalKey; value: number; label: string }[];
   conditions: Condition[];
   moodlets: Moodlet[];
+  moodEffect: MoodEffectSummary;
   habits: Habit[];
   watches: Watch[];
   wants: Want[];
@@ -3968,6 +4484,18 @@ export interface Snapshot {
   pantry: PantryItem[];
   /** 已做好的成品菜格明细。 */
   cookedDishes: CookedDishItem[];
+  /** 工作产出物仓库。 */
+  workOutputs: WorkOutputItem[];
+  /** 当前是否处于感冒/过劳闭门静养期。 */
+  houseboundSick: { id: string; until: string; hoursLeft: number; text: string } | null;
+  /** 生病每日照料状态与可用照料项。 */
+  sickCare: {
+    todayCount: number;
+    dailyCap: number;
+    remainingToday: number;
+    options: readonly CareItemDef[];
+    recent: SickCareRecord[];
+  };
   /** 本地摆摊本钱与单价台账。 */
   stallRecords: StallRecord[];
 }
@@ -4175,6 +4703,7 @@ export function snapshot(
     conditions: state.conditions,
     /* 过期的在这一刻已经不该算数了 —— 读的时候再滤一遍，别指望 tick 一定跑过。 */
     moodlets: state.moodlets.filter((m) => Date.parse(m.expiresAt) > now.getTime()),
+    moodEffect: moodSummary(state, now),
     habits: state.habits,
     watches: state.watches,
     wants: state.wants,
@@ -4220,6 +4749,29 @@ export function snapshot(
     farmHelper: state.farmHelper,
     pantry: state.pantry,
     cookedDishes: state.cookedDishes,
+    workOutputs: [...(state.workOutputs ?? [])].slice(-40).reverse(),
+    houseboundSick: (() => {
+      const sc = isHouseboundSick(state, now);
+      if (!sc) return null;
+      return {
+        id: sc.id,
+        until: sc.until,
+        hoursLeft: Math.max(1, Math.ceil((Date.parse(sc.until) - now.getTime()) / 3_600_000)),
+        text: sc.text,
+      };
+    })(),
+    sickCare: (() => {
+      const today = localDateKey(now);
+      const sc = state.sickCare ?? { dayKey: '', count: 0, history: [] };
+      const todayCount = sc.dayKey === today ? sc.count : 0;
+      return {
+        todayCount,
+        dailyCap: 1,
+        remainingToday: Math.max(0, 1 - todayCount),
+        options: CARE_ITEMS,
+        recent: (sc.history ?? []).slice(-6).reverse(),
+      };
+    })(),
     stallRecords: state.stallRecords,
   };
 }

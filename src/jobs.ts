@@ -111,7 +111,7 @@ const def = (
 ): JobDef => ({ id, name, tier, domain, pay, place: 'home', minutes: DEFAULT_MINUTES[tier], load: LOAD[tier], ...extra });
 
 /**
- * 二十一项（含三期 G 类轻载具跑单三种 + 五档完成度手艺活），四档 + 三档地点过滤（home / anywhere / destination）。
+ * 三十项（含三期 G 类轻载具跑单三种 + 五档完成度手艺活），四档 + 三档地点过滤（home / anywhere / destination）。
  *
  * 城规有一条是「鱼不吃鱼」：没有渔业、没有鱼市、没有屠宰。
  * 加任何职业之前先拿这一条判一次。
@@ -123,6 +123,8 @@ export const JOBS: readonly JobDef[] = [
   def('waiter', '端盘子', 'odd', 90, 'social', { place: 'destination', minutes: 240 }),
   def('delivery', '送外卖', 'odd', 95, 'driving', { place: 'home', materialCost: 8, minutes: 210 }),
   def('flyer', '发传单', 'odd', 80, 'labor', { place: 'destination', minutes: 180 }),
+  def('street_photo', '街拍明信片', 'odd', 92, 'photo', { place: 'anywhere', minutes: 210, hasVariance: true }),
+  def('menu_copy', '小店菜单手抄', 'odd', 88, 'writing', { place: 'home', minutes: 210 }),
 
   // 熟练工：干满一个月或凭轻载具上路（4~5 小时）
   def('kitchen', '后厨帮工', 'skilled', 140, 'cooking', { days: 30, place: 'destination', minutes: 300, hasVariance: true }),
@@ -131,6 +133,9 @@ export const JOBS: readonly JobDef[] = [
   def('stall', '早市摆摊', 'skilled', 145, 'cooking', { days: 30, place: 'home', materialCost: 25, minutes: 270, hasVariance: true }),
   def('rider_delivery', '跑平台送外卖', 'skilled', 135, 'driving', { cert: '健康证', equip: 'ebike', place: 'home', materialCost: 8, minutes: 240, shift: true, hasVariance: true }),
   def('courier_ebike', '片区送快递', 'skilled', 150, 'driving', { equip: 'ebike', place: 'home', materialCost: 10, minutes: 240, shift: true, hasVariance: true }),
+  def('darkroom_print', '暗房胶片冲印', 'skilled', 150, 'photo', { equip: 'camera', place: 'home', materialCost: 12, minutes: 300, hasVariance: true }),
+  def('local_notes', '风物随笔撰稿', 'skilled', 148, 'writing', { equip: 'computer', place: 'anywhere', minutes: 270, hasVariance: true }),
+  def('linen_embroidery', '亚麻刺绣手作', 'skilled', 150, 'craft', { equip: 'sewing', place: 'home', materialCost: 10, minutes: 300, hasVariance: true }),
 
   // 有证：一天的钱够她吃住两天，但那张证要一笔投入（4~6 小时）
   def('caregiver', '护工', 'certified', 210, 'social', { cert: '护工证', place: 'home', minutes: 360 }),
@@ -138,12 +143,17 @@ export const JOBS: readonly JobDef[] = [
   def('designated_driver', '夜间代驾', 'certified', 220, 'driving', { cert: '驾照', equip: 'folding_bike', place: 'home', materialCost: 12, minutes: 240, shift: true, hasVariance: true }),
   def('cook', '厨师', 'certified', 240, 'cooking', { cert: '厨师证', place: 'destination', minutes: 360, hasVariance: true }),
   def('electrician', '电工', 'certified', 220, 'craft', { cert: '电工证', place: 'home', materialCost: 15, minutes: 360, hasVariance: true }),
+  def('arch_photo', '古建采风跟拍', 'certified', 235, 'photo', { cert: '摄影证', equip: 'camera', place: 'anywhere', minutes: 360, hasVariance: true }),
+  def('magazine_feature', '城市特约撰稿', 'certified', 228, 'writing', { equip: 'computer', days: 30, place: 'anywhere', minutes: 360, hasVariance: true }),
+  def('custom_tailor', '成衣裁缝定制', 'certified', 238, 'craft', { equip: 'sewing', days: 30, place: 'home', materialCost: 18, minutes: 360, hasVariance: true }),
+  def('bakery_assistant', '暖炉烘焙点心师', 'certified', 225, 'cooking', { cert: '健康证', equip: 'oven', place: 'home', materialCost: 16, minutes: 330, hasVariance: true }),
 
   // 专业：证 + 经验，两个都要（7~8 小时）
   def('nurse', '社区护士', 'professional', 330, 'social', { cert: '护士执业证', days: 30, place: 'home', minutes: 480, hasVariance: true }),
   def('teacher', '小学代课老师', 'professional', 320, 'writing', { cert: '教师资格证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
   def('accountant', '会计', 'professional', 340, 'admin', { cert: '会计证', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
   def('socialworker', '社区社工', 'professional', 300, 'social', { cert: '社工证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
+  def('photo_column', '纪实摄影专栏', 'professional', 325, 'photo', { cert: '摄影证', equip: 'camera', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
 ];
 
 /** 判断某份活在当前位置阶段能否接：在路上只能接 anywhere；在外地可接 anywhere+destination；在家可接 home+anywhere。 */
@@ -176,6 +186,7 @@ export function jobAllowedAt(job: JobDef, phase: 'home' | 'staying' | 'traveling
 export const CERTS: readonly { name: string; price: number; days: number; need: number }[] = [
   { name: '健康证', price: 80, days: 1, need: 10 },
   { name: '护工证', price: 400, days: 1, need: 20 },
+  { name: '摄影证', price: 380, days: 1, need: 25 },
   { name: '电工证', price: 450, days: 1, need: 30 },
   { name: '驾照', price: 600, days: 1, need: 30 },
   { name: '厨师证', price: 500, days: 1, need: 40 },

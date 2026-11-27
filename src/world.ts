@@ -27,6 +27,7 @@ import {
   findRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
   clampRentMult, effectiveHomeMonthly, normalizeMoodBonus,
   jobGate, localDateKey, noteVisit, quoteMove, readyGoals,
+  isHouseboundSick, sickRefusal, applyUserCare, skillPayMultiplier,
   DEFAULT_DAILY_GIFT_CAP, LOAN_PRODUCTS, LOAN_RESERVE_CASH,
   activeLoansTotalDue, applyBorrowLoan, applyRepayLoan, applyUserCashGift,
   availableCredit, computeCreditLimit, garnishOverdueFromIncome, hasOverdueLoan, loanRemaining, loanSummary,
@@ -1280,6 +1281,10 @@ export class LifeWorld implements World {
     if (trimmed && isBusy(this.state, now)) {
       return { text: busyRefusal(this.state, now, '去接邻里代管委托') };
     }
+    if (trimmed) {
+      const sickR = sickRefusal(this.state, now, '出门接邻里代管委托');
+      if (sickR) return { text: sickR };
+    }
     let errands: TownStall[] = [];
     let allStalls: TownStall[] = [];
     if (this.isHubMode()) {
@@ -2050,10 +2055,13 @@ export class LifeWorld implements World {
           ? ` 鱼市街这会儿还有街坊摆着摊：${this.marketShowcaseLine(2)}，去逛逛买一份既顶用又攒好心情；手头有巧思也能上鱼市街摆一摊。`
           : '';
         const farmHint = !this.inJourneyTrip(curJ) ? this.buildDayFarmSummary(cur) : '';
+        const noteHint = (this.state.habits.length === 0 && this.state.wants.length === 0 && this.state.watches.length === 0)
+          ? ' 要是心里惦记着什么想买的家伙、想去的地方或固定作息，也可以随手记进账本（life_want / life_habit / life_watch）。'
+          : '';
         return `现在是白天（${DAYPART_LABEL[dayPart(curAt)]}），精力 ${Math.round(this.state.vitals.energy)}，今天还没出过工。`
           + `${jobHint}；手上 ${cash} 元`
           + (goalGap ? `（${goalGap}）` : '')
-          + `${tightHint}${farmHint}${marketHint}怎么安排你自己定。`;
+          + `${tightHint}${farmHint}${marketHint}${noteHint}怎么安排你自己定。`;
       };
       this.dayWorkPending = { id: dayAttempt.id, date: today, generation };
       const sent = await this.push(
@@ -2236,10 +2244,12 @@ export class LifeWorld implements World {
           note: c.stoppedEarly
             ? `${c.label}（中途停工）`
             : c.shiftSummary
-              ? `${c.label}（${c.shiftSummary}）`
+              ? `${c.label}（${c.shiftSummary}${c.outputItem ? ` · 【${c.outputItem.qualityLabel}】${c.outputItem.name}` : ''}）`
               : c.gradeLabel
-                ? `${c.label}（${c.gradeLabel}）`
-                : c.label,
+                ? `${c.label}（${c.gradeLabel}${c.outputItem ? ` · 【${c.outputItem.qualityLabel}】${c.outputItem.name}` : ''}）`
+                : c.outputItem
+                  ? `${c.label}（【${c.outputItem.qualityLabel}】${c.outputItem.name}）`
+                  : c.label,
         });
         if (c.loanGarnished && c.loanGarnished.deductedTotal > 0) {
           appendLedger(this.opts.dataDir, {
@@ -2674,6 +2684,8 @@ export class LifeWorld implements World {
         libraryDir: this.library.rootDir,
         imagePolicy: this.library.getSettings(),
         certs: [...this.state.job.certs],
+        sickUntil: isHouseboundSick(this.state, now)?.until ?? '',
+        sickReason: isHouseboundSick(this.state, now)?.text ?? '',
       }, null, 2));
       renameSync(tmp, file);
     } catch (e) {
@@ -3235,9 +3247,10 @@ export class LifeWorld implements World {
       description:
         '去上班/出工挣钱。**一天一次**，按你本地的自然日算，**而且需要占用一段完整工时** —— '
         + '零工约 3–4 小时（80–95 元）、熟练活约 4.5–5 小时（130–150 元，需满 30 天或自备轻载具）、'
-        + '有证岗 6 小时（210–240 元，需考证，部分需电脑或电动车）、专业岗 7–8 小时（300–340 元，需考证+年头）。'
-        + '部分手艺与跑单活受该领域熟练度、精力与心情影响，收工会评五档完成度（砸了会少拿甚至亏本钱，漂亮多拿）；'
+        + '有证岗 5.5–6 小时（210–240 元，需考证或装备）、专业岗 7–8 小时（300–340 元，需考证+出工积累）。'
+        + '对应领域熟练度越高日薪加成越高（最高 +50%），且摄影/手艺/写作/烹饪/跑单类活在熟练度、心情加持下可产出四档品质作品（普通/良品/精品/臻品）；'
         + '干活期间社交不会掉，但精力、清爽、饱腹和少量娱乐（5–6 点）会消耗；干完收工才发全薪。'
+        + '感冒或过劳静养期间出不了家门干活。'
         + '中途可用 `life_act` 的 `cancel` 早退：干满 30 分钟按比例打六折、不满 30 分钟白干，都不涨工龄且当天不能重接。'
         + '精力低于 20 或正在做别的事时去不了。',
       parameters: {
@@ -3266,7 +3279,10 @@ export class LifeWorld implements World {
           };
         }
         const r = applyWork(this.state, what, now, phase, phase === 'home' ? this.currentStreetMods() : undefined);
-        if (!r.ok) return { text: r.reason ?? '今天去不了。' };
+        if (!r.ok) {
+          try { this.store.save(this.state); } catch { /* ignore */ }
+          return { text: r.reason ?? '今天去不了。' };
+        }
 
         const buffs = this.currentTownBuffs();
         const def = (what ? findJob(what) : (this.state.job.id ? findJob(this.state.job.id) : null));
@@ -3312,9 +3328,10 @@ export class LifeWorld implements World {
           const hh = String(at.getHours()).padStart(2, '0');
           const mm = String(at.getMinutes()).padStart(2, '0');
           const matTxt = r.materialPaid && r.materialPaid > 0 ? `已先垫付成本 ${r.materialPaid} 元。` : '';
+          const skillPct = r.skillPayMult && r.skillPayMult > 1 ? `（含熟练度薪资 +${Math.round((r.skillPayMult - 1) * 100)}%）` : '';
           return {
             text: `去上「${this.state.job.what}」了，工时 ${r.minutes ?? 240} 分钟（预计 ${hh}:${mm} 收工），`
-              + `预计标准工钱 ${expectedPay} 元${buffNote}。${matTxt}`
+              + `预计标准工钱 ${expectedPay} 元${skillPct}${buffNote}。${matTxt}`
               + '干活期间社交不会掉，但精力、清爽、饱腹和少量娱乐会消耗；早退不满 30 分钟白干、满 30 分钟按比例打六折。',
           };
         }
@@ -3341,7 +3358,7 @@ export class LifeWorld implements World {
       name: 'life_cert',
       description:
         '去考一张证。花钱、花精力，**考不考得过看你见识够不够**。'
-        + '健康证 80（要见识 10）/ 护工证 400（20）/ 电工证 450（30）/ 驾照 600（30）/ 厨师证 500（40）/ '
+        + '健康证 80（要见识 10）/ 护工证 400（20）/ 摄影证 380（25）/ 电工证 450（30）/ 驾照 600（30）/ 厨师证 500（40）/ '
         + '社工证 550（45）/ 教师资格证 700（55）/ 护士执业证 800（60）/ 会计证 750（65）。'
         + '**报名费先交，考不过不退**；见识越高，过的概率越大（见识 0 时只有一成半，够了就到九成）。'
         + '见识靠两样涨：`life_act` 的 study（看书，一次 6 点）和出工（越高级的活长得越多）；'
@@ -3363,7 +3380,10 @@ export class LifeWorld implements World {
         const now = this.now();
         await this.settleBeforeTool(now);
         const r = applyCert(this.state, String(args?.cert ?? ''), now);
-        if (!r.ok) return { text: r.reason ?? '没考成。' };
+        if (!r.ok) {
+          try { this.store.save(this.state); } catch { /* ignore */ }
+          return { text: r.reason ?? '没考成。' };
+        }
         if (r.paid > 0) {
           appendLedger(this.opts.dataDir, {
             id: `cert-${now.getTime().toString(36)}`,
@@ -3376,22 +3396,16 @@ export class LifeWorld implements World {
           });
         }
         try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
-        /*
-         * 过了和没过是两句话（2026-11-17）。
-         *
-         * 没过的时候**必须把胜算说出来**，否则她只知道「失败了」，
-         * 不知道下一步该干什么 —— 下一句很可能就是「那我再考一次」，
-         * 而钱就是这么烧掉的。给一个「先读几天书」的具体动作，比道歉有用。
-         */
+        const moodBit = r.moodNote ? `（${r.moodNote}）` : '';
         if (r.passed) {
-          return { text: `考下了${r.cert}，花了 ${r.paid} 元。手上还剩 ${r.cash} 元。` };
+          return { text: `考下了${r.cert}，花了 ${r.paid} 元${moodBit}。手上还剩 ${r.cash} 元。` };
         }
         const pct = Math.round((r.chance ?? 0) * 100);
         return {
           text: `没考过${r.cert}。报名费 ${r.paid} 元不退，手上还剩 ${r.cash} 元。`
-            + `这一次的把握本来就只有 ${pct}% —— 见识 ${Math.round(this.state.knowledge)}，`
+            + `这一次的把握本来就只有 ${pct}%${moodBit} —— 见识 ${Math.round(this.state.knowledge)}，`
             + `这张证要 ${certOf(String(r.cert))?.need ?? 0}。`
-            + '想把胜算提上去，先读几天书（`life_act` 的 `study`，一次涨 4 点见识），明天再来考。',
+            + '想把胜算提上去，先读几天书（`life_act` 的 `study`，一次涨 6 点见识），明天再来考。',
         };
       },
     };
@@ -3414,6 +3428,8 @@ export class LifeWorld implements World {
     if (isBusy(this.state, now)) {
       return { ok: false, reason: busyRefusal(this.state, now, '迁居去另一座城') };
     }
+    const sickR = sickRefusal(this.state, now, '迁居去另一座城');
+    if (sickR) return { ok: false, reason: sickR };
     const auth = await this.ensureHubReady(generation);
     if (generation !== this.stateGeneration) return { ok: false, reason: '生活档案刚刚被清理，操作已停止。' };
     if (!auth) return { ok: false, reason: this.hubAuthError || 'Hub 身份认证未就绪。' };
@@ -3540,7 +3556,10 @@ export class LifeWorld implements World {
             return { text: `没有「${tier}」这一档。能搬的：城中村 / 老小区 / 新小区 / 别墅区。` };
           }
           const r = applyMove(this.state, tier as HomeTier, now, this.currentRentMult());
-          if (!r.ok) return { text: notes.length ? `${notes.join(' ')} ${r.reason ?? '换房档没成。'}` : (r.reason ?? '搬不了。') };
+          if (!r.ok) {
+            try { this.store.save(this.state); } catch { /* ignore */ }
+            return { text: notes.length ? `${notes.join(' ')} ${r.reason ?? '换房档没成。'}` : (r.reason ?? '搬不了。') };
+          }
           if (r.deposit > 0) {
             appendLedger(this.opts.dataDir, {
               id: `move-${now.getTime().toString(36)}`,
@@ -3607,6 +3626,8 @@ export class LifeWorld implements World {
         if (isBusy(this.state, now)) {
           return { text: busyRefusal(this.state, now, '出门走走') };
         }
+        const sickR = sickRefusal(this.state, now, '出门逛街');
+        if (sickR) return { text: sickR };
         const where = String(args?.where ?? '').trim() || '随便走走';
         const s = this.state;
         s.vitals.fun = Math.min(100, s.vitals.fun + 12);
@@ -3986,7 +4007,10 @@ export class LifeWorld implements World {
           };
         }
         const r = applyLearn(this.state, what, now);
-        if (!r.ok) return { text: r.reason ?? '这次没办成。' };
+        if (!r.ok) {
+          try { this.store.save(this.state); } catch { /* ignore */ }
+          return { text: r.reason ?? '这次没办成。' };
+        }
         if (r.paid > 0) {
           appendLedger(this.opts.dataDir, {
             id: `learn-${now.getTime().toString(36)}`,
@@ -4029,6 +4053,10 @@ export class LifeWorld implements World {
         const cleared = () => ({ text: '生活档案刚刚被清理，这次旧购买操作已停止，未写入新档案。' });
         if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去鱼市街') };
         const pick = String(args?.stall_id ?? '').trim();
+        if (pick) {
+          const sickR = sickRefusal(this.state, now, '出门买货或接委托');
+          if (sickR) return { text: sickR };
+        }
         const isHub = this.isHubMode();
         const hasServer = this.hasRemoteServer();
         const myName = this.opts.botName || 'fish';
@@ -4401,6 +4429,8 @@ export class LifeWorld implements World {
         }
 
         if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去摆摊') };
+        const sickR = sickRefusal(this.state, now, '出门摆摊');
+        if (sickR) return { text: sickR };
         const matchedRecipe = findRecipe(item) ?? (() => {
           const d = (this.state.cookedDishes ?? []).find(
             (x) => x.name === item || x.name.includes(item) || item.includes(x.name),
@@ -5281,12 +5311,12 @@ export class LifeWorld implements World {
           this.broadcastLife(now);
           if (mode === 'store') {
             return {
-              text: `用${r.usedSources.join('、')}做好了 ${r.dishQty} 份「${r.recipe?.name}」存进成品菜格（花油盐炭火 ${r.paid} 元，手上剩 ${Math.round(r.cash)} 元）！`
+              text: `用${r.usedSources.join('、')}做好了 ${r.dishQty} 份「${r.recipe?.name}」存进成品菜格（品相【${r.qualityLabel ?? '普通'}】，花油盐炭火 ${r.paid} 元，手上剩 ${Math.round(r.cash)} 元）！`
                 + `现在共备有 ${cookedDishCount(this.state.cookedDishes)} 份成品菜，可以随时 eat_dish 热吃，或去鱼市街摆料理摊只付 2 元打包费！`,
             };
           }
           return {
-            text: `起锅用${r.usedSources.join('、')}做「${r.recipe?.name}」了，预计 ${r.recipe?.minutes} 分钟出锅开吃（回饱腹 +${r.foodGain ?? r.recipe?.foodGain}、娱乐 +${r.funGain ?? r.recipe?.funGain}）。`,
+            text: `起锅用${r.usedSources.join('、')}做【${r.qualityLabel ?? '普通'}】「${r.recipe?.name}」了，预计 ${r.recipe?.minutes} 分钟出锅开吃（回饱腹 +${r.foodGain ?? r.recipe?.foodGain}、娱乐 +${r.funGain ?? r.recipe?.funGain}）。`,
           };
         }
 
@@ -5574,22 +5604,36 @@ export class LifeWorld implements World {
     }
 
     if (s.conditions.length) {
-      parts.push(`身上不舒服：${s.conditions.map((c) => c.text).join('；')}`);
+      const sickHint = s.houseboundSick
+        ? `（闭门静养中·还剩约 ${s.houseboundSick.hoursLeft}h，最多在家照料菜园动植物，出不了家门）`
+        : '';
+      parts.push(`身上不舒服：${s.conditions.map((c) => c.text).join('；')}${sickHint}`);
     }
-    if (s.moodlets.length) {
-      parts.push(`眼下心里：${s.moodlets.map((m) => m.text).join('；')}`);
+    if (s.moodlets.length || s.moodEffect.effectsText) {
+      const mText = s.moodlets.map((m) => m.text).join('；');
+      const fxText = s.moodEffect.effectsText ? `（${s.moodEffect.label}：${s.moodEffect.effectsText}）` : '';
+      parts.push(`眼下心里：${mText}${fxText}`);
     }
     if (s.habits.length) {
       const label: Record<string, string> = {
         morning: '早上', noon: '中午', afternoon: '下午', evening: '傍晚', night: '夜里',
       };
       parts.push(`我的常态：${s.habits.map((h) => `${label[h.when]}${h.what}（${h.id}）`).join('；')}`);
+    } else if (this.state.tellable.length >= 3) {
+      const kws = ['读书', '跑步', '做饭', '洗澡', '逛街', '画画', '拼微缩', '露营'];
+      const repeated = kws.filter((kw) => this.state.tellable.filter((t) => t.text.includes(kw)).length >= 3);
+      if (repeated.length) {
+        parts.push(`常态苗头：最近常做「${repeated.slice(0, 3).join('、')}」，要是成了自己的固定节奏可以记进 life_habit`);
+      }
     }
     if (s.watches.length) {
       parts.push(`在留意：${s.watches.map((w) => `${w.what}（${w.id}）`).join('；')}`);
     }
     if (s.wants.length) {
       parts.push(`想要：${s.wants.map((w) => `${w.what}（${w.scale === 'big' ? '得攒' : '小事'}，${w.id}）`).join('；')}`);
+    }
+    if (j.installed && j.wishes.length) {
+      parts.push(`想去的地方（环游心愿）：${j.wishes.join('、')}`);
     }
     if (s.pending.length) {
       parts.push(`悬着：${s.pending.map((x) => {
@@ -6227,6 +6271,7 @@ export class LifeWorld implements World {
           : (s.activity ? `正在「${s.activity.label}」（还剩 ${s.activity.minutesLeft} 分钟，${Math.round(s.activity.progress * 100)}%）` : ''),
         s.conditions.map((c) => c.text).join('；'),
         s.moodlets.map((m) => m.text).join('；'),
+        s.moodEffect.effectsText ? `[${s.moodEffect.label}：${s.moodEffect.effectsText}]` : '',
       ].filter(Boolean).join('　·　') || '没什么特别的',
       'life.has': [
         s.habits.length ? `常态 ${s.habits.length} 条` : '',
@@ -6710,7 +6755,7 @@ export class LifeWorld implements World {
       if (method === 'snapshot' || method === 'list' || method === '') {
         return {
           ...this.panelSnapshot(now),
-          career: buildCareerOverview(this.state),
+          career: buildCareerOverview(this.state, now),
         };
       }
       throw new Error(`职业与工坊页不认识这个方法：${method}`);
@@ -7098,6 +7143,35 @@ export class LifeWorld implements World {
       };
     }
 
+    if (method === 'care') {
+      await this.settleBeforeTool(now);
+      const raw = Array.isArray(args) ? args[0] : args;
+      const kind = String(raw?.kind ?? raw ?? '').trim();
+      const cr = applyUserCare(this.state, kind, now);
+      if (!cr.ok || !cr.item) {
+        return { ok: false, reason: cr.reason || '今天没照料成。', ...this.panelSnapshot(now) };
+      }
+      this.saveDeliveredState();
+      this.broadcastLife(now);
+      await this.push(
+        'life.care',
+        cr.recoveredNow
+          ? `他刚刚在面板上给你「${cr.item.label}」，烧退身轻这会儿已经好透了，可以安心歇息再恢复日常。`
+          : `他刚刚在面板上给你「${cr.item.label}」，恢复提前了 ${cr.item.hoursCut} 小时（还需静养约 ${cr.hoursLeftAfter} 小时）。好好歇着别硬撑。`,
+        'flush',
+      );
+      if (cr.recoveredNow) {
+        await this.push('life.recovered', '多亏他的每日照料，刚刚病愈恢复了。', 'debounce');
+      }
+      return {
+        ok: true,
+        message: cr.recoveredNow
+          ? `${cr.item.label}已送达，她已经好透痊愈了 ✓`
+          : `${cr.item.label}已送达，病程缩短 ${cr.item.hoursCut}h（还剩约 ${cr.hoursLeftAfter}h）✓`,
+        ...this.panelSnapshot(now),
+      };
+    }
+
     if (method === 'moveTown') {
       await this.settleBeforeTool(now);
       const raw = Array.isArray(args) ? args[0] : args;
@@ -7228,6 +7302,7 @@ export class LifeWorld implements World {
           tripWork: j.tripWork,
           partyWith: j.partyWith,
           partyDays: j.partyDays,
+          wishes: j.wishes,
         },
         town: {
           id: this.town.id,
@@ -7346,6 +7421,7 @@ export class LifeWorld implements World {
         low: s.low,
         conditions: s.conditions,
         moodlets: s.moodlets,
+        moodEffect: s.moodEffect,
         habits: s.habits,
         watches: s.watches,
         wants: s.wants,
@@ -7380,6 +7456,9 @@ export class LifeWorld implements World {
         farmHelper: s.farmHelper,
         pantry: s.pantry,
         cookedDishes: s.cookedDishes,
+        workOutputs: s.workOutputs,
+        houseboundSick: s.houseboundSick,
+        sickCare: s.sickCare,
         stallRecords: s.stallRecords,
         bulletin: [...this.townBulletin],
         myStalls: [...this.myStallsCache],

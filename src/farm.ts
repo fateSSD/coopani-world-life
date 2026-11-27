@@ -303,6 +303,8 @@ export interface CookedDishItem {
   energyGain?: number;
   cleanGain?: number;
   tier: 'simple' | 'chef';
+  quality?: 'common' | 'good' | 'fine' | 'exquisite';
+  qualityLabel?: string;
   cookedAt: string;
 }
 
@@ -515,6 +517,8 @@ export function normCookedDishes(raw: unknown): CookedDishItem[] {
       ...(Number.isFinite(Number(o.energyGain)) ? { energyGain: Math.round(Number(o.energyGain)) } : {}),
       ...(Number.isFinite(Number(o.cleanGain)) ? { cleanGain: Math.round(Number(o.cleanGain)) } : {}),
       tier: o.tier === 'chef' ? 'chef' : 'simple',
+      ...(o.quality && ['common', 'good', 'fine', 'exquisite'].includes(o.quality) ? { quality: o.quality } : {}),
+      ...(typeof o.qualityLabel === 'string' && o.qualityLabel ? { qualityLabel: o.qualityLabel } : {}),
       cookedAt: typeof o.cookedAt === 'string' ? o.cookedAt : '',
     });
   }
@@ -527,10 +531,13 @@ export function addCookedDish(
 ): CookedDishItem[] {
   const qty = Math.max(0, Math.round(item.qty));
   if (!item.name.trim() || !item.recipeId.trim() || qty <= 0) return dishes;
-  const hit = dishes.find((x) => x.recipeId === item.recipeId && x.name === item.name);
+  const itemQual = item.quality ?? 'common';
+  const hit = dishes.find((x) => x.recipeId === item.recipeId && x.name === item.name && (x.quality ?? 'common') === itemQual);
   if (hit) {
     hit.qty += qty;
     hit.unitCost = Math.max(0, Math.round(item.unitCost));
+    hit.foodGain = Math.max(hit.foodGain, item.foodGain);
+    hit.funGain = Math.max(hit.funGain, item.funGain);
     hit.cookedAt = item.cookedAt;
     return dishes.slice(-30);
   }
@@ -560,9 +567,12 @@ export function consumeCookedDish(
   if (need <= 0 || !Array.isArray(dishes) || !dishes.length) {
     return { consumed: 0, sources: [], totalUnitCost: 0 };
   }
-  const q = String(preferNameOrId ?? '').trim().toLowerCase();
+  const rawQ = String(preferNameOrId ?? '').trim();
+  const q = rawQ.toLowerCase();
+  const qualRank = (qual?: string) => (qual === 'exquisite' ? 3 : qual === 'fine' ? 2 : qual === 'good' ? 1 : 0);
   const score = (d: CookedDishItem) => {
     if (!q) return 1;
+    if (d.id === rawQ) return -1;
     const n = d.name.toLowerCase();
     const r = d.recipeId.toLowerCase();
     if (n === q || r === q) return 0;
@@ -571,7 +581,7 @@ export function consumeCookedDish(
   };
   const candidates = dishes
     .filter((d) => d.qty > 0)
-    .sort((a, b) => score(a) - score(b));
+    .sort((a, b) => score(a) - score(b) || qualRank(b.quality) - qualRank(a.quality));
 
   let consumed = 0;
   let totalUnitCost = 0;
@@ -583,7 +593,7 @@ export function consumeCookedDish(
     need -= take;
     consumed += take;
     totalUnitCost += take * d.unitCost;
-    sources.push(`自制「${d.name}」×${take}`);
+    sources.push(`自制${d.qualityLabel ? `【${d.qualityLabel}】` : ''}「${d.name}」×${take}`);
   }
   for (let i = dishes.length - 1; i >= 0; i--) {
     if (dishes[i].qty <= 0) dishes.splice(i, 1);

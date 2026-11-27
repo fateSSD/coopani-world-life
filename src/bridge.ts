@@ -65,6 +65,8 @@ export interface JourneyView {
   onWay: { what: string; arriveAt: string; leftMin: number } | null;
   /** 此刻正在某个景点内。 */
   atSpot: { name: string; until: string } | null;
+  /** journey 那边记下的「想去还没去的城市名」列表。 */
+  wishes: string[];
 }
 
 const EMPTY_JOURNEY: JourneyView = {
@@ -91,6 +93,7 @@ const EMPTY_JOURNEY: JourneyView = {
   partyDays: 0,
   onWay: null,
   atSpot: null,
+  wishes: [],
 };
 
 /**
@@ -168,6 +171,10 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
     }
     : null;
 
+  const wishes = Array.isArray(raw.wishes)
+    ? raw.wishes.filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0).map((x: string) => x.trim()).slice(0, 12)
+    : [];
+
   return {
     installed: true, phase, cityId, cityName, worldNow, speed, toName, staleSec,
     moneyOn: raw.money?.enabled === true,
@@ -185,6 +192,7 @@ export function readJourney(dataDir: string, now: Date = new Date()): JourneyVie
     partyDays,
     onWay,
     atSpot,
+    wishes,
   };
 }
 

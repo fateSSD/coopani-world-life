@@ -115,6 +115,8 @@ export function rollWorkGrade(opts: {
   hasHangover: boolean;
   hasBadMood: boolean;
   hasGoodMood: boolean;
+  /** 若由 moodSummary 传入净分权重，优先以此为准，避免混合心情抵消。 */
+  moodScoreDelta?: number;
   hasFreshVeg?: boolean;
   domain?: SkillDomain;
   jobName: string;
@@ -126,8 +128,12 @@ export function rollWorkGrade(opts: {
   if (opts.energy < 25) score -= 0.25;
   if (opts.hasBadCond) score -= 0.16;
   if (opts.hasHangover) score -= 0.35;
-  if (opts.hasBadMood) score -= 0.12;
-  if (opts.hasGoodMood) score += 0.14;
+  if (typeof opts.moodScoreDelta === 'number' && Number.isFinite(opts.moodScoreDelta)) {
+    score += opts.moodScoreDelta;
+  } else {
+    if (opts.hasBadMood) score -= 0.12;
+    if (opts.hasGoodMood) score += 0.14;
+  }
   if (opts.hasFreshVeg && opts.domain === 'cooking') score += 0.14;
 
   /* 从随机抖动与实力线叠加出五档（熟练+培训后几乎不再砸锅，新手有失手亏本风险）。 */
@@ -368,4 +374,127 @@ export function normalizeMoodBonus(raw?: number): number {
     ? (raw > 0 ? Math.max(1, Math.round(raw * 20)) : Math.min(-1, Math.round(raw * 20)))
     : Math.round(raw);
   return Math.max(-15, Math.min(20, val));
+}
+
+/* ------------------------------------------------------------------ */
+/* 技能熟练度薪资加成 & 产出四档品质（普通 / 良品 / 精品 / 臻品）         */
+/* ------------------------------------------------------------------ */
+
+export type OutputQualityId = 'common' | 'good' | 'fine' | 'exquisite';
+
+export interface OutputQualityMeta {
+  id: OutputQualityId;
+  label: string;
+  valueMult: number;
+  badgeColor: 'muted' | 'green' | 'blue' | 'gold';
+}
+
+export const OUTPUT_QUALITY_ORDER: readonly OutputQualityId[] = ['common', 'good', 'fine', 'exquisite'];
+
+export const OUTPUT_QUALITY_META: Record<OutputQualityId, OutputQualityMeta> = {
+  common: { id: 'common', label: '普通', valueMult: 1.0, badgeColor: 'muted' },
+  good: { id: 'good', label: '良品', valueMult: 1.2, badgeColor: 'green' },
+  fine: { id: 'fine', label: '精品', valueMult: 1.45, badgeColor: 'blue' },
+  exquisite: { id: 'exquisite', label: '臻品', valueMult: 1.8, badgeColor: 'gold' },
+};
+
+export interface WorkOutputItem {
+  id: string;
+  jobId: string;
+  jobName: string;
+  domain: SkillDomain;
+  name: string;
+  quality: OutputQualityId;
+  qualityLabel: string;
+  value: number;
+  count: number;
+  createdAt: string;
+}
+
+export const JOB_OUTPUT_CATALOG: Record<string, { name: string; basePrice: number }> = {
+  kitchen: { name: '切配风味备菜盒', basePrice: 28 },
+  stall: { name: '早市现做点心', basePrice: 32 },
+  cook: { name: '掌勺拿手热菜品鉴份', basePrice: 68 },
+  bakery_assistant: { name: '现烤枣泥核桃酥礼盒', basePrice: 82 },
+  street_photo: { name: '城市街景抓拍明信片', basePrice: 26 },
+  darkroom_print: { name: '手工银盐冲印相片组', basePrice: 54 },
+  arch_photo: { name: '古建风物画册样张', basePrice: 92 },
+  photo_column: { name: '城记纪实摄影专刊样片', basePrice: 145 },
+  renovation: { name: '木石精细修缮样件', basePrice: 44 },
+  electrician: { name: '家居电路改造验收件', basePrice: 72 },
+  linen_embroidery: { name: '手绣亚麻茶席垫', basePrice: 56 },
+  custom_tailor: { name: '手工改衣定制成衣件', basePrice: 95 },
+  menu_copy: { name: '手写体店铺菜单样张', basePrice: 24 },
+  local_notes: { name: '街巷风物随笔稿', basePrice: 50 },
+  magazine_feature: { name: '城市生活特约专栏稿', basePrice: 96 },
+  teacher: { name: '校本教案与练习册', basePrice: 84 },
+  delivery: { name: '同城顺路配送单', basePrice: 20 },
+  rider_delivery: { name: '准点跑单成绩单', basePrice: 36 },
+  courier_ebike: { name: '片区急件妥投记录', basePrice: 42 },
+  driver: { name: '全天安全接送台账', basePrice: 66 },
+  designated_driver: { name: '夜间平安代驾记录', basePrice: 62 },
+};
+
+export function jobOutputOf(jobId: string): { name: string; basePrice: number } | null {
+  return JOB_OUTPUT_CATALOG[jobId] ?? null;
+}
+
+/** 熟练度对工钱与时薪的倍率：0 级 1.00x，50 级 1.25x，100 级 1.50x。 */
+export function skillPayMultiplier(domainExp: number): number {
+  const clamped = Math.min(100, Math.max(0, Number.isFinite(domainExp) ? domainExp : 0));
+  return Math.round((1 + (clamped / 100) * 0.5) * 100) / 100;
+}
+
+/** 根据领域熟练度与培训/心情算四档品质出率（百分比之和严格为 100）。 */
+export function qualityOdds(
+  domainExp: number,
+  opts: {
+    trainedCount?: number;
+    hasGoodMood?: boolean;
+    hasBadMood?: boolean;
+    moodPolarity?: 'good' | 'bad' | 'neutral';
+  } = {},
+): Record<OutputQualityId, number> {
+  const base = Math.min(100, Math.max(0, Number.isFinite(domainExp) ? domainExp : 0)) / 100;
+  const trainBoost = Math.min(0.08, Math.max(0, Number(opts.trainedCount) || 0) * 0.02);
+  const moodBoost = opts.moodPolarity
+    ? (opts.moodPolarity === 'good' ? 0.05 : opts.moodPolarity === 'bad' ? -0.05 : 0)
+    : ((opts.hasGoodMood ? 0.05 : 0) - (opts.hasBadMood ? 0.05 : 0));
+  const e = Math.max(0, Math.min(1, base + trainBoost + moodBoost));
+
+  const exquisite = Math.round(1 + e * 24);
+  const fine = Math.round(5 + e * 30);
+  const good = Math.round(18 + e * 14 - Math.max(0, e - 0.6) * 10);
+  const common = Math.max(4, 100 - exquisite - fine - good);
+  const diff = 100 - (common + good + fine + exquisite);
+  return {
+    common: Math.max(1, common + diff),
+    good,
+    fine,
+    exquisite,
+  };
+}
+
+/** 抽取一件四档品质结果；roll 取 [0, 1)，越接近 1 越容易出高档品质。 */
+export function rollWorkQuality(
+  domainExp: number,
+  opts: {
+    trainedCount?: number;
+    hasGoodMood?: boolean;
+    hasBadMood?: boolean;
+    moodPolarity?: 'good' | 'bad' | 'neutral';
+    roll?: number;
+    forceCommon?: boolean;
+  } = {},
+): OutputQualityMeta {
+  if (opts.forceCommon) return OUTPUT_QUALITY_META.common;
+  const odds = qualityOdds(domainExp, opts);
+  const r = typeof opts.roll === 'number' && Number.isFinite(opts.roll)
+    ? Math.max(0, Math.min(0.999999, opts.roll))
+    : Math.random();
+  const pct = r * 100;
+  if (pct < odds.common) return OUTPUT_QUALITY_META.common;
+  if (pct < odds.common + odds.good) return OUTPUT_QUALITY_META.good;
+  if (pct < odds.common + odds.good + odds.fine) return OUTPUT_QUALITY_META.fine;
+  return OUTPUT_QUALITY_META.exquisite;
 }

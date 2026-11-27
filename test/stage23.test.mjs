@@ -8,8 +8,9 @@ import { tmpdir } from 'node:os';
 const { LifeWorld } = await import('../src/world.ts');
 const { LIFE_DEFAULTS, parseTownUrls } = await import('../src/config.ts');
 const {
-  freshState, advance, applyAct, applySpend, applyWork, applyCert, applyLearn, normalize,
-  snapshot, weatherOf, fullMarketPrices, localDateKey, StateStore,
+  freshState, advance, applyAct, applySpend, applyWork, applyCert, applyLearn, applyMove, normalize,
+  snapshot, weatherOf, fullMarketPrices, localDateKey, StateStore, moodSummary, certChance, ACTS, MAX_PENDING,
+  skillPayMultiplier,
 } = await import('../src/state.ts');
 const { JOBS } = await import('../src/jobs.ts');
 const { readJourney } = await import('../src/bridge.ts');
@@ -54,7 +55,7 @@ test('二期收尾：journey-public.json 四格对齐与 day/wants/relation 三�
     assert.deepEqual(ui.panels.map((p) => p.id), ['now', 'career', 'wants', 'relation', 'market', 'diary', 'library']);
 
     const careerSnap = await ui.invoke('career', 'snapshot');
-    assert.equal(careerSnap.career.certs.length, 9);
+    assert.equal(careerSnap.career.certs.length, 10);
     assert.ok(careerSnap.career.recipes.some((r) => r.id === 'roast_sweet_potato' && r.unlocked === true));
     assert.ok(careerSnap.career.recipes.some((r) => r.id === 'tomato_beef_stew' && r.unlocked === false));
 
@@ -148,9 +149,10 @@ test('三期成长与 G 类轻载具闭环：life_learn 培训/购车、装备�
   const res = advance(s, end, { gradeRoll: 0.99 });
   assert.equal(res.completed.length, 1);
   assert.equal(res.completed[0].gradeLabel, '漂亮');
-  assert.equal(res.completed[0].workEarned, Math.round(135 * 1.6));
+  const expectedSkillPay = Math.round(135 * skillPayMultiplier(12));
+  assert.equal(res.completed[0].workEarned, Math.round(expectedSkillPay * 1.6));
   assert.match(res.completed[0].shiftSummary ?? '', /11 单/);
-  assert.equal(s.money.cash - cashBeforeDone, Math.round(135 * 1.6));
+  assert.equal(s.money.cash - cashBeforeDone, Math.round(expectedSkillPay * 1.6));
   assert.equal(s.shift, null);
   assert.ok((s.skills.driving ?? 0) > 12);
 
@@ -1761,6 +1763,150 @@ test('1.4.2 面板自动化回归：无头 DOM 桩挂载全部 7 个页签无异
   }
 });
 
+test('面板折叠栏在刷新重绘后保持展开状态并同步提示文案', async () => {
+  const dir = mkDir();
+  const prevDoc = globalThis.document;
+
+  class FakeNode {
+    constructor(nodeType, tagName = '') {
+      this.nodeType = nodeType;
+      this.tagName = tagName;
+      this.children = [];
+      this.parentNode = null;
+      this.attrs = {};
+      this.style = { cssText: '' };
+      this.className = '';
+      this.id = '';
+      this.listeners = {};
+      this._text = '';
+      this.hidden = false;
+      this.disabled = false;
+      this.checked = false;
+      this.open = false;
+      this.value = '';
+      this.type = '';
+      this.title = '';
+    }
+    get textContent() {
+      if (this.nodeType === 3) return this._text;
+      return this._text + this.children.map((c) => c.textContent).join('');
+    }
+    set textContent(v) {
+      this._text = String(v ?? '');
+      this.children = [];
+    }
+    get innerHTML() { return ''; }
+    set innerHTML(v) { if (!v) { this.children = []; this._text = ''; } }
+    append(...nodes) {
+      for (const n of nodes) {
+        if (typeof n === 'string') this.children.push(new FakeText(n));
+        else if (n) { n.parentNode = this; this.children.push(n); }
+      }
+    }
+    prepend(...nodes) {
+      const wrapped = nodes.map((n) => (typeof n === 'string' ? new FakeText(n) : n)).filter(Boolean);
+      for (const n of wrapped) n.parentNode = this;
+      this.children = [...wrapped, ...this.children];
+    }
+    setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = String(v); }
+    addEventListener(ev, fn) { (this.listeners[ev] ??= []).push(fn); }
+    remove() {
+      if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((c) => c !== this);
+    }
+    focus() {}
+    select() {}
+  }
+  class FakeText {
+    constructor(text) { this.nodeType = 3; this._text = String(text ?? ''); }
+    get textContent() { return this._text; }
+    set textContent(v) { this._text = String(v ?? ''); }
+  }
+  function findAll(node, pred, out = []) {
+    if (!node || node.nodeType === 3) return out;
+    if (pred(node)) out.push(node);
+    for (const c of node.children || []) findAll(c, pred, out);
+    return out;
+  }
+
+  const fakeDoc = {
+    head: new FakeNode(1, 'head'),
+    body: new FakeNode(1, 'body'),
+    createElement(tag) { return new FakeNode(1, tag); },
+    createTextNode(txt) { return new FakeText(txt); },
+    getElementById(id) { return findAll(this.head, (n) => n.id === id)[0] || findAll(this.body, (n) => n.id === id)[0] || null; },
+    execCommand() { return true; },
+  };
+  fakeDoc.head.ownerDocument = fakeDoc;
+  fakeDoc.body.ownerDocument = fakeDoc;
+  globalThis.document = fakeDoc;
+
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const panelMod = await import(`../${pkg.cortico.webUiClient}?fold=${Date.now()}`);
+    const panels = panelMod.default.panels;
+    const world = new LifeWorld({ cfg: { ...LIFE_DEFAULTS(), enabled: true }, dataDir: dir, botName: '大肥鱼' });
+    await world.start(silentHost);
+    const ui = world.webUi();
+
+    // 1) career 页签：全部职业门槛与日薪清单
+    const careerRoot = new FakeNode(1, 'div');
+    careerRoot.ownerDocument = fakeDoc;
+    fakeDoc.body.append(careerRoot);
+    await panels.career.mount({
+      root: careerRoot,
+      language: 'zh',
+      invoke: (method, args) => ui.invoke('career', method, ...(args ?? [])),
+      timeout: () => 0,
+    });
+    const careerFold0 = findAll(careerRoot, (n) => n.tagName === 'details')[0];
+    assert.ok(careerFold0);
+    assert.equal(careerFold0.open, false);
+    careerFold0.open = true;
+    for (const fn of careerFold0.listeners.toggle || []) fn();
+    const reloadCareerBtn = findAll(careerRoot, (n) => n.tagName === 'button' && n.textContent === '刷新')[0];
+    assert.ok(reloadCareerBtn);
+    for (const fn of reloadCareerBtn.listeners.click || []) await fn();
+    await new Promise((r) => setTimeout(r, 20));
+    const careerFold1 = findAll(careerRoot, (n) => n.tagName === 'details')[0];
+    assert.equal(careerFold1.open, true, 'career 折叠栏刷新后必须保持展开');
+    assert.ok(careerFold1.textContent.includes('点击收起岗位表'));
+
+    // 2) market 页签：4 个折叠栏（攻略、规则表、种子、养殖）
+    const marketRoot = new FakeNode(1, 'div');
+    marketRoot.ownerDocument = fakeDoc;
+    fakeDoc.body.append(marketRoot);
+    await panels.market.mount({
+      root: marketRoot,
+      language: 'zh',
+      invoke: (method, args) => ui.invoke('market', method, ...(args ?? [])),
+      timeout: () => 0,
+    });
+    const marketFolds0 = findAll(marketRoot, (n) => n.tagName === 'details');
+    assert.equal(marketFolds0.length, 4);
+    for (const f of [marketFolds0[0], marketFolds0[2]]) {
+      f.open = true;
+      for (const fn of f.listeners.toggle || []) fn();
+    }
+    const reloadMarketBtn = findAll(marketRoot, (n) => n.tagName === 'button' && n.textContent === '刷新')[0];
+    assert.ok(reloadMarketBtn);
+    for (const fn of reloadMarketBtn.listeners.click || []) await fn();
+    await new Promise((r) => setTimeout(r, 20));
+    const marketFolds1 = findAll(marketRoot, (n) => n.tagName === 'details');
+    assert.equal(marketFolds1[0].open, true, 'market 攻略折叠栏刷新后必须保持展开');
+    assert.equal(marketFolds1[1].open, false, 'market 未点开的折叠栏保持收起');
+    assert.equal(marketFolds1[2].open, true, 'market 种子目录折叠栏刷新后必须保持展开');
+    assert.equal(marketFolds1[3].open, false);
+    assert.ok(marketFolds1[0].textContent.includes('点击收起规则与攻略'));
+    assert.ok(marketFolds1[2].textContent.includes('点击收起'));
+
+    await world.stop();
+  } finally {
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('1.5.1 省略 id 一次浇完多块菜/喂完多栏动物 + 傍晚 farm:care:pm 兜底提醒与 life.day 农牧待办提示', async () => {
   const dir = mkDir();
   try {
@@ -2436,6 +2582,632 @@ test('1.5.1 省略 id 一次浇完多块菜/喂完多栏动物 + 傍晚 farm:car
 
     await world.stop();
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('好/坏心情明确作用于五维衰减、读书、锻炼、考证概率与状态/面板透出', async () => {
+  const t0 = new Date('2026-11-27T10:00:00.000+08:00');
+  const expIso = new Date(t0.getTime() + 6 * 3_600_000).toISOString();
+
+  // 1) moodSummary 纯函数与衰减倍率验证
+  const sNeu = freshState(t0);
+  const sGood = freshState(t0);
+  const sBad = freshState(t0);
+  sGood.moodlets.push({ id: 'mg1', source: 'feast', text: '吃爽了', kind: 'good', expiresAt: expIso });
+  sBad.moodlets.push({ id: 'mb1', source: 'instant', text: '将就糊弄了一口', kind: 'bad', expiresAt: expIso });
+
+  assert.equal(moodSummary(sNeu, t0).polarity, 'neutral');
+  assert.equal(moodSummary(sGood, t0).polarity, 'good');
+  assert.equal(moodSummary(sGood, t0).studyMult, 1.15);
+  assert.equal(moodSummary(sGood, t0).fitMult, 1.15);
+  assert.equal(moodSummary(sGood, t0).certDelta, 0.08);
+  assert.equal(moodSummary(sBad, t0).polarity, 'bad');
+  assert.equal(moodSummary(sBad, t0).studyMult, 0.85);
+  assert.equal(moodSummary(sBad, t0).certDelta, -0.08);
+
+  const t2h = new Date(t0.getTime() + 2 * 3_600_000);
+  advance(sNeu, t2h);
+  advance(sGood, t2h);
+  advance(sBad, t2h);
+  assert.ok(sGood.vitals.fun > sNeu.vitals.fun, '好心情下娱乐衰减减缓 15%');
+  assert.ok(sGood.vitals.social > sNeu.vitals.social, '好心情下社交衰减减缓 15%');
+  assert.ok(sBad.vitals.energy < sNeu.vitals.energy, '坏心情下精力衰减加快 15%');
+  assert.ok(sBad.vitals.fun < sNeu.vitals.fun, '坏心情下娱乐衰减加快 15%');
+
+  // 2) 读书与锻炼涨幅受心情影响
+  const studyNeu = freshState(t0);
+  const studyGood = freshState(t0);
+  const studyBad = freshState(t0);
+  studyGood.moodlets.push({ id: 'mg2', source: 'feast', text: '神清气爽', kind: 'good', expiresAt: expIso });
+  studyBad.moodlets.push({ id: 'mb2', source: 'cert-fail', text: '有点郁闷', kind: 'bad', expiresAt: expIso });
+  applyAct(studyNeu, 'study', t0);
+  applyAct(studyGood, 'study', t0);
+  applyAct(studyBad, 'study', t0);
+  const tStudyEnd = new Date(t0.getTime() + ACTS.study.minutes * 60_000);
+  advance(studyNeu, tStudyEnd);
+  advance(studyGood, tStudyEnd);
+  advance(studyBad, tStudyEnd);
+  assert.ok(studyGood.knowledge > studyNeu.knowledge + 0.7, '好心情读书多涨 15%');
+  assert.ok(studyBad.knowledge < studyNeu.knowledge - 0.7, '坏心情读书少涨 15%');
+
+  const fitNeu = freshState(t0);
+  const fitGood = freshState(t0);
+  fitGood.moodlets.push({ id: 'mg3', source: 'feast', text: '状态正好', kind: 'good', expiresAt: expIso });
+  applyAct(fitNeu, 'workout', t0);
+  applyAct(fitGood, 'workout', t0);
+  const tFitEnd = new Date(t0.getTime() + ACTS.workout.minutes * 60_000);
+  advance(fitNeu, tFitEnd);
+  advance(fitGood, tFitEnd);
+  assert.ok(fitGood.fitness > fitNeu.fitness + 0.3, '好心情锻炼多涨 15%');
+
+  // 3) 考证胜算受 ±8% 修正（两参口径不变）
+  assert.equal(certChance(20, 40), 0.525);
+  assert.ok(Math.abs(certChance(20, 40, 0.08) - 0.605) < 1e-9);
+  assert.ok(Math.abs(certChance(20, 40, -0.08) - 0.445) < 1e-9);
+
+  const cGood = freshState(t0);
+  cGood.knowledge = 20;
+  cGood.money.cash = 1000;
+  cGood.moodlets.push({ id: 'mg4', source: 'gift', text: '开心', kind: 'good', expiresAt: expIso });
+  const rGood = applyCert(cGood, '厨师证', t0, 0.56);
+  assert.equal(rGood.passed, true, '0.525 + 0.08 = 0.605 应让 roll=0.56 通过');
+  assert.match(String(rGood.moodNote), /好心情加持/);
+
+  const cBad = freshState(t0);
+  cBad.knowledge = 20;
+  cBad.money.cash = 1000;
+  cBad.moodlets.push({ id: 'mb4', source: 'instant', text: '心烦', kind: 'bad', expiresAt: expIso });
+  const rBad = applyCert(cBad, '厨师证', t0, 0.48);
+  assert.equal(rBad.passed, false, '0.525 - 0.08 = 0.445 应让 roll=0.48 落榜');
+  assert.match(String(rBad.moodNote), /坏心情拖累/);
+
+  // 4) snapshot().moodEffect 透出效果摘要
+  assert.match(snapshot(cGood, t0).moodEffect.effectsText, /考证 \+8%/);
+  assert.equal(snapshot(freshState(t0), t0).moodEffect.effectsText, '');
+});
+
+test('她惦记的自动记账（买家伙/考证/搬家遇阻写入与办成消除）+ 跨扩展读取 journey 心愿渲染进面板', async () => {
+  const dir = mkDir();
+  const prevDoc = globalThis.document;
+  try {
+    const t0 = new Date('2026-11-27T11:00:00.000+08:00');
+    const st = freshState(t0);
+    st.money.cash = 100;
+    st.goals = [];
+
+    // 1) 差钱买烤箱 -> 自动进 wants；有钱买下 -> 自动清掉
+    const buyFail = applyLearn(st, '烤箱', t0);
+    assert.equal(buyFail.ok, false);
+    assert.ok(st.wants.some((w) => w.what.includes('烤箱')), '买不起烤箱应自动记进 wants');
+    st.money.cash = 1000;
+    const buyOk = applyLearn(st, '烤箱', t0);
+    assert.equal(buyOk.ok, true);
+    assert.equal(st.wants.some((w) => w.what.includes('烤箱')), false, '买到烤箱后自动清掉对应 want');
+
+    // 2) 差钱考证 & 考砸 -> 写入 pending；考过 -> 清掉
+    st.money.cash = 50;
+    assert.equal(applyCert(st, '护工证', t0).ok, false);
+    assert.ok(st.pending.some((p) => p.what.includes('护工证') && p.blocked === 'money'));
+    st.money.cash = 1000;
+    assert.equal(applyCert(st, '护工证', t0, 0).passed, true);
+    assert.equal(st.pending.some((p) => p.what.includes('护工证')), false);
+
+    // 3) 搬新小区差押金 -> 记进 wants；接门槛高岗位缺证 -> 记进 pending 且不超过 MAX_PENDING
+    st.money.cash = 500;
+    assert.equal(applyMove(st, 'new', t0).ok, false);
+    assert.ok(st.wants.some((w) => w.what.includes('新小区')));
+    for (const jobName of ['电工', '大厨', '社区护士', '会计助理']) {
+      applyWork(st, jobName, t0, 'home');
+    }
+    assert.ok(st.pending.length <= MAX_PENDING, `自动记录绝不挤爆 MAX_PENDING(${MAX_PENDING})`);
+
+    // 4) 跨扩展读取 journey-public.json.wishes 并渲染到 now 心情效果卡与 wants 面板
+    writeFileSync(join(dir, 'journey-public.json'), JSON.stringify({
+      schema: 'coopani-journey-public/v1',
+      phase: 'home',
+      city: { id: 'lanzhou', name: '兰州', tz: 'Asia/Shanghai' },
+      wishes: ['舟山', '大理'],
+      updatedAt: t0.toISOString(),
+    }), 'utf8');
+    const jv = readJourney(dir, t0);
+    assert.deepEqual(jv.wishes, ['舟山', '大理']);
+
+    st.moodlets.push({
+      id: 'mg-ui',
+      source: 'feast',
+      text: '今天胃口极好',
+      kind: 'good',
+      expiresAt: new Date(t0.getTime() + 4 * 3_600_000).toISOString(),
+    });
+    new StateStore(dir).save(st);
+    const world = new LifeWorld({ cfg: { ...LIFE_DEFAULTS(), enabled: true }, dataDir: dir, now: () => t0 });
+    await world.start(silentHost);
+    const snap = await world.panelInvoke('now', 'snapshot');
+    assert.deepEqual(snap.journey.wishes, ['舟山', '大理']);
+    assert.match(snap.moodEffect.effectsText, /娱乐\/社交衰减 -15%/);
+
+    // 用最小 DOM 桩挂载 now 与 wants 页签验证渲染输出
+    const makeNode = (tag) => {
+      const node = {
+        tagName: String(tag).toUpperCase(),
+        children: [],
+        style: { cssText: '' },
+        className: '',
+        id: '',
+        hidden: false,
+        title: '',
+        open: false,
+        value: '',
+        _text: '',
+        ownerDocument: null,
+        get textContent() { return this._text + this.children.map((c) => c.textContent || '').join(''); },
+        set textContent(v) { this._text = String(v ?? ''); this.children = []; },
+        get innerHTML() { return ''; },
+        set innerHTML(_) { this.children = []; this._text = ''; },
+        append(...items) {
+          for (const it of items) {
+            if (typeof it === 'string') this.children.push({ textContent: it, children: [], style: {} });
+            else if (it) { it.parentNode = this; this.children.push(it); }
+          }
+        },
+        prepend(...items) {
+          for (const it of items.reverse()) {
+            const c = typeof it === 'string' ? { textContent: it, children: [], style: {} } : it;
+            if (c) this.children.unshift(c);
+          }
+        },
+        appendChild(it) { this.append(it); return it; },
+        addEventListener() {},
+        setAttribute(k, v) { if (k === 'id') this.id = String(v); },
+      };
+      return node;
+    };
+    const findId = (n, id) => {
+      if (!n) return null;
+      if (n.id === id) return n;
+      for (const c of n.children || []) { const hit = findId(c, id); if (hit) return hit; }
+      return null;
+    };
+    const fakeDoc = {
+      head: makeNode('head'),
+      body: makeNode('body'),
+      createElement(tag) { const el = makeNode(tag); el.ownerDocument = fakeDoc; return el; },
+      createTextNode(t) { return { textContent: String(t ?? ''), children: [] }; },
+      getElementById(id) { return findId(this.head, id) || findId(this.body, id); },
+    };
+    fakeDoc.head.ownerDocument = fakeDoc;
+    fakeDoc.body.ownerDocument = fakeDoc;
+    globalThis.document = fakeDoc;
+    const panelMod = await import(`../web/panel-1.6.3.js?mood=${Date.now()}`);
+    const panels = panelMod.default.panels;
+
+    const nowRoot = fakeDoc.createElement('div');
+    fakeDoc.body.append(nowRoot);
+    await panels.now.mount({ root: nowRoot, language: 'zh', invoke: async () => snap, timeout: () => 0 });
+    assert.match(nowRoot.textContent, /好心情加持：/);
+
+    const wantsRoot = fakeDoc.createElement('div');
+    fakeDoc.body.append(wantsRoot);
+    await panels.wants.mount({ root: wantsRoot, language: 'zh', invoke: async () => snap, timeout: () => 0 });
+    assert.match(wantsRoot.textContent, /舟山（环游心愿）/);
+    assert.match(wantsRoot.textContent, /大理（环游心愿）/);
+
+    await world.stop();
+  } finally {
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产出品质与 5 页职业工作台/每日照料闭环', async () => {
+  const { JOBS } = await import('../src/jobs.ts');
+  const {
+    LifeWorld,
+  } = await import('../src/world.ts');
+  const { LIFE_DEFAULTS } = await import('../src/config.ts');
+  const {
+    freshState, applyWork, applyAct, advance, applyUserCare, applyCookRecipe,
+    buildCareerOverview, skillPayMultiplier, qualityOdds,
+  } = await import('../src/state.ts');
+  const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  // 1) 30 个职业与零鱼肉忌讳校验
+  assert.equal(JOBS.length, 30, 'JOBS 应扩充到 30 项');
+  for (const jb of JOBS) {
+    assert.doesNotMatch(jb.name, /鱼肉|生鱼|鱼排|鱼丸|烤鱼|鱼汤|水煮鱼|刺身/);
+    assert.ok(jb.pay > 0 && jb.minutes > 0);
+  }
+  assert.equal(skillPayMultiplier(0), 1);
+  assert.equal(skillPayMultiplier(50), 1.25);
+  assert.equal(skillPayMultiplier(100), 1.5);
+  const lowOdds = qualityOdds(0);
+  const highOdds = qualityOdds(100);
+  assert.equal(lowOdds.common + lowOdds.good + lowOdds.fine + lowOdds.exquisite, 100);
+  assert.equal(highOdds.common + highOdds.good + highOdds.fine + highOdds.exquisite, 100);
+  assert.ok(highOdds.fine + highOdds.exquisite > lowOdds.fine + lowOdds.exquisite, '高熟练度应显著提高高品阶概率');
+
+  // 2) 熟练度提升日薪 + 四档品质工作产出 + 菜谱四档品质
+  const t0 = new Date('2026-11-28T09:00:00+08:00');
+  const sLow = freshState(t0);
+  sLow.gear = ['camera', 'oven', 'sewing', 'computer'];
+  sLow.skills = { photo: 0, cooking: 90 };
+  const wLow = applyWork(sLow, 'darkroom_print', t0, 'home');
+  assert.equal(wLow.ok, true);
+  assert.equal(wLow.expectedPay, 150);
+
+  const sHigh = freshState(t0);
+  sHigh.gear = ['camera', 'oven', 'sewing', 'computer'];
+  sHigh.skills = { photo: 100, cooking: 95 };
+  const wHigh = applyWork(sHigh, 'darkroom_print', t0, 'home');
+  assert.equal(wHigh.ok, true);
+  assert.equal(wHigh.expectedPay, 225, '100 熟练度下 150 元基薪应涨到 225 元 (1.5x)');
+  const adv = advance(sHigh, new Date(t0.getTime() + 310 * 60_000), { qualityRoll: 0.99 });
+  assert.ok(adv.completed?.some((c) => c.outputItem?.quality === 'exquisite' && c.outputItem?.qualityLabel === '臻品'));
+  assert.equal(sHigh.workOutputs.length, 1);
+  assert.equal(sHigh.workOutputs[0].qualityLabel, '臻品');
+
+  sHigh.pantry.push({ id: 'p1', itemId: 'sweet_potato', name: '蜜薯红薯', kind: 'veg', qty: 3, unitCost: 2, acquiredAt: t0.toISOString() });
+  const cookRes = applyCookRecipe(sHigh, 'roast_sweet_potato', 'store', new Date(t0.getTime() + 320 * 60_000), { roll: 0.99 });
+  assert.equal(cookRes.ok, true);
+  assert.equal(cookRes.quality, 'exquisite');
+  assert.equal(cookRes.qualityLabel, '臻品');
+  assert.equal(sHigh.cookedDishes[0].qualityLabel, '臻品');
+
+  const overview = buildCareerOverview(sHigh);
+  assert.equal(overview.jobs.length, 30);
+  assert.equal(overview.workOutputs.length, 1);
+
+  // 3) 过劳生病门禁（禁外出打工/逛街，放行在家休息与农牧照料）+ 每日照料与 World 广播
+  const dir = mkdtempSync(join(tmpdir(), 'life-stage24-'));
+  const prevDoc = globalThis.document;
+  try {
+    let fixedNow = new Date('2026-11-28T14:00:00+08:00');
+    const world = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => fixedNow,
+    });
+    const events = [];
+    await world.start({
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => { events.push(e); return e; },
+      store: {},
+      drainPendingEvents: async () => [],
+    });
+    world.state.updatedAt = fixedNow.toISOString();
+    world.state.gear = ['camera', 'sewing', 'computer'];
+    world.state.skills = { photo: 80, cooking: 60 };
+    world.state.workOutputs = [...sHigh.workOutputs];
+    world.state.cookedDishes = [...sHigh.cookedDishes];
+    world.state.vitals.energy = 12;
+    fixedNow = new Date(fixedNow.getTime() + 60_000);
+    advance(world.state, fixedNow);
+    const overwork = world.state.conditions.find((c) => c.id === 'overwork');
+    assert.ok(overwork, '低精力应触发过劳静养');
+    world.broadcastLife(fixedNow);
+    const pubSick = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
+    assert.ok(pubSick.sickUntil && Date.parse(pubSick.sickUntil) > fixedNow.getTime());
+
+    const tools = new Map(world.tools().map((x) => [x.name, x.handler]));
+    const workBlocked = await tools.get('life_work')({ what: '搬货' });
+    assert.match(workBlocked.text, /生病静养/);
+    const outBlocked = await tools.get('life_out')({ where: '南滨河路' });
+    assert.match(outBlocked.text, /生病静养/);
+    const mallBlocked = applyAct(world.state, 'mall', new Date(fixedNow.getTime() + 120_000));
+    assert.equal(mallBlocked.ok, false);
+    assert.match(String(mallBlocked.reason), /生病静养/);
+
+    const restAllowed = applyAct(world.state, 'rest', new Date(fixedNow.getTime() + 120_000));
+    assert.equal(restAllowed.ok, true, '在家休息应放行');
+    applyAct(world.state, 'cancel', new Date(fixedNow.getTime() + 180_000));
+
+    const farmStatus = await tools.get('life_farm')({ action: 'status' });
+    assert.ok(farmStatus.text && !/生病静养/.test(farmStatus.text), '生病期间应允许在家照料菜园动植物');
+
+    // 每日照料（第 1 次缩短 18h，第 2 次同日被拒）
+    const c1 = await world.panelInvoke('now', 'care', [{ kind: 'medicine' }]);
+    assert.equal(c1.ok, true);
+    assert.ok(events.some((e) => e.type === 'life.care'), '照料应推送 life.care 事件');
+    const c2 = await world.panelInvoke('now', 'care', [{ kind: 'soup' }]);
+    assert.equal(c2.ok, false);
+    assert.match(String(c2.reason), /今天已经照料过一次/);
+
+    // 无头 DOM：验证 now 页每日照料卡片 + career 页 5 个职业特色工作台都能切换并渲染完整内容
+    const makeNode = (tag) => {
+      const listeners = {};
+      const node = {
+        tagName: String(tag).toUpperCase(),
+        children: [],
+        style: { cssText: '' },
+        className: '',
+        id: '',
+        hidden: false,
+        disabled: false,
+        title: '',
+        open: false,
+        value: '',
+        attrs: {},
+        _text: '',
+        ownerDocument: null,
+        get textContent() { return this._text + this.children.map((c) => c.textContent || '').join(''); },
+        set textContent(v) { this._text = String(v ?? ''); this.children = []; },
+        get innerHTML() { return ''; },
+        set innerHTML(_) { this.children = []; this._text = ''; },
+        append(...items) {
+          for (const it of items) {
+            if (typeof it === 'string') this.children.push({ textContent: it, children: [], style: {}, attrs: {} });
+            else if (it) { it.parentNode = this; this.children.push(it); }
+          }
+        },
+        prepend(...items) {
+          for (const it of items.reverse()) {
+            const c = typeof it === 'string' ? { textContent: it, children: [], style: {}, attrs: {} } : it;
+            if (c) this.children.unshift(c);
+          }
+        },
+        appendChild(it) { this.append(it); return it; },
+        addEventListener(ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); },
+        click() { for (const fn of listeners.click || []) fn({}); },
+        setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = String(v); },
+      };
+      return node;
+    };
+    const findAll = (n, pred, out = []) => {
+      if (!n) return out;
+      if (pred(n)) out.push(n);
+      for (const ch of n.children || []) findAll(ch, pred, out);
+      return out;
+    };
+    const findId = (n, id) => findAll(n, (x) => x.id === id)[0] || null;
+    const fakeDoc = {
+      head: makeNode('head'),
+      body: makeNode('body'),
+      createElement(tag) { const el = makeNode(tag); el.ownerDocument = fakeDoc; return el; },
+      createTextNode(t) { return { textContent: String(t ?? ''), children: [], attrs: {} }; },
+      getElementById(id) { return findId(this.head, id) || findId(this.body, id); },
+    };
+    fakeDoc.head.ownerDocument = fakeDoc;
+    fakeDoc.body.ownerDocument = fakeDoc;
+    globalThis.document = fakeDoc;
+
+    const panelMod = await import(`../web/panel-1.6.3.js?stage24=${Date.now()}`);
+    const panels = panelMod.default.panels;
+
+    const nowSnap = await world.panelInvoke('now', 'snapshot', []);
+    const nowRoot = fakeDoc.createElement('div');
+    await panels.now.mount({ root: nowRoot, language: 'zh', invoke: async () => nowSnap, timeout: () => 0 });
+    assert.match(nowRoot.textContent, /生病闭门静养中/);
+    assert.match(nowRoot.textContent, /买药送来/);
+    assert.match(nowRoot.textContent, /熬热姜枣粥/);
+
+    const careerSnap = await world.panelInvoke('career', 'snapshot', []);
+    const careerRoot = fakeDoc.createElement('div');
+    await panels.career.mount({ root: careerRoot, language: 'zh', invoke: async () => careerSnap, timeout: () => 0 });
+    assert.match(careerRoot.textContent, /五大职业特色工作台/);
+    assert.match(careerRoot.textContent, /30 项/);
+    for (const [sid, expectWord] of [
+      ['photo', '暗房胶片冲印'],
+      ['craft', '亚麻刺绣手作'],
+      ['writing', '风物随笔撰稿'],
+      ['driving', '网约车司机'],
+    ]) {
+      const btn = findAll(careerRoot, (n) => n.attrs?.['data-studio-tab'] === sid)[0];
+      assert.ok(btn, `应存在工作台标签 ${sid}`);
+      btn.click();
+      assert.ok(careerRoot.textContent.includes(expectWord), `${sid} 工作台应渲染 ${expectWord}`);
+    }
+
+    // 病愈：再推进一天或继续照料使病程到期，sickUntil 应清空
+    fixedNow = new Date(fixedNow.getTime() + 19 * 3_600_000);
+    advance(world.state, fixedNow);
+    world.broadcastLife(fixedNow);
+    const pubClean = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
+    assert.equal(pubClean.sickUntil, '', '到期痊愈后 life-public.sickUntil 应清空');
+
+    await world.stop();
+  } finally {
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('复审 P0/P1/P2 全项回归：照料点击不报错、混合心情对齐、离线过劳无幻觉通知、多病照料一致、全外出门禁与做砸/心愿边界', async () => {
+  const { LifeWorld } = await import('../src/world.ts');
+  const { LIFE_DEFAULTS } = await import('../src/config.ts');
+  const {
+    freshState, advance, applyWork, applyCert, applyLearn, applyMove,
+    applyUserCare, applyCookRecipe, buildCareerOverview,
+    rollWorkGrade, qualityOdds, moodSummary,
+  } = await import('../src/state.ts');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  // 1) P1 #3: 混合心情（2 好 + 1 坏）→ moodSummary/rollWorkGrade/qualityOdds/buildCareerOverview 口径一致
+  const t0 = new Date('2026-11-28T10:00:00+08:00');
+  const sm = freshState(t0);
+  const expIso = new Date(t0.getTime() + 5 * 3_600_000).toISOString();
+  sm.moodlets.push(
+    { id: 'mg1', source: 'act1', text: '开心1', kind: 'good', expiresAt: expIso },
+    { id: 'mg2', source: 'act2', text: '开心2', kind: 'good', expiresAt: expIso },
+    { id: 'mb1', source: 'act3', text: '微烦', kind: 'bad', expiresAt: expIso },
+  );
+  const ms = moodSummary(sm, t0);
+  assert.equal(ms.polarity, 'good');
+  assert.equal(ms.workScoreDelta, 0.14);
+  const oddsMixed = qualityOdds(40, { moodPolarity: ms.polarity });
+  const oddsPureGood = qualityOdds(40, { moodPolarity: 'good' });
+  assert.deepEqual(oddsMixed, oddsPureGood, '混合好心情占比胜出应与纯好心情一致');
+  const ov = buildCareerOverview(sm, t0);
+  const ovPure = buildCareerOverview({ ...sm, moodlets: sm.moodlets.slice(0, 2) }, t0);
+  assert.deepEqual(ov.certs[0].chancePct, ovPure.certs[0].chancePct, '职业概览过考率应同步心情修正');
+  const gMixed = rollWorkGrade({
+    domainExp: 0, trainedCount: 0, energy: 80, hasBadCond: false, hasHangover: false,
+    hasBadMood: true, hasGoodMood: true, moodScoreDelta: ms.workScoreDelta,
+    domain: 'cooking', jobName: '厨师', roll: 0.5,
+  });
+  const gPure = rollWorkGrade({
+    domainExp: 0, trainedCount: 0, energy: 80, hasBadCond: false, hasHangover: false,
+    hasBadMood: false, hasGoodMood: true, moodScoreDelta: 0.14,
+    domain: 'cooking', jobName: '厨师', roll: 0.5,
+  });
+  assert.equal(gMixed.grade, gPure.grade, 'moodScoreDelta 应统一收工考评心情口径');
+
+  // 2) P1 #4: 离线 48h 后收工过劳并早已过期，pendingNotices 不得残留 life.sick
+  const soff = freshState(t0);
+  soff.gear = ['camera'];
+  soff.vitals.energy = 20;
+  applyWork(soff, 'darkroom_print', t0, 'home');
+  const advOff = advance(soff, new Date(t0.getTime() + 48 * 3_600_000));
+  assert.ok(!soff.pendingNotices?.some((n) => n.type === 'life.sick'), '已过期并进 recovered 的过劳不得残留 pendingNotices.life.sick');
+  assert.ok(!advOff.caught.some((c) => c.id === 'overwork'));
+
+  // 3) P1 #5: 同时挂 cold(5h) + overwork(30h)，medicine(-18h) 后全部状态统一返回 recoveredNow:false
+  const smulti = freshState(t0);
+  smulti.conditions = [
+    { id: 'cold', since: t0.toISOString(), until: new Date(t0.getTime() + 5 * 3_600_000).toISOString(), text: '感冒静养' },
+    { id: 'overwork', since: t0.toISOString(), until: new Date(t0.getTime() + 30 * 3_600_000).toISOString(), text: '过劳静养' },
+  ];
+  const careRes = applyUserCare(smulti, 'medicine', t0);
+  assert.equal(careRes.ok, true);
+  assert.equal(careRes.recoveredNow, false);
+  assert.equal(smulti.sickCare.history.at(-1)?.recovered, false, 'history.recovered 不得与 recoveredNow 矛盾');
+  assert.ok(!/好得差不多/.test(smulti.moodlets.find((m) => m.source === 'care')?.text || ''), '尚有30h过劳未好时心情不得写快好透');
+
+  // 4) P2 #9 & #10: applyCookRecipe(eat) 享品质加成、smash 不入 workOutputs、搬老小区不删手动心愿
+  const scook = freshState(t0);
+  scook.pantry.push({ id: 'sp1', itemId: 'sweet_potato', name: '蜜薯红薯', kind: 'veg', qty: 3, unitCost: 2, acquiredAt: t0.toISOString() });
+  const eatCommon = applyCookRecipe({ ...structuredClone(scook) }, 'roast_sweet_potato', 'eat', t0, { roll: 0.01 });
+  const eatExq = applyCookRecipe({ ...structuredClone(scook) }, 'roast_sweet_potato', 'eat', t0, { roll: 0.99 });
+  assert.ok((eatExq.foodGain ?? 0) > (eatCommon.foodGain ?? 0), 'eat 模式臻品也应有更高回复');
+
+  const ssmash = freshState(t0);
+  ssmash.gear = ['sewing'];
+  ssmash.vitals.energy = 80;
+  applyWork(ssmash, 'linen_embroidery', t0, 'home');
+  advance(ssmash, new Date(t0.getTime() + 310 * 60_000), { gradeRoll: 0.01 });
+  assert.equal(ssmash.workOutputs.length, 0, '做砸退货不得写入 workOutputs 作品库');
+
+  const smove = freshState(t0);
+  smove.wants.push({ id: 'w-manual-1', what: '去老小区菜市场逛逛', kind: 'place', scale: 'small', since: t0.toISOString() });
+  const mv = applyMove(smove, 'old', t0);
+  assert.equal(mv.ok, true);
+  assert.ok(smove.wants.some((w) => w.id === 'w-manual-1'), '搬家不得误删包含档位词的手动心愿');
+
+  // 5) P0 #1 + P1 #6: 无头 DOM 实点 data-care="medicine" 无 ReferenceError + 全外出门禁生效
+  const dir = mkdtempSync(join(tmpdir(), 'life-fix-p0-'));
+  const prevDoc = globalThis.document;
+  try {
+    let fixedNow = new Date('2026-11-28T15:00:00+08:00');
+    const world = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true, townUrl: 'http://127.0.0.1:9' },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => fixedNow,
+    });
+    await world.start({
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => e,
+      store: {},
+      drainPendingEvents: async () => [],
+    });
+    world.state.updatedAt = fixedNow.toISOString();
+    world.state.conditions.push({
+      id: 'overwork',
+      since: fixedNow.toISOString(),
+      until: new Date(fixedNow.getTime() + 36 * 3_600_000).toISOString(),
+      text: '过劳静养。浑身乏力，不能出家门，最多只能在家照料菜园动植物。',
+    });
+
+    assert.equal(applyCert(world.state, '健康证', fixedNow).ok, false);
+    assert.equal(applyLearn(world.state, 'camera', fixedNow).ok, false);
+    assert.equal(applyMove(world.state, 'old', fixedNow).ok, false);
+    const tools = new Map(world.tools().map((x) => [x.name, x.handler]));
+    assert.match((await tools.get('life_buy')({ stall_id: 's1' })).text, /生病静养/);
+    assert.match((await tools.get('life_stall')({ item: '烤红薯', price: 12 })).text, /生病静养/);
+    assert.match((await tools.get('life_farm')({ action: 'accept_errand', errand_id: 'e1' })).text, /生病静养/);
+
+    const makeNode = (tag) => {
+      const listeners = {};
+      return {
+        tagName: String(tag).toUpperCase(),
+        children: [],
+        style: { cssText: '' },
+        className: '',
+        id: '',
+        hidden: false,
+        disabled: false,
+        title: '',
+        open: false,
+        value: '',
+        attrs: {},
+        _text: '',
+        ownerDocument: null,
+        get textContent() { return this._text + this.children.map((c) => c.textContent || '').join(''); },
+        set textContent(v) { this._text = String(v ?? ''); this.children = []; },
+        get innerHTML() { return ''; },
+        set innerHTML(_) { this.children = []; this._text = ''; },
+        append(...items) {
+          for (const it of items) {
+            if (typeof it === 'string') this.children.push({ textContent: it, children: [], style: {}, attrs: {} });
+            else if (it) { it.parentNode = this; this.children.push(it); }
+          }
+        },
+        prepend(...items) {
+          for (const it of items.reverse()) {
+            const c = typeof it === 'string' ? { textContent: it, children: [], style: {}, attrs: {} } : it;
+            if (c) this.children.unshift(c);
+          }
+        },
+        appendChild(it) { this.append(it); return it; },
+        addEventListener(ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); },
+        click() { for (const fn of listeners.click || []) fn({}); },
+        setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = String(v); },
+      };
+    };
+    const findAll = (n, pred, out = []) => {
+      if (!n) return out;
+      if (pred(n)) out.push(n);
+      for (const ch of n.children || []) findAll(ch, pred, out);
+      return out;
+    };
+    const fakeDoc = {
+      head: makeNode('head'),
+      body: makeNode('body'),
+      createElement(tag) { const el = makeNode(tag); el.ownerDocument = fakeDoc; return el; },
+      createTextNode(t) { return { textContent: String(t ?? ''), children: [], attrs: {} }; },
+      getElementById(id) { return findAll(this.head, (x) => x.id === id)[0] || findAll(this.body, (x) => x.id === id)[0] || null; },
+    };
+    fakeDoc.head.ownerDocument = fakeDoc;
+    fakeDoc.body.ownerDocument = fakeDoc;
+    globalThis.document = fakeDoc;
+
+    const panelMod = await import(`../web/panel-1.6.3.js?careclick=${Date.now()}`);
+    const nowRoot = fakeDoc.createElement('div');
+    await panelMod.default.panels.now.mount({
+      root: nowRoot,
+      language: 'zh',
+      invoke: (m, a) => world.panelInvoke('now', m, a),
+      timeout: () => 0,
+    });
+    const medBtn = findAll(nowRoot, (n) => n.attrs?.['data-care'] === 'medicine')[0];
+    assert.ok(medBtn, '应渲染 data-care="medicine" 按钮');
+    medBtn.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.doesNotMatch(nowRoot.textContent, /ReferenceError|not defined/);
+    assert.match(nowRoot.textContent, /今日已照料 ✓/);
+    assert.match(nowRoot.textContent, /还剩约 18 小时/);
+
+    await world.stop();
+  } finally {
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
     rmSync(dir, { recursive: true, force: true });
   }
 });

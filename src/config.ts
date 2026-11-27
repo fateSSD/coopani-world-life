@@ -52,7 +52,7 @@ export function clampWeatherTimeoutMs(raw: unknown): number {
 
 export interface LifeConfigSection extends WorldSection {
   /**
-   * 她住在哪座城。留空 = 内置的兰州（南滨河路 / 张掖路 / 皋兰路 / 雁滩路）。
+   * 她住在哪座城。留空 = 内置的兰州（南滨河路 / 张掖路 / 皋兰路 / 雁滩路 / 正宁路 / 庆阳路 / 甘南路 / 安宁西路）。
    *
    * 2026-11-15 加：原来只有「服务器」和「内置」两条路，用户填不了自己想让她住的城。
    * 现在按 journey 那套来 —— **本机填的优先，服务器是覆盖**。

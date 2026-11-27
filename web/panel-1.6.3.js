@@ -585,6 +585,18 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-ing { font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid #e2e8f0; }
 .lf-ing.ok { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
 .lf-ing.miss { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+.lf-care-box { margin-top: 9px; padding: 10px 11px; border-radius: 10px; border: 1px solid #fecaca; background: #fff7ed; display: flex; flex-direction: column; gap: 7px; }
+.lf-care-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; font-weight: 650; color: #9a3412; }
+.lf-care-sub { font-size: 11.5px; color: #7c2d12; line-height: 1.5; }
+.lf-care-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.lf-q-badge { font-size: 10.5px; font-weight: 650; padding: 1px 6px; border-radius: 999px; border: 1px solid #cbd5e1; background: #f8fafc; color: #475569; }
+.lf-q-badge.good { background: #dcfce7; border-color: #86efac; color: #166534; }
+.lf-q-badge.fine { background: #dbeafe; border-color: #93c5fd; color: #1d4ed8; }
+.lf-q-badge.exquisite { background: #fef3c7; border-color: #fcd34d; color: #b45309; }
+.lf-studio-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; padding: 7px 10px; border-radius: 9px; background: #f8fafc; border: 1px solid #e2e8f0; margin-bottom: 9px; font-size: 12px; }
+.lf-studio-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-bottom: 8px; }
+.lf-studio-card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 9px 11px; background: #fbfcfd; display: flex; flex-direction: column; gap: 4px; }
+.lf-studio-card.ready { border-color: #86efac; background: #f0fdf4; }
 
 /* 鱼间信箱只读气泡 */
 .lf-mail-conv { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 9px; margin-bottom: 6px; cursor: pointer; background: #fff; }
@@ -663,6 +675,22 @@ function colorOf(v) {
   if (v < 30) return '#c0392b';
   if (v < 60) return '#d69e2e';
   return '#15803d';
+}
+
+function bindFoldState(fold, store, key, hintEl, closedText, openText) {
+  const sync = () => {
+    const opened = Boolean(fold.open);
+    store[key] = opened;
+    if (hintEl && closedText !== undefined && openText !== undefined) {
+      hintEl.textContent = opened ? openText : closedText;
+    }
+  };
+  fold.open = Boolean(store[key]);
+  if (hintEl && closedText !== undefined && openText !== undefined) {
+    hintEl.textContent = fold.open ? openText : closedText;
+  }
+  fold.addEventListener('toggle', sync);
+  return fold;
 }
 
 const copyText = (str) => {
@@ -1000,6 +1028,7 @@ export default {
           }
         };
 
+        let careTip = null;
         const drawMindBody = (d) => {
           mindBodyCard.innerHTML = '';
           mindBodyCard.append(el('h3', null, t(lang, 'mindBody')));
@@ -1012,6 +1041,58 @@ export default {
             mindBodyCard.append(el('p', 'lf-muted', t(lang, 'calm')));
           } else {
             mindBodyCard.append(chips);
+          }
+          if (d.moodEffect && d.moodEffect.effectsText) {
+            const fx = el('div', 'lf-mood-fx');
+            const good = d.moodEffect.polarity === 'good';
+            fx.style.cssText = `margin-top:8px;padding:6px 10px;border-radius:8px;font-size:12px;line-height:1.45;background:${good ? '#ecfdf5' : '#fffbeb'};color:${good ? '#15803d' : '#b45309'};border:1px solid ${good ? '#bbf7d0' : '#fde68a'}`;
+            fx.textContent = `${good ? '好心情加持' : '坏心情拖累'}：${d.moodEffect.effectsText}`;
+            mindBodyCard.append(fx);
+          }
+          if (d.houseboundSick) {
+            const sc = d.sickCare || { remainingToday: 0, dailyCap: 1, options: [] };
+            const box = el('div', 'lf-care-box');
+            const head = el('div', 'lf-care-head');
+            head.append(el('span', null, `🤒 生病闭门静养中（还剩约 ${d.houseboundSick.hoursLeft} 小时）`));
+            head.append(el('span', 'lf-chip ' + (sc.remainingToday > 0 ? 'info' : 'good'),
+              sc.remainingToday > 0 ? `今日可照料 ${sc.remainingToday}/${sc.dailyCap} 次` : '今日已照料 ✓'));
+            box.append(head);
+            box.append(el('div', 'lf-care-sub', '感冒/过劳期间不能出家门干活或远行，最多在家歇息、煮热食和照料菜园动植物；你每天可以送一次药/热粥帮她快点恢复。'));
+            const row = el('div', 'lf-care-row');
+            const iconMap = { medicine: '💊', soup: '🥣', towel: '🧣' };
+            for (const opt of (sc.options || [])) {
+              const btn = el('button', 'lf-btn sm' + (sc.remainingToday > 0 ? ' primary' : ''), `${iconMap[opt.id] || '🩺'} ${opt.label} (-${opt.hoursCut}h)`);
+              btn.type = 'button';
+              btn.title = opt.note || '';
+              btn.disabled = sc.remainingToday <= 0;
+              btn.setAttribute('data-care', opt.id);
+              btn.addEventListener('click', () => {
+                btn.disabled = true;
+                ctx.invoke('care', [{ kind: opt.id }])
+                  .then((res) => {
+                    careTip = { text: (res && (res.message || res.reason)) || '已照料', err: Boolean(res && res.ok === false), until: Date.now() + 8000 };
+                    render(res);
+                  })
+                  .catch((e) => {
+                    careTip = { text: String(e && e.message || e), err: true, until: Date.now() + 6000 };
+                    drawMindBody(d);
+                  });
+              });
+              row.append(btn);
+            }
+            box.append(row);
+            if (careTip && careTip.until > Date.now()) {
+              const msg = el('div', 'lf-note-line', careTip.text);
+              msg.style.color = careTip.err ? '#b91c1c' : '#15803d';
+              msg.style.fontWeight = '600';
+              box.append(msg);
+            }
+            mindBodyCard.append(box);
+          } else if (careTip && careTip.until > Date.now()) {
+            const msg = el('div', 'lf-note-line', careTip.text);
+            msg.style.color = careTip.err ? '#b91c1c' : '#15803d';
+            msg.style.fontWeight = '600';
+            mindBodyCard.append(msg);
           }
         };
 
@@ -1462,7 +1543,9 @@ export default {
         app.append(hero, summaryCard, certCard, recipeCard, jobCard, foot);
 
         let recipeTab = 'all';
+        let studioTab = 'cooking';
         let lastSnap = null;
+        const foldOpen = { jobs: false };
 
         const render = (d) => {
           if (!d) return;
@@ -1471,7 +1554,7 @@ export default {
           const c = d.career || {};
           const jb = c.currentJob || d.job || {};
           const ownedCerts = (jb.certs || []).length;
-          sub.textContent = `${jb.what ? `当前职业：${jb.what}（¥${jb.daily}/天）` : '暂无固定营生'} · 工龄 ${jb.days || 0} 天 · 见识 ${c.knowledge ?? d.knowledge ?? 0} · 已考取 ${ownedCerts}/${(c.certs || []).length || 9} 证`;
+          sub.textContent = `${jb.what ? `当前职业：${jb.what}（¥${jb.daily}/天）` : '暂无固定营生'} · 工龄 ${jb.days || 0} 天 · 见识 ${c.knowledge ?? d.knowledge ?? 0} · 已考取 ${ownedCerts}/${(c.certs || []).length || 10} 证`;
           buffRow.innerHTML = '';
           const buffs = d.town?.buffs || {};
           for (const bTxt of fmtBuffChips(buffs)) {
@@ -1500,7 +1583,9 @@ export default {
 
           const skillRow = el('div', 'lf-subrow');
           for (const sk of (c.skills || [])) {
-            const ch = el('span', 'lf-chip' + (sk.exp > 0 ? ' info' : ''), `${sk.label} ${sk.exp}${sk.trained > 0 ? `(${sk.trained}课)` : ''}`);
+            const bonus = sk.payBonusPct > 0 ? ` · 薪+${sk.payBonusPct}%` : '';
+            const ch = el('span', 'lf-chip' + (sk.exp > 0 ? ' info' : ''), `${sk.label} ${sk.exp}${bonus}${sk.trained > 0 ? `(${sk.trained}课)` : ''}`);
+            ch.title = `普通${sk.odds?.common ?? 76}% / 良品${sk.odds?.good ?? 18}% / 精品${sk.odds?.fine ?? 5}% / 臻品${sk.odds?.exquisite ?? 1}%`;
             skillRow.append(ch);
           }
           for (const eq of (c.gear || [])) {
@@ -1538,92 +1623,202 @@ export default {
           }
           certCard.append(certGrid);
 
-          /* 3. 厨房与菜谱工坊 */
+          /* 3. 五大职业特色工作台 */
           recipeCard.innerHTML = '';
-          const rHead = el('div', 'lf-mkt-head');
-          rHead.append(el('h3', null, '职业能做什么 · 厨房菜谱与原料匹配（简食免证，招牌菜需厨师资质）'));
-          const tabBox = el('div', 'lf-tabs');
-          tabBox.style.marginBottom = '0';
-          for (const [tid, tlab] of [['all', '全部菜谱'], ['ready', `材料齐可做 (${readyRecipes.length})`], ['simple', '零门槛简食'], ['chef', '厨师招牌菜']]) {
-            const tb = el('button', 'lf-btn sm lf-tab', tlab);
+          const studioHead = el('div', 'lf-mkt-head');
+          studioHead.append(el('h3', null, '五大职业特色工作台（熟练度涨薪资、四档品质产出与专业面板）'));
+          const studioTabsBox = el('div', 'lf-tabs');
+          studioTabsBox.style.marginBottom = '0';
+          const STUDIO_TABS = [
+            ['cooking', '🍳 厨房·菜谱与成品'],
+            ['photo', '📷 影像·暗房作品墙'],
+            ['craft', '🧵 手作·缝纫文创台'],
+            ['writing', '✒️ 文字·书桌稿件夹'],
+            ['driving', '🚗 驾驶·出车调度台'],
+          ];
+          for (const [sid, slab] of STUDIO_TABS) {
+            const tb = el('button', 'lf-btn sm lf-tab', slab);
             tb.type = 'button';
-            if (recipeTab === tid) tb.setAttribute('data-on', '1');
-            tb.addEventListener('click', () => { recipeTab = tid; render(lastSnap); });
-            tabBox.append(tb);
+            tb.setAttribute('data-studio-tab', sid);
+            if (studioTab === sid) tb.setAttribute('data-on', '1');
+            tb.addEventListener('click', () => { studioTab = sid; render(lastSnap); });
+            studioTabsBox.append(tb);
           }
-          rHead.append(tabBox);
-          recipeCard.append(rHead);
+          studioHead.append(studioTabsBox);
+          recipeCard.append(studioHead);
 
-          const panSum = c.pantrySummary || [];
-          const panChips = el('div', 'lf-chips');
-          panChips.style.marginBottom = '8px';
-          if (!panSum.length) {
-            panChips.append(el('span', 'lf-chip warn', '储物篮目前空着，去「农牧场与鱼市街」种菜或养殖就能做菜'));
+          const activeSkill = (c.skills || []).find((x) => x.domain === studioTab) || {
+            domain: studioTab, label: studioTab, exp: 0, trained: 0, payMult: 1, payBonusPct: 0,
+            odds: { common: 76, good: 18, fine: 5, exquisite: 1 },
+          };
+          const sBar = el('div', 'lf-studio-bar');
+          const sLeft = el('span', null, `${activeSkill.label}熟练度 ${activeSkill.exp}/100 · 时薪倍率 ${activeSkill.payMult}×（+${activeSkill.payBonusPct}%）`);
+          const oddsWrap = el('div', 'lf-chips');
+          for (const [qid, qlab, cls] of [
+            ['common', '普通', ''],
+            ['good', '良品', 'good'],
+            ['fine', '精品', 'fine'],
+            ['exquisite', '臻品', 'exquisite'],
+          ]) {
+            oddsWrap.append(el('span', 'lf-q-badge ' + cls, `${qlab} ${(activeSkill.odds && activeSkill.odds[qid]) ?? 0}%`));
+          }
+          sBar.append(sLeft, oddsWrap);
+          recipeCard.append(sBar);
+
+          const domainOutputs = (c.workOutputs || []).filter((o) => o.domain === studioTab);
+          if (studioTab === 'cooking') {
+            const fTabs = el('div', 'lf-tabs');
+            for (const [tid, tlab] of [['all', '全部菜谱'], ['ready', `材料齐可做 (${readyRecipes.length})`], ['simple', '零门槛简食'], ['chef', '厨师招牌菜']]) {
+              const tb = el('button', 'lf-btn sm lf-tab', tlab);
+              tb.type = 'button';
+              if (recipeTab === tid) tb.setAttribute('data-on', '1');
+              tb.addEventListener('click', () => { recipeTab = tid; render(lastSnap); });
+              fTabs.append(tb);
+            }
+            recipeCard.append(fTabs);
+
+            const panSum = c.pantrySummary || [];
+            const panChips = el('div', 'lf-chips');
+            panChips.style.marginBottom = '8px';
+            if (!panSum.length) {
+              panChips.append(el('span', 'lf-chip warn', '储物篮目前空着，去「农牧场与鱼市街」种菜或养殖就能做菜'));
+            } else {
+              for (const p of panSum) {
+                panChips.append(el('span', 'lf-chip good', `${p.name} ×${p.qty}`));
+              }
+            }
+            recipeCard.append(panChips);
+
+            const dishes = c.cookedDishes || [];
+            if (dishes.length) {
+              const dishRow = el('div', 'lf-chips');
+              dishRow.style.marginBottom = '8px';
+              for (const ds of dishes) {
+                const qCls = ds.quality === 'exquisite' ? 'exquisite' : (ds.quality === 'fine' ? 'fine' : (ds.quality === 'good' ? 'good' : ''));
+                const qTxt = ds.qualityLabel ? `【${ds.qualityLabel}】` : '';
+                dishRow.append(el('span', 'lf-q-badge ' + qCls, `${qTxt}${ds.name} ×${ds.qty}`));
+              }
+              recipeCard.append(dishRow);
+            }
+
+            const rList = (c.recipes || []).filter((r) => {
+              if (recipeTab === 'ready') return r.canCook;
+              if (recipeTab === 'simple') return r.tier === 'simple';
+              if (recipeTab === 'chef') return r.tier === 'chef';
+              return true;
+            });
+            if (!rList.length) {
+              recipeCard.append(el('p', 'lf-muted', '当前筛选下暂无菜谱。'));
+            } else {
+              const rGrid = el('div', 'lf-recipe-grid');
+              for (const rc of rList) {
+                const card = el('div', 'lf-recipe' + (rc.canCook ? ' ready' : (!rc.unlocked ? ' locked' : '')));
+                const top = el('div', 'rtop');
+                top.append(el('span', null, rc.name));
+                const badgeTxt = !rc.unlocked ? '未解锁' : (rc.canCook ? '材料齐 · 可做' : '缺原料');
+                const badgeCls = !rc.unlocked ? '' : (rc.canCook ? 'good' : 'warn');
+                top.append(el('span', 'lf-chip ' + badgeCls, badgeTxt));
+                card.append(top);
+                card.append(el('div', 'rmeta', `${rc.tier === 'simple' ? '家常简食(免证)' : '厨师招牌'} · 饱腹+${rc.foodGain} 娱+${rc.funGain}${rc.energyGain ? ` 精+${rc.energyGain}` : ''} · 油盐¥${rc.fuelCost} · 建议摊价¥${rc.suggestedPrice}`));
+                if (!rc.unlocked && rc.lockReason) {
+                  const lp = el('div', 'rmeta', `门槛：${rc.lockReason}`);
+                  lp.style.color = '#b45309';
+                  card.append(lp);
+                }
+                const ingRow = el('div', 'lf-chips');
+                for (const ing of (rc.ingredients || [])) {
+                  ingRow.append(el('span', 'lf-ing ' + (ing.ok ? 'ok' : 'miss'), `${ing.label} ${ing.have}/${ing.need}`));
+                }
+                card.append(ingRow);
+                rGrid.append(card);
+              }
+              recipeCard.append(rGrid);
+            }
           } else {
-            for (const p of panSum) {
-              panChips.append(el('span', 'lf-chip good', `${p.name} ×${p.qty}`));
+            const domainGearIds = { photo: ['camera'], craft: ['sewing'], writing: ['computer'], driving: ['folding_bike', 'ebike'] }[studioTab] || [];
+            const domainCerts = { photo: ['摄影证'], craft: ['电工证'], writing: ['教师资格证'], driving: ['驾照', '健康证'] }[studioTab] || [];
+            const gateChips = el('div', 'lf-chips');
+            gateChips.style.marginBottom = '8px';
+            if (studioTab === 'driving') {
+              gateChips.append(el('span', 'lf-chip ' + (c.hasLicense ? 'good' : 'bad'),
+                c.hasLicense ? '✓ 已持「驾照」（环游同开可直接自驾/租车/开房车）' : '未持「驾照」（环游同开会拦截自驾与租车，考下即解锁）'));
+            }
+            for (const cname of domainCerts) {
+              const ct = (c.certs || []).find((x) => x.name === cname);
+              if (ct) gateChips.append(el('span', 'lf-chip ' + (ct.owned ? 'good' : ''), `${ct.owned ? '✓ ' : ''}${ct.name} (${ct.owned ? '已持证' : `过考率 ${ct.chancePct}%`})`));
+            }
+            for (const gid of domainGearIds) {
+              const eq = (c.gear || []).find((x) => x.id === gid);
+              if (eq) gateChips.append(el('span', 'lf-chip ' + (eq.owned ? 'good' : ''), `${eq.owned ? '✓ ' : ''}${eq.name}${eq.owned ? '' : ` (¥${eq.price})`}`));
+            }
+            recipeCard.append(gateChips);
+
+            const dJobs = (c.jobs || []).filter((j) => j.domain === studioTab);
+            if (dJobs.length) {
+              const sGrid = el('div', 'lf-studio-grid');
+              for (const jItem of dJobs) {
+                const mult = Number(buffs[`${jItem.domain}_pay_mult`] || 1);
+                const effPay = mult !== 1 ? Math.round(jItem.pay * mult) : jItem.pay;
+                const hrPay = Math.max(1, Math.round(effPay / Math.max(0.5, jItem.minutes / 60)));
+                const card = el('div', 'lf-studio-card' + (jItem.qualified ? ' ready' : ''));
+                const top = el('div', 'lf-care-head');
+                top.style.color = '#0f172a';
+                top.append(el('span', null, jItem.name));
+                top.append(el('span', 'lf-chip ' + (jItem.qualified ? 'good' : ''), jItem.qualified ? '✓ 可接' : `缺：${jItem.missing.join('、')}`));
+                card.append(top);
+                card.append(el('div', 'rmeta', `${jItem.tierLabel} · ¥${effPay}（约 ¥${hrPay}/h）· ${Math.round(jItem.minutes / 60 * 10) / 10}h · ${jItem.place}`));
+                if (jItem.outputName) {
+                  card.append(el('div', 'rmeta', `可产出：${jItem.outputName}（四档品质按熟练度浮动）`));
+                }
+                sGrid.append(card);
+              }
+              recipeCard.append(sGrid);
             }
           }
-          recipeCard.append(panChips);
 
-          const rList = (c.recipes || []).filter((r) => {
-            if (recipeTab === 'ready') return r.canCook;
-            if (recipeTab === 'simple') return r.tier === 'simple';
-            if (recipeTab === 'chef') return r.tier === 'chef';
-            return true;
-          });
-          if (!rList.length) {
-            recipeCard.append(el('p', 'lf-muted', '当前筛选下暂无菜谱。'));
-          } else {
-            const rGrid = el('div', 'lf-recipe-grid');
-            for (const rc of rList) {
-              const card = el('div', 'lf-recipe' + (rc.canCook ? ' ready' : (!rc.unlocked ? ' locked' : '')));
-              const top = el('div', 'rtop');
-              top.append(el('span', null, rc.name));
-              const badgeTxt = !rc.unlocked ? '未解锁' : (rc.canCook ? '材料齐 · 可做' : '缺原料');
-              const badgeCls = !rc.unlocked ? '' : (rc.canCook ? 'good' : 'warn');
-              top.append(el('span', 'lf-chip ' + badgeCls, badgeTxt));
-              card.append(top);
-              card.append(el('div', 'rmeta', `${rc.tier === 'simple' ? '家常简食(免证)' : '厨师招牌'} · 饱腹+${rc.foodGain} 娱+${rc.funGain}${rc.energyGain ? ` 精+${rc.energyGain}` : ''} · 油盐¥${rc.fuelCost} · 建议摊价¥${rc.suggestedPrice}`));
-              if (!rc.unlocked && rc.lockReason) {
-                const lp = el('div', 'rmeta', `门槛：${rc.lockReason}`);
-                lp.style.color = '#b45309';
-                card.append(lp);
-              }
-              const ingRow = el('div', 'lf-chips');
-              for (const ing of (rc.ingredients || [])) {
-                ingRow.append(el('span', 'lf-ing ' + (ing.ok ? 'ok' : 'miss'), `${ing.label} ${ing.have}/${ing.need}`));
-              }
-              card.append(ingRow);
-              rGrid.append(card);
+          if (domainOutputs.length) {
+            const outRow = el('div', 'lf-chips');
+            outRow.style.marginTop = '6px';
+            for (const wo of domainOutputs) {
+              const qCls = wo.quality === 'exquisite' ? 'exquisite' : (wo.quality === 'fine' ? 'fine' : (wo.quality === 'good' ? 'good' : ''));
+              outRow.append(el('span', 'lf-q-badge ' + qCls, `【${wo.qualityLabel}】${wo.name} ×${wo.count} · 估¥${wo.value}`));
             }
-            recipeCard.append(rGrid);
+            recipeCard.append(outRow);
+          } else if (studioTab !== 'cooking') {
+            recipeCard.append(el('p', 'lf-muted', '暂无该领域产出记录；对话里让她干一场对应工作后就会把作品和品质收进这里。'));
           }
-          recipeCard.append(el('p', 'lf-note-line', '在对话里对它说「去烤个红薯」「做一份番茄鸡蛋汤存起来」「用成品菜去鱼市街摆摊」即可由它自主开火。'));
+          recipeCard.append(el('p', 'lf-note-line', '在对话里对它说「去拍照接单」「写一篇随笔」「缝亚麻茶垫」「考驾照」「去烤个红薯」即可由它自主执行并结算四档品质。'));
 
           /* 4. 全职业岗位目录 */
           jobCard.innerHTML = '';
           const jFold = el('details', 'lf-fold');
           const qualifiedCnt = (c.jobs || []).filter((j) => j.qualified).length;
           const jSum = el('summary', null, `全部职业门槛与日薪清单（当前可接 ${qualifiedCnt}/${(c.jobs || []).length} 项）`);
-          jSum.append(el('span', 'hint', '点击展开岗位表'));
+          const jHint = el('span', 'hint', '点击展开岗位表');
+          jSum.append(jHint);
+          bindFoldState(jFold, foldOpen, 'jobs', jHint, '点击展开岗位表', '点击收起岗位表');
           const jWrap = el('div', 'lf-table-wrap');
           const jTable = el('table', 'lf-table');
           const jThead = document.createElement('thead');
           const jThr = document.createElement('tr');
-          for (const hText of ['档位', '职业', '日薪', '工时/地点', '门槛与缺项']) jThr.append(el('th', null, hText));
+          for (const hText of ['档位', '职业与产出', '日薪 (时薪)', '工时/地点', '门槛与缺项']) jThr.append(el('th', null, hText));
           jThead.append(jThr);
           const jTbody = document.createElement('tbody');
           for (const jbItem of (c.jobs || [])) {
             const tr = document.createElement('tr');
             const mult = Number(buffs[`${jbItem.domain}_pay_mult`] || 1);
             const effPay = mult !== 1 ? Math.round(jbItem.pay * mult) : jbItem.pay;
-            const payTxt = mult !== 1 ? `¥${effPay} (原¥${jbItem.pay})` : `¥${jbItem.pay}`;
+            const hrPay = Math.max(1, Math.round(effPay / Math.max(0.5, jbItem.minutes / 60)));
+            const baseNote = jbItem.pay > (jbItem.basePay || jbItem.pay) || mult !== 1 ? ` (基¥${jbItem.basePay || jbItem.pay})` : '';
+            const payTxt = `¥${effPay} (¥${hrPay}/h)${baseNote}`;
             const statusTd = el('td', null, jbItem.qualified ? '✓ 已可接' : `缺：${jbItem.missing.join('、')}`);
             statusTd.style.color = jbItem.qualified ? '#166534' : '#9a3412';
+            const jobNameTxt = jbItem.name
+              + (jbItem.materialCost > 0 ? ` (垫¥${jbItem.materialCost})` : '')
+              + (jbItem.outputName ? ` · 产出:${jbItem.outputName}` : '');
             tr.append(
               el('td', null, `${jbItem.tierLabel}·${jbItem.domainLabel}`),
-              el('td', null, jbItem.name + (jbItem.materialCost > 0 ? ` (垫¥${jbItem.materialCost})` : '')),
+              el('td', null, jobNameTxt),
               el('td', null, payTxt),
               el('td', null, `${Math.round(jbItem.minutes / 60 * 10) / 10}h · ${jbItem.place}`),
               statusTd,
@@ -1668,8 +1863,9 @@ export default {
 
         const drawSec = (card, title, items, fmt) => {
           card.innerHTML = '';
-          card.append(el('h3', null, title));
-          if (!items || !items.length) {
+          const n = items ? items.length : 0;
+          card.append(el('h3', null, n > 0 ? `${title} (${n})` : title));
+          if (!n) {
             card.append(el('p', 'lf-muted', '暂无。'));
             return;
           }
@@ -1709,7 +1905,13 @@ export default {
           const wantsAll = d.wants || [];
           drawSec(buyCard, '想买 / 想办', wantsAll.filter((w) => w.kind !== 'place'),
             (w) => `${w.what}${w.scale === 'big' ? '（得攒）' : ''}`);
-          drawSec(placeCard, '想去的地方', wantsAll.filter((w) => w.kind === 'place'), (w) => w.what);
+          const placeWants = wantsAll.filter((w) => w.kind === 'place');
+          const seenPlaces = new Set(placeWants.map((w) => String(w.what || '').trim()).filter(Boolean));
+          const journeyWishes = (d.journey && Array.isArray(d.journey.wishes) ? d.journey.wishes : [])
+            .map((name) => String(name || '').trim())
+            .filter((name) => name && !seenPlaces.has(name))
+            .map((name) => ({ what: `${name}（环游心愿）`, id: `jw-${name}` }));
+          drawSec(placeCard, '想去的地方', [...placeWants, ...journeyWishes], (w) => w.what);
           drawSec(pendCard, '悬着未决', d.pending,
             (p) => `${p.what}（卡在${p.blockedLabel || p.blocked}${p.cost ? ` ¥${p.cost}` : ''}）`);
           const pls = [...(d.overdue || []), ...(d.pledges || [])];
@@ -1958,6 +2160,7 @@ export default {
         let confirmUnrentFarm = false;
         let confirmUnrentRanch = false;
         let lastData = null;
+        const foldOpen = { guide: false, rules: false, seeds: false, animals: false };
 
         const runOp = (section, method, payload) => {
           return ctx.invoke(method, payload !== undefined ? [payload] : undefined)
@@ -1997,7 +2200,9 @@ export default {
           guideCard.innerHTML = '';
           const guideFold = el('details', 'lf-fold');
           const guideSum = el('summary', null, '农牧场（支持下方直接点击种菜与养殖）× 鱼市街闭环');
-          guideSum.append(el('span', 'hint', '点击展开规则与攻略'));
+          const guideHint = el('span', 'hint', '点击展开规则与攻略');
+          guideSum.append(guideHint);
+          bindFoldState(guideFold, foldOpen, 'guide', guideHint, '点击展开规则与攻略', '点击收起规则与攻略');
           const guideBody = el('div', null);
           const steps = el('div', 'lf-steps');
           const stepDefs = [
@@ -2015,7 +2220,9 @@ export default {
 
           const rulesFold = el('details', 'lf-fold');
           const rulesSum = el('summary', null, '五大赛道门槛、本钱明细与常用对话示范');
-          rulesSum.append(el('span', 'hint', '点击展开规则表'));
+          const rulesHint = el('span', 'hint', '点击展开规则表');
+          rulesSum.append(rulesHint);
+          bindFoldState(rulesFold, foldOpen, 'rules', rulesHint, '点击展开规则表', '点击收起规则表');
           const rulesBody = el('div', null);
           const wrap = el('div', 'lf-table-wrap');
           const table = el('table', 'lf-table');
@@ -2252,7 +2459,9 @@ export default {
 
           const seedsFold = el('details', 'lf-fold');
           const seedsSum = el('summary', null, '节气种子目录（4–9 天慢熟 · 含下游菜品联动）');
-          seedsSum.append(el('span', 'hint', `共 ${seeds.length} 种`));
+          const seedsHint = el('span', 'hint', `共 ${seeds.length} 种 · 点击展开`);
+          seedsSum.append(seedsHint);
+          bindFoldState(seedsFold, foldOpen, 'seeds', seedsHint, `共 ${seeds.length} 种 · 点击展开`, `共 ${seeds.length} 种 · 点击收起`);
           const sWrap = el('div', 'lf-table-wrap');
           const sTable = el('table', 'lf-table');
           const sThead = document.createElement('thead');
@@ -2415,7 +2624,9 @@ export default {
 
           const animalsFold = el('details', 'lf-fold');
           const animalsSum = el('summary', null, '养殖品类与产出周期表（住处栏位 + 城郊农牧场）');
-          animalsSum.append(el('span', 'hint', `共 ${animals.length} 种`));
+          const animalsHint = el('span', 'hint', `共 ${animals.length} 种 · 点击展开`);
+          animalsSum.append(animalsHint);
+          bindFoldState(animalsFold, foldOpen, 'animals', animalsHint, `共 ${animals.length} 种 · 点击展开`, `共 ${animals.length} 种 · 点击收起`);
           const aWrap = el('div', 'lf-table-wrap');
           const aTable = el('table', 'lf-table');
           const aThead = document.createElement('thead');
