@@ -2779,7 +2779,7 @@ test('她惦记的自动记账（买家伙/考证/搬家遇阻写入与办成消
     fakeDoc.head.ownerDocument = fakeDoc;
     fakeDoc.body.ownerDocument = fakeDoc;
     globalThis.document = fakeDoc;
-    const panelMod = await import(`../web/panel-1.6.3.js?mood=${Date.now()}`);
+    const panelMod = await import(`../web/panel-1.6.4.js?mood=${Date.now()}`);
     const panels = panelMod.default.panels;
 
     const nowRoot = fakeDoc.createElement('div');
@@ -2975,7 +2975,7 @@ test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产�
     fakeDoc.body.ownerDocument = fakeDoc;
     globalThis.document = fakeDoc;
 
-    const panelMod = await import(`../web/panel-1.6.3.js?stage24=${Date.now()}`);
+    const panelMod = await import(`../web/panel-1.6.4.js?stage24=${Date.now()}`);
     const panels = panelMod.default.panels;
 
     const nowSnap = await world.panelInvoke('now', 'snapshot', []);
@@ -3188,7 +3188,7 @@ test('复审 P0/P1/P2 全项回归：照料点击不报错、混合心情对齐�
     fakeDoc.body.ownerDocument = fakeDoc;
     globalThis.document = fakeDoc;
 
-    const panelMod = await import(`../web/panel-1.6.3.js?careclick=${Date.now()}`);
+    const panelMod = await import(`../web/panel-1.6.4.js?careclick=${Date.now()}`);
     const nowRoot = fakeDoc.createElement('div');
     await panelMod.default.panels.now.mount({
       root: nowRoot,

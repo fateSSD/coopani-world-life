@@ -374,8 +374,63 @@ export async function hubRequest<T = any>(
 }
 
 const HUB_AUTH_LOCK_FILENAME = 'coopanion-hub-auth.lock';
+const HUB_CLAIM_FILENAME = 'coopanion-hub-claim.json';
+const HUB_CLAIM_TTL_MS = 24 * 3_600_000;
 const HUB_AUTH_LOCK_STALE_MS = 15_000;
 const HUB_AUTH_LOCK_WAIT_MS = 5_000;
+
+interface PendingHubClaim {
+  hubUrl: string;
+  legacyUid: string | null;
+  claimSecret: string;
+  createdAt: string;
+}
+
+function readOrCreatePendingClaim(dataDir: string, root: string, legacyUid: string | undefined): string {
+  const fresh = randomBytes(24).toString('hex');
+  if (!dataDir) return fresh;
+  const wantLegacy = legacyUid ?? null;
+  const fp = join(dataDir, HUB_CLAIM_FILENAME);
+  try {
+    if (existsSync(fp)) {
+      const raw = JSON.parse(readFileSync(fp, 'utf8')) as Partial<PendingHubClaim>;
+      const rawUrl = typeof raw?.hubUrl === 'string' ? normHubUrl(raw.hubUrl) : '';
+      const rawLegacy = typeof raw?.legacyUid === 'string' && raw.legacyUid.trim() ? raw.legacyUid.trim() : null;
+      const rawSecret = typeof raw?.claimSecret === 'string' ? raw.claimSecret.trim() : '';
+      const createdMs = Date.parse(String(raw?.createdAt ?? ''));
+      if (
+        rawUrl === root
+        && rawLegacy === wantLegacy
+        && rawSecret.length >= 16
+        && rawSecret.length <= 128
+        && Number.isFinite(createdMs)
+        && Date.now() - createdMs <= HUB_CLAIM_TTL_MS
+      ) {
+        return rawSecret;
+      }
+    }
+  } catch { /* 损坏的占位文件直接覆盖重建 */ }
+  const next: PendingHubClaim = {
+    hubUrl: root,
+    legacyUid: wantLegacy,
+    claimSecret: fresh,
+    createdAt: new Date().toISOString(),
+  };
+  const tmp = `${fp}.tmp.${process.pid}.${Date.now().toString(36)}.${randomBytes(4).toString('hex')}`;
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    renameSync(tmp, fp);
+  } catch {
+    try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* ignore */ }
+  }
+  return fresh;
+}
+
+function clearPendingClaim(dataDir: string): void {
+  if (!dataDir) return;
+  try { unlinkSync(join(dataDir, HUB_CLAIM_FILENAME)); } catch { /* ignore */ }
+}
 
 async function withHubAuthLock<T>(dataDir: string, fn: () => Promise<T>): Promise<T> {
   if (!dataDir) return fn();
@@ -440,10 +495,12 @@ export async function ensureHubAuth(opts: {
   return withHubAuthLock(opts.dataDir, async () => {
     const racedBefore = readHubAuth(opts.dataDir, root);
     if (racedBefore && racedBefore.hubUrl === root) {
+      clearPendingClaim(opts.dataDir);
       return { ok: true, auth: racedBefore, created: false };
     }
 
     const legacyUid = probeLegacyUid(opts.dataDir);
+    const claimSecret = readOrCreatePendingClaim(opts.dataDir, root, legacyUid);
     const res = await hubRequest<{
       petId: string;
       displayName: string;
@@ -451,12 +508,14 @@ export async function ensureHubAuth(opts: {
       token: string;
     }>(root, '/v1/core/pets/register', {
       method: 'POST',
+      headers: { 'Idempotency-Key': claimSecret },
       body: {
         displayName: (opts.displayName || '大肥鱼').slice(0, 32),
+        claimSecret,
         ...(legacyUid ? { legacyUid } : {}),
         ...(opts.bio ? { bio: opts.bio.slice(0, 300) } : {}),
       },
-      timeoutMs: opts.timeoutMs ?? 5000,
+      timeoutMs: opts.timeoutMs ?? 15_000,
     });
 
     if (!res.ok || !res.data?.petId || !res.data?.token) {
@@ -467,6 +526,7 @@ export async function ensureHubAuth(opts: {
           if (ms > 0) await new Promise((r) => setTimeout(r, ms));
           const raced = readHubAuth(opts.dataDir, root);
           if (raced && raced.hubUrl === root) {
+            clearPendingClaim(opts.dataDir);
             return { ok: true, auth: raced, created: false };
           }
         }
@@ -501,6 +561,7 @@ export async function ensureHubAuth(opts: {
         reason: `Hub 身份写入本机失败（${e instanceof Error ? e.message : String(e)}）`,
       };
     }
+    clearPendingClaim(opts.dataDir);
     return { ok: true, auth: rec, created: true };
   });
 }

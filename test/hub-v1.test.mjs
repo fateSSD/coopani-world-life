@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const { LifeWorld } = await import('../src/world.ts');
-const { LIFE_DEFAULTS } = await import('../src/config.ts');
+const { LIFE_DEFAULTS, normHubUrl } = await import('../src/config.ts');
 const {
   ensureHubAuth,
   readHubAuth,
@@ -1133,8 +1133,8 @@ test('ensureHubAuth 409 竞态自愈 + panel-1.5.0 独立报错区 lf-alert 与 
     assert.equal(missed.ok, false);
     assert.equal(missed.code, 'LEGACY_UID_CLAIMED');
 
-    // 验证 panel-1.6.3.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
-    const panelMod = await import(`../web/panel-1.6.3.js?alertbuff=${Date.now()}`);
+    // 验证 panel-1.6.4.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
+    const panelMod = await import(`../web/panel-1.6.4.js?alertbuff=${Date.now()}`);
     const root = new FakeNode('div');
     root.ownerDocument = fakeDoc;
     fakeDoc.body.append(root);
@@ -1852,5 +1852,79 @@ test('城市 Buff 全量生效：rent_mult 房价调控、7 项 _bonus 数值结
     await mock.close();
     rmSync(dir, { recursive: true, force: true });
     rmSync(diaryDir, { recursive: true, force: true });
+  }
+});
+
+test('normHubUrl 多格式归一与 ensureHubAuth 首注超时丢包后复用 coopanion-hub-claim.json 恢复', async () => {
+  assert.equal(normHubUrl('https://HUB.CoopPetsJourney.top:443/v1/towns/'), 'https://hub.cooppetsjourney.top');
+  assert.equal(normHubUrl('hub.cooppetsjourney.top/health'), 'https://hub.cooppetsjourney.top');
+  assert.equal(normHubUrl('“https://hub.cooppetsjourney.top/v1/”'), 'https://hub.cooppetsjourney.top');
+  assert.equal(normHubUrl('ftp://bad'), '');
+  assert.equal(normHubUrl('http://127.0.0.1:8080/'), 'http://127.0.0.1:8080');
+
+  const dir = mkDir();
+  const seenSecrets = [];
+  let savedSecret = '';
+  let callNum = 0;
+  const mock = await startMockHub({
+    custom: ({ method, path, req, body, send }) => {
+      if (path === '/v1/core/pets/register' && method === 'POST') {
+        callNum += 1;
+        const sec = String(body.claimSecret || '');
+        seenSecrets.push({ sec, idem: req.headers['idempotency-key'] });
+        if (callNum === 1) {
+          savedSecret = sec;
+          setTimeout(() => {
+            try {
+              send(201, { ok: true, data: { petId: 'pet_orphan_saved', displayName: '鲸鲸', legacyUid: body.legacyUid, token: 'chub_lost_1' } });
+            } catch { /* socket closed on timeout */ }
+          }, 220);
+          return true;
+        }
+        if (savedSecret && sec === savedSecret && req.headers['idempotency-key'] === savedSecret) {
+          send(201, {
+            ok: true,
+            data: { petId: 'pet_orphan_saved', displayName: '鲸鲸', legacyUid: body.legacyUid, token: 'chub_recovered_2', recovered: true },
+          });
+        } else {
+          send(409, { ok: false, error: { code: 'LEGACY_UID_CLAIMED', message: '已被认领' } });
+        }
+        return true;
+      }
+      return false;
+    },
+  });
+
+  try {
+    writeFileSync(join(dir, 'meet-uid.txt'), 'b71eff6672eb82b91c8c9d83\n', 'utf8');
+    const r1 = await ensureHubAuth({
+      hubUrl: mock.url,
+      dataDir: dir,
+      displayName: '鲸鲸',
+      timeoutMs: 60,
+    });
+    assert.equal(r1.ok, false);
+    assert.equal(r1.code, 'TIMEOUT');
+    const claimPath = join(dir, 'coopanion-hub-claim.json');
+    assert.equal(existsSync(claimPath), true, '首注超时后应保留 coopanion-hub-claim.json');
+    const claimJson = JSON.parse(readFileSync(claimPath, 'utf8'));
+    assert.equal(claimJson.claimSecret, savedSecret);
+
+    const r2 = await ensureHubAuth({
+      hubUrl: mock.url,
+      dataDir: dir,
+      displayName: '鲸鲸',
+      timeoutMs: 2000,
+    });
+    assert.equal(r2.ok, true);
+    assert.equal(r2.auth?.petId, 'pet_orphan_saved');
+    assert.equal(r2.auth?.token, 'chub_recovered_2');
+    assert.equal(seenSecrets.length, 2);
+    assert.equal(seenSecrets[1].sec, seenSecrets[0].sec);
+    assert.equal(seenSecrets[1].idem, seenSecrets[0].sec);
+    assert.equal(existsSync(claimPath), false, '落盘成功后应清理 coopanion-hub-claim.json');
+  } finally {
+    await mock.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

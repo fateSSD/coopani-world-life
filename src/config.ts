@@ -37,11 +37,25 @@ export function normWeatherUrl(raw: unknown): string {
 }
 
 export function normHubUrl(raw: unknown): string {
-  return String(raw || '')
+  let s = String(raw ?? '')
+    .replace(/[\u200b-\u200d\u2060\ufeff]/g, '')
+    .replace(/[\u00a0\u3000]/g, ' ')
     .trim()
-    .replace(/\/+$/, '')
-    .replace(/\/(?:v1|health)$/i, '')
-    .replace(/\/+$/, '');
+    .replace(/^["'“”‘’`<(<\s]+|["'“”‘’`>)\s]+$/g, '')
+    .trim();
+  if (!s) return '';
+  const hadProto = /^[a-z][a-z0-9+.-]*:\/\//i.test(s);
+  if (hadProto && !/^https?:\/\//i.test(s)) return '';
+  const withProto = hadProto ? s : `https://${s}`;
+  try {
+    const u = new URL(withProto);
+    if (!u.hostname) return '';
+    let path = u.pathname.replace(/\/+$/, '');
+    path = path.replace(/\/(v1(\/.*)?|health|sight(\/.*)?)$/i, '');
+    return `${u.protocol}//${u.host}${path}`;
+  } catch {
+    return '';
+  }
 }
 
 export function clampWeatherTimeoutMs(raw: unknown): number {

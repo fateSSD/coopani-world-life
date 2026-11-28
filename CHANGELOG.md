@@ -1,5 +1,15 @@
 # 变更记录
 
+## 1.6.4 — 2026-11-28（Hub v1 注册幂等自愈与超时加固 + `normHubUrl` 双端对齐）
+
+- **Hub v1 首次注册超时丢包幂等自愈**（`src/hub-client.ts`、`test/hub-v1.test.mjs`）：
+  - 将 `POST /v1/core/pets/register` 请求超时由 `5000ms` 放宽至 `15000ms`，降低跨境链路首注册超时的概率。
+  - 引入 `<dataDir>/coopanion-hub-claim.json`（24 小时 TTL、原子写）持久化当次 `claimSecret`，并在注册请求体中附带 `claimSecret` 及请求头 `Idempotency-Key`，配合 Hub 总服在服务端已落库但响应超时/丢包形成未使用孤儿账号（`last_used_at IS NULL`）时安全完成原位认领自愈；仅在 `coopanion-hub-auth.json` 原子写盘成功或并发自愈成功后清除待认领文件。
+- **`normHubUrl()` 与环游世界双端规范化对齐**（`src/config.ts`、`test/hub-v1.test.mjs`）：
+  - 对齐 `coopani-world-journey` 的 `normalizeHubUrl()` 规则：去除零宽字符、全角空白与外层引号/括号，自动补全 `https://` 并拒绝非 HTTP(S) 协议，主机名小写化并剥离默认端口 `:443`/`:80`，同时剥除 `/v1(/...)`、`/health`、`/sight(/...)` 与尾斜杠，防止双开共用 `coopanion-hub-auth.json` 时因 URL 格式细微差异命中失败触发重复注册。
+- **面板缓存三同步与回归测试**（`web/panel-1.6.4.js`、`package.json`、`test/hub-v1.test.mjs`、`test/stage23.test.mjs`）：
+  - 面板升级为 `web/panel-1.6.4.js` 并同步 `package.json` 版本号与 `cortico.webUiClient`；补齐 `normHubUrl` 对齐与超时丢包后自愈回归用例。
+
 ## 1.6.3 — 2026-11-28（心情机制显性化 + 30 职业/5 专属工坊/四档产出品质 + 生病静养与每日照料 + 联动与审计修复）
 
 - **好心情/坏心情与她惦记的内容显性化**（`src/state.ts`、`src/town-life.ts`、`src/world.ts`、`web/panel-1.6.3.js`）：
