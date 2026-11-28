@@ -270,10 +270,10 @@ console.log('\n[12] 快照');
   ok(snap.low[0].key === 'food', '缺得最狠的排前面', snap.low[0].key);
   ok(snap.unsaid.length === 1, '还没说出去的那条在');
   /*
-   * 三十五件事：含三档吃、睡、午睡、坐着歇会儿、洗、玩、见人、闲聊、做饭、小酌、复合动作、双栖新动作、露营微缩二期动作 + wake / cancel。
+   * 三十六件事：含三档吃、睡、午睡、坐着歇会儿、洗、玩、见人、闲聊、做饭、小酌、看病、复合动作、双栖新动作、露营微缩二期动作 + wake / cancel。
    * `wake` 不是可有可无的补充 —— 睡着时所有动作都被拦，没有它她就永远醒不过来。
    */
-  ok(Object.keys(ACTS).length === 35, '三十五件事（含 rest、chat、复合动作、双栖与二期新动作、wake 与 cancel）', String(Object.keys(ACTS).length));
+  ok(Object.keys(ACTS).length === 36, '三十六件事（含 rest、chat、see_doctor、复合动作、双栖与二期新动作、wake 与 cancel）', String(Object.keys(ACTS).length));
   ok(Boolean(ACTS.wake) && ACTS.wake.cost === 0, '「起来」不花钱');
   ok(Boolean(ACTS.cancel) && ACTS.cancel.cost === 0, '「停下来」不花钱');
   ok(ACTS.feast.cost > ACTS.eat.cost && ACTS.eat.cost > ACTS.instant.cost, '三档饭价依次递减');
@@ -524,12 +524,12 @@ console.log('\n[28] 职业：门槛决定工资（2026-11-15）');
   s.home.monthly = 0;
   s.vitals.energy = 90;
 
-  /* 零工：没有门槛，八九十 */
+  /* 零工：没有门槛，100–120 */
   const cash0 = s.money.cash;
   const odd = applyWork(s, '搬货', t0);
   ok(odd.ok && odd.started, '搬货开工');
   advance(s, new Date(t0.getTime() + (odd.minutes || 240) * 60_000));
-  ok(s.money.cash - cash0 === 90, '搬货干完一天 90', String(s.money.cash - cash0));
+  ok(s.money.cash - cash0 === 112, '搬货干完一天 112', String(s.money.cash - cash0));
 
   /* 有证的活，没证接不了，而且要说清怎么补 */
   const t1 = new Date(t0.getTime() + 86_400_000);
@@ -550,7 +550,7 @@ console.log('\n[28] 职业：门槛决定工资（2026-11-15）');
   const care = applyWork(s, '护工', t2);
   ok(care.ok && care.started, '护工开工');
   advance(s, new Date(t2.getTime() + (care.minutes || 360) * 60_000));
-  ok(s.money.cash - cashBeforeCare === 210, '有证之后护工一天 210', String(s.money.cash - cashBeforeCare));
+  ok(s.money.cash - cashBeforeCare === 260, '有证之后护工一天 260', String(s.money.cash - cashBeforeCare));
 
   /* 同一张证不用考两遍 */
   const again = applyCert(s, '护工证', t2, 0);
@@ -982,7 +982,7 @@ console.log('\n[40] 三期：职业 place 过滤 + 材料成本 + L2 市集买�
   const deliv = applyWork(s, '送外卖', t, 'home');
   ok(deliv.ok && s.money.cash === 3000 - 8, '送外卖开工先扣 8 元成本', String(s.money.cash));
   advance(s, new Date(t.getTime() + (deliv.minutes || 210) * 60_000));
-  ok(s.money.cash === 3000 - 8 + 95, '干完后入账 95 元', String(s.money.cash));
+  ok(s.money.cash === 3000 - 8 + 120, '干完后入账 120 元', String(s.money.cash));
 
   const prices = marketPrices(t);
   ok(prices.length === 3 && prices.every((p) => p.price > 0), '本地早市物价表正常');
@@ -1254,12 +1254,12 @@ console.log('\n[48] 时间段制动作、新复合动作、打断惩罚与上班
 
   const s4 = freshState(t0);
   s4.home.monthly = 0;
-  const wHalf = applyWork(s4, '搬货', t0, 'home'); // 90 元 / 240 分钟
+  const wHalf = applyWork(s4, '搬货', t0, 'home'); // 112 元 / 240 分钟
   const tHalf = new Date(t0.getTime() + Math.round((wHalf.minutes || 240) / 2) * 60_000);
   advance(s4, tHalf);
   const cHalf = applyAct(s4, 'cancel', tHalf);
-  ok(cHalf.ok && cHalf.workEarned === 27, '干满一半早退按 6 折结算 (90 * 0.5 * 0.6 = 27)', String(cHalf.workEarned));
-  ok(s4.job.days === 0 && s4.money.cash === 3027, '不涨工龄且早退钱到账');
+  ok(cHalf.ok && cHalf.workEarned === 34, '干满一半早退按 6 折结算 (112 * 0.5 * 0.6 = 34)', String(cHalf.workEarned));
+  ok(s4.job.days === 0 && s4.money.cash === 3034, '不涨工龄且早退钱到账');
 
   /* 4. 面板搬家：忙时返回明确原因，闲时搬成记流水并推 life.moved 通知肥鱼 */
   const moveDir = mkdtempSync(join(tmpdir(), 'life-move-panel-'));
@@ -1775,7 +1775,7 @@ console.log('\n[57] 菜谱分级（烤红薯免证 vs 厨师招牌菜）、成�
 
   // 职业面板概览聚合检查
   const ov = buildCareerOverview(s);
-  ok(ov.certs.length === 10 && ov.certs.find((c) => c.name === '厨师证')?.owned === true, 'buildCareerOverview 准确汇总 10 张证与持有状态');
+  ok(ov.certs.length === 14 && ov.certs.find((c) => c.name === '厨师证')?.owned === true, 'buildCareerOverview 准确汇总 14 张证与持有状态');
   ok(ov.recipes.find((r) => r.id === 'roast_sweet_potato')?.unlocked === true, '家常简食在职业面板保持解锁');
   ok(ov.recipes.find((r) => r.id === 'tomato_beef_stew')?.canCook === true, '持证且余料充足时厨师招牌菜标记材料齐可做');
 }

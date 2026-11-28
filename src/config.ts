@@ -12,7 +12,7 @@ import type { WorldSection } from 'cortico/world.ts';
  */
 export const LIFE_ID = 'life';
 
-export type WeatherMode = 'auto' | 'external' | 'builtin';
+export type WeatherMode = 'auto' | 'amap' | 'external' | 'builtin';
 
 export type WeatherSky = '晴' | '多云' | '小雨' | '起风';
 
@@ -78,10 +78,12 @@ export interface LifeConfigSection extends WorldSection {
   hubTownId: string;
   /** 她住的那座城由哪台服务器定。填了 = 覆盖上面那座（支持单个 URL 或逗号/换行分隔多台，留位置兼容 F1 联邦）。 */
   townUrl: string | string[];
-  /** 天气模式：auto（有外部地址优先、失败静默回退内置）/ external（外部优先、失联兜底并红灯提示）/ builtin（仅内置）。 */
+  /** 天气模式：auto（外部服务/高德自动探测优先，失败回退内置）/ amap（高德直连）/ external（外部服务优先）/ builtin（仅内置）。 */
   weatherMode: WeatherMode;
   /** 外部天气服务根地址（不带 `/now`，如 `http://127.0.0.1:7791`；留空不发请求）。 */
   weatherUrl: string;
+  /** 高德天气 Web 服务 Key（留空自动读取环境变量 `LIFE_AMAP_KEY` 或复用 `JOURNEY_AMAP_KEY`）。 */
+  amapKey: string;
   /** 外部天气请求超时（毫秒，默认 2500，上限 3000）。 */
   weatherTimeoutMs: number;
   /** 她多久检查一次自己。**和「掉得快慢」无关**，只影响提醒的准时程度。 */
@@ -121,6 +123,7 @@ export const LIFE_DEFAULTS = (): LifeConfigSection => ({
   townUrl: '',
   weatherMode: 'auto',
   weatherUrl: '',
+  amapKey: '',
   weatherTimeoutMs: 2500,
   tickMs: 60_000,
   notify: 'once',
@@ -174,15 +177,26 @@ export function lifeConfigGroups(): ConfigGroup[] {
         'worlds.life.weatherMode': {
           type: 'string',
           title: '天气来源模式',
-          enum: ['auto', 'external', 'builtin'],
-          enumNames: ['自动（有外部地址优先，失败回退内置）', '外部优先（失联时兜底并红灯提示）', '仅用内置'],
-          description: '决定天气晴雨从哪里拿：推荐保持「自动」，配了外部天气地址就用真实天气，没配或连不上时静默回退内置节气天气。',
+          enum: ['auto', 'amap', 'external', 'builtin'],
+          enumNames: [
+            '自动（外部服务 / 高德优先，失败回退内置）',
+            '高德天气直连（自动复用高德 Key，失联兜底）',
+            '外部天气服务优先（失联时兜底并红灯提示）',
+            '仅用内置',
+          ],
+          description: '决定天气晴雨从哪里拿：推荐保持「自动」，配了外部服务或高德 Key（支持自动复用环游世界 JOURNEY_AMAP_KEY）即同步真实天象，没配或连不上时回退内置节气天气。',
+          'x-hot': true,
+        },
+        'worlds.life.amapKey': {
+          type: 'string',
+          title: '高德天气 Key（可选）',
+          description: '高德 Web 服务 Key。留空时若已配置环游世界的高德 Key（环境变量 JOURNEY_AMAP_KEY 或 LIFE_AMAP_KEY），会自动共用同一份额度，无需重复填写或自建桥接服务。',
           'x-hot': true,
         },
         'worlds.life.weatherUrl': {
           type: 'string',
           title: '外部天气服务地址',
-          description: '外部天气服务根地址，不带 /now（例如 http://127.0.0.1:7791）。'
+          description: '外部天气服务根地址，不带 /now（例如 http://127.0.0.1:7791）。请求同时兼容中文城市名（city）与 6 位行政区划代码（adcode）。'
             + '\n留空时不发任何网络请求；每 10 分钟最多同步一次，不拖慢检查间隔。',
           'x-hot': true,
         },

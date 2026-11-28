@@ -13,6 +13,7 @@
 | **纯单机模式** | 留空 `""` | 留空 `""` | 本地节奏、打工、考证、菜园养殖与 NPC 邻里单机闭环 |
 
 - `worlds.life.hubUrl`、`worlds.life.hubTownId`（默认 `lanzhou-reedpond`）与 `worlds.life.townUrl` 均支持热更新（`x-hot: true`）。
+- **实时天气与高德直连**：`worlds.life.weatherMode` 支持 `auto` / `amap` / `external` / `builtin`。在 `amap` 或未填 `weatherUrl` 的 `auto` 模式下，会按 `worlds.life.amapKey` → 环境变量 `LIFE_AMAP_KEY` → 自动复用环游世界的 `JOURNEY_AMAP_KEY` 顺序直连高德实况天气（自动查 `district` 转 6 位 `adcode` 并缓存，10 分钟节流）。若使用自建外部天气服务（`weatherMode=external`），约定接口为 `GET <weatherUrl>/now?city=<中文城名或6位adcode>`，返回 `{ ok: true, current: { weather: "晴", temperature?: 20 } }`。
 - Hub 身份凭据存储在 `<dataDir>/coopanion-hub-auth.json`（由 `meet` / `life` 等扩展共享；首次连接按顺序只读探测 `meet-uid.txt` → `life-town-uid.txt` 认领历史 UID，服务端若返回 `409 LEGACY_UID_CLAIMED` 会直接报错防裂号，不会静默新建账号）。
 
 ## 核心能力
@@ -67,7 +68,7 @@
 
 ```bash
 # 校验新版手账面板语法
-node --check web/panel-1.6.1.js
+node --check web/panel-1.7.0.js
 
 # 全部单元测试与 Hub v1.1 本地 mock 集成测试
 node --import 'file:///E:/Coopanion/resources/app/node_modules/tsx/dist/loader.mjs' --test test/*.test.mjs

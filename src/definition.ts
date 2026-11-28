@@ -11,6 +11,7 @@ export const LIFE: WorldDefinition<LifeConfigSection> = {
     cfg: ctx.cfg,
     dataDir: ctx.dataDir,
     botName: ctx.botName,
+    secret: (name) => ctx.secret?.(name),
   }),
   describe: LIFE_DESCRIBE,
 };

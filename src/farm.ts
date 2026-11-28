@@ -819,7 +819,7 @@ export function applyPlant(
   seedQuery: string,
   now: Date,
   solarTermName = '',
-  opts: { byUser?: boolean } = {},
+  opts: { byUser?: boolean; growMult?: number } = {},
 ): { ok: boolean; reason?: string; plot?: FarmPlot; paid: number; cash: number } {
   const seed = findSeed(seedQuery);
   if (!seed) {
@@ -858,12 +858,16 @@ export function applyPlant(
   const homeUsed = state.farm.plots.filter((p) => p.source === 'home').length;
   const source: 'home' | 'leased' = homeUsed < homeCap ? 'home' : 'leased';
   const solarBonus = Boolean(solarTermName && seed.solarTerms.includes(solarTermName));
+  const growMult = Number.isFinite(Number(opts.growMult)) && Number(opts.growMult) > 0
+    ? Math.max(0.5, Math.min(2.5, Number(opts.growMult)))
+    : 1;
+  const effectiveHours = seed.growHours / growMult;
   const plot: FarmPlot = {
     id: `plot-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
     seedId: seed.id,
     name: seed.name,
     plantedAt: now.toISOString(),
-    matureAt: new Date(now.getTime() + seed.growHours * 3_600_000).toISOString(),
+    matureAt: new Date(now.getTime() + effectiveHours * 3_600_000).toISOString(),
     wateredAt: '',
     wateredDay: '',
     waterCount: 0,

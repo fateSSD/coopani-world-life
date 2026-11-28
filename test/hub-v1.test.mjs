@@ -674,7 +674,7 @@ test('Hub v1 多城信息 ETag/304、北京 writing_pay_mult 1.08 实算、与�
     assert.match(workOut.text, /北京风貌加成 \+8%/);
     const ui = world.webUi();
     const careerSnap = await ui.invoke('career', 'snapshot');
-    assert.equal(careerSnap.job.daily, Math.round(320 * 1.08));
+    assert.equal(careerSnap.job.daily, Math.round(410 * 1.08));
 
     // 清掉进行中活动以便测试迁城
     const cancelOut = await world.tools().find((t) => t.name === 'life_act').handler({ kind: 'cancel' });
@@ -1133,8 +1133,8 @@ test('ensureHubAuth 409 竞态自愈 + panel-1.5.0 独立报错区 lf-alert 与 
     assert.equal(missed.ok, false);
     assert.equal(missed.code, 'LEGACY_UID_CLAIMED');
 
-    // 验证 panel-1.6.4.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
-    const panelMod = await import(`../web/panel-1.6.4.js?alertbuff=${Date.now()}`);
+    // 验证 panel-1.7.0.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
+    const panelMod = await import(`../web/panel-1.7.0.js?alertbuff=${Date.now()}`);
     const root = new FakeNode('div');
     root.ownerDocument = fakeDoc;
     fakeDoc.body.append(root);
@@ -1593,8 +1593,8 @@ test('城市 Buff 全量生效：rent_mult 房价调控、7 项 _bonus 数值结
     assert.equal(clampRentMult(8), 5);
     assert.equal(effectiveHomeMonthly('urban-village', 1.3), 585);
     assert.equal(effectiveHomeMonthly('old', 1.3), 1560);
-    assert.equal(effectiveHomeMonthly('new', 1.3), 3380);
-    assert.equal(effectiveHomeMonthly('villa', 1.3), 10140);
+    assert.equal(effectiveHomeMonthly('new', 1.3), 2860);
+    assert.equal(effectiveHomeMonthly('villa', 1.3), 7020);
     assert.equal(effectiveHomeMonthly('urban-village', 0.8), 360);
     assert.equal(effectiveHomeMonthly('urban-village', 0.3), 135);
     assert.equal(applyYieldBonus(4, -0.5), 2);
@@ -1629,8 +1629,8 @@ test('城市 Buff 全量生效：rent_mult 房价调控、7 项 _bonus 数值结
     assert.equal(qMap['urban-village'].monthly, 585);
     assert.equal(qMap.old.monthly, 1560);
     assert.equal(qMap.old.deposit, 3120);
-    assert.equal(qMap.new.monthly, 3380);
-    assert.equal(qMap.villa.monthly, 10140);
+    assert.equal(qMap.new.monthly, 2860);
+    assert.equal(qMap.villa.monthly, 7020);
 
     // 搬去老小区应扣 3120 押金、月租写入 1560
     w.state.money.cash = 4000;
@@ -1741,10 +1741,10 @@ test('城市 Buff 全量生效：rent_mult 房价调控、7 项 _bonus 数值结
     assert.match(diaryRes.text, /写作心情 \+2/);
     assert.equal(w.state.vitals.fun, funBeforeDiary + 2);
 
-    // 后 5 个职业域倍率之一（labor_pay_mult = 1.1）在 life_work 生效（搬货 90 -> 99）
+    // 后 5 个职业域倍率之一（labor_pay_mult = 1.1）在 life_work 生效（搬货 112 -> 123）
     const workTool = w.tools().find((t) => t.name === 'life_work');
     const workOut = await workTool.handler({ what: '搬货' });
-    assert.match(workOut.text, /标准工钱 99 元/);
+    assert.match(workOut.text, /标准工钱 123 元/);
     w.state.activity = null;
 
     // 6) 迁居去 0.8 倍房价的北京后，state.home.monthly 自动跟着调低（1200 * 0.8 = 960）

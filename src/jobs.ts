@@ -16,10 +16,10 @@
  *
  * | 档 | 日薪 | 城中村净剩 | 攒 2400 要 |
  * |---|---|---|---|
- * | 零工 | 80–95 | 20–35 | 70–120 天 |
- * | 熟练 | 130–150 | 70–90 | 27–34 天 |
- * | 有证 | 210–240 | 150–180 | 13–16 天 |
- * | 专业 | 300–340 | 240–280 | 9–10 天 |
+ * | 零工 | 100–120 | 40–60 | 40–60 天 |
+ * | 熟练 | 165–195 | 105–135 | 18–23 天 |
+ * | 有证 | 260–310 | 200–250 | 10–12 天 |
+ * | 专业 | 380–450 | 320–390 | 6–8 天 |
  *
  * ## 高薪有代价（Mr.Q 选的第 2 条，2026-11-15）
  *
@@ -111,49 +111,69 @@ const def = (
 ): JobDef => ({ id, name, tier, domain, pay, place: 'home', minutes: DEFAULT_MINUTES[tier], load: LOAD[tier], ...extra });
 
 /**
- * 三十项（含三期 G 类轻载具跑单三种 + 五档完成度手艺活），四档 + 三档地点过滤（home / anywhere / destination）。
+ * 五十项（含轻载具跑单、八领域全通扩展与医疗康复 4 职），四档 + 三档地点过滤（home / anywhere / destination）。
  *
  * 城规有一条是「鱼不吃鱼」：没有渔业、没有鱼市、没有屠宰。
  * 加任何职业之前先拿这一条判一次。
  */
 export const JOBS: readonly JobDef[] = [
-  // 零工：谁都能干，说走就走（3~4 小时）
-  def('porter', '搬货', 'odd', 90, 'labor', { place: 'anywhere', minutes: 240 }),
-  def('shopkeeper', '看店', 'odd', 85, 'social', { place: 'home', minutes: 240 }),
-  def('waiter', '端盘子', 'odd', 90, 'social', { place: 'destination', minutes: 240 }),
-  def('delivery', '送外卖', 'odd', 95, 'driving', { place: 'home', materialCost: 8, minutes: 210 }),
-  def('flyer', '发传单', 'odd', 80, 'labor', { place: 'destination', minutes: 180 }),
-  def('street_photo', '街拍明信片', 'odd', 92, 'photo', { place: 'anywhere', minutes: 210, hasVariance: true }),
-  def('menu_copy', '小店菜单手抄', 'odd', 88, 'writing', { place: 'home', minutes: 210 }),
+  // 零工：谁都能干，说走就走（3~4 小时，100–120 元）
+  def('porter', '搬货', 'odd', 112, 'labor', { place: 'anywhere', minutes: 240 }),
+  def('shopkeeper', '看店', 'odd', 105, 'social', { place: 'home', minutes: 240 }),
+  def('waiter', '端盘子', 'odd', 110, 'social', { place: 'destination', minutes: 240 }),
+  def('delivery', '送外卖', 'odd', 120, 'driving', { place: 'home', materialCost: 8, minutes: 210 }),
+  def('flyer', '发传单', 'odd', 100, 'labor', { place: 'destination', minutes: 180 }),
+  def('street_photo', '街拍明信片', 'odd', 115, 'photo', { place: 'anywhere', minutes: 210, hasVariance: true }),
+  def('menu_copy', '小店菜单手抄', 'odd', 108, 'writing', { place: 'home', minutes: 210 }),
+  def('book_sorter', '图书馆理书员', 'odd', 106, 'admin', { place: 'anywhere', minutes: 210 }),
+  def('tea_barista_helper', '茶饮店打下手', 'odd', 112, 'cooking', { place: 'destination', minutes: 210 }),
+  def('gift_wrapper', '花店扎束包装', 'odd', 104, 'craft', { place: 'destination', minutes: 210, hasVariance: true }),
+  def('pharmacy_clerk', '药房配货抓药', 'odd', 108, 'admin', { place: 'home', minutes: 210 }),
 
-  // 熟练工：干满一个月或凭轻载具上路（4~5 小时）
-  def('kitchen', '后厨帮工', 'skilled', 140, 'cooking', { days: 30, place: 'destination', minutes: 300, hasVariance: true }),
-  def('renovation', '装修队小工', 'skilled', 150, 'craft', { days: 30, place: 'home', minutes: 300, hasVariance: true }),
-  def('errand', '跑腿代办', 'skilled', 130, 'admin', { days: 30, place: 'home', materialCost: 10, minutes: 270, hasVariance: true }),
-  def('stall', '早市摆摊', 'skilled', 145, 'cooking', { days: 30, place: 'home', materialCost: 25, minutes: 270, hasVariance: true }),
-  def('rider_delivery', '跑平台送外卖', 'skilled', 135, 'driving', { cert: '健康证', equip: 'ebike', place: 'home', materialCost: 8, minutes: 240, shift: true, hasVariance: true }),
-  def('courier_ebike', '片区送快递', 'skilled', 150, 'driving', { equip: 'ebike', place: 'home', materialCost: 10, minutes: 240, shift: true, hasVariance: true }),
-  def('darkroom_print', '暗房胶片冲印', 'skilled', 150, 'photo', { equip: 'camera', place: 'home', materialCost: 12, minutes: 300, hasVariance: true }),
-  def('local_notes', '风物随笔撰稿', 'skilled', 148, 'writing', { equip: 'computer', place: 'anywhere', minutes: 270, hasVariance: true }),
-  def('linen_embroidery', '亚麻刺绣手作', 'skilled', 150, 'craft', { equip: 'sewing', place: 'home', materialCost: 10, minutes: 300, hasVariance: true }),
+  // 熟练工：干满一个月或凭轻载具/基础证上路（4~5 小时，165–195 元）
+  def('kitchen', '后厨帮工', 'skilled', 175, 'cooking', { days: 30, place: 'destination', minutes: 300, hasVariance: true }),
+  def('renovation', '装修队小工', 'skilled', 192, 'craft', { days: 30, place: 'home', minutes: 300, hasVariance: true }),
+  def('errand', '跑腿代办', 'skilled', 165, 'admin', { days: 30, place: 'home', materialCost: 10, minutes: 270, hasVariance: true }),
+  def('stall', '早市摆摊', 'skilled', 185, 'cooking', { days: 30, place: 'home', materialCost: 25, minutes: 270, hasVariance: true }),
+  def('rider_delivery', '跑平台送外卖', 'skilled', 172, 'driving', { cert: '健康证', equip: 'ebike', place: 'home', materialCost: 8, minutes: 240, shift: true, hasVariance: true }),
+  def('courier_ebike', '片区送快递', 'skilled', 195, 'driving', { equip: 'ebike', place: 'home', materialCost: 10, minutes: 240, shift: true, hasVariance: true }),
+  def('darkroom_print', '暗房胶片冲印', 'skilled', 190, 'photo', { equip: 'camera', place: 'home', materialCost: 12, minutes: 300, hasVariance: true }),
+  def('local_notes', '风物随笔撰稿', 'skilled', 186, 'writing', { equip: 'computer', place: 'anywhere', minutes: 270, hasVariance: true }),
+  def('linen_embroidery', '亚麻刺绣手作', 'skilled', 188, 'craft', { equip: 'sewing', place: 'home', materialCost: 10, minutes: 300, hasVariance: true }),
+  def('greenhouse_helper', '温室育苗工', 'skilled', 178, 'labor', { days: 30, place: 'home', minutes: 270, hasVariance: true }),
+  def('parcel_station', '驿站分拣登记', 'skilled', 168, 'admin', { days: 30, place: 'home', materialCost: 6, minutes: 270 }),
+  def('homestay_host', '民宿前台管家', 'skilled', 182, 'social', { days: 30, place: 'destination', minutes: 300, hasVariance: true }),
+  def('clinic_assistant', '社区诊所分诊助理', 'skilled', 180, 'social', { cert: '健康证', place: 'home', minutes: 270 }),
 
-  // 有证：一天的钱够她吃住两天，但那张证要一笔投入（4~6 小时）
-  def('caregiver', '护工', 'certified', 210, 'social', { cert: '护工证', place: 'home', minutes: 360 }),
-  def('driver', '网约车司机', 'certified', 230, 'driving', { cert: '驾照', place: 'home', materialCost: 45, minutes: 360, shift: true, hasVariance: true }),
-  def('designated_driver', '夜间代驾', 'certified', 220, 'driving', { cert: '驾照', equip: 'folding_bike', place: 'home', materialCost: 12, minutes: 240, shift: true, hasVariance: true }),
-  def('cook', '厨师', 'certified', 240, 'cooking', { cert: '厨师证', place: 'destination', minutes: 360, hasVariance: true }),
-  def('electrician', '电工', 'certified', 220, 'craft', { cert: '电工证', place: 'home', materialCost: 15, minutes: 360, hasVariance: true }),
-  def('arch_photo', '古建采风跟拍', 'certified', 235, 'photo', { cert: '摄影证', equip: 'camera', place: 'anywhere', minutes: 360, hasVariance: true }),
-  def('magazine_feature', '城市特约撰稿', 'certified', 228, 'writing', { equip: 'computer', days: 30, place: 'anywhere', minutes: 360, hasVariance: true }),
-  def('custom_tailor', '成衣裁缝定制', 'certified', 238, 'craft', { equip: 'sewing', days: 30, place: 'home', materialCost: 18, minutes: 360, hasVariance: true }),
-  def('bakery_assistant', '暖炉烘焙点心师', 'certified', 225, 'cooking', { cert: '健康证', equip: 'oven', place: 'home', materialCost: 16, minutes: 330, hasVariance: true }),
+  // 有证：一天的钱够吃住几天，但证与装备要一笔投入（4~6 小时，260–310 元）
+  def('caregiver', '护工', 'certified', 260, 'social', { cert: '护工证', place: 'home', minutes: 360 }),
+  def('driver', '网约车司机', 'certified', 295, 'driving', { cert: '驾照', place: 'home', materialCost: 45, minutes: 360, shift: true, hasVariance: true }),
+  def('designated_driver', '夜间代驾', 'certified', 280, 'driving', { cert: '驾照', equip: 'folding_bike', place: 'home', materialCost: 12, minutes: 240, shift: true, hasVariance: true }),
+  def('cook', '厨师', 'certified', 310, 'cooking', { cert: '厨师证', place: 'destination', minutes: 360, hasVariance: true }),
+  def('electrician', '电工', 'certified', 278, 'craft', { cert: '电工证', place: 'home', materialCost: 15, minutes: 360, hasVariance: true }),
+  def('arch_photo', '古建采风跟拍', 'certified', 300, 'photo', { cert: '摄影证', equip: 'camera', place: 'anywhere', minutes: 360, hasVariance: true }),
+  def('magazine_feature', '城市特约撰稿', 'certified', 286, 'writing', { equip: 'computer', days: 30, place: 'anywhere', minutes: 360, hasVariance: true }),
+  def('custom_tailor', '成衣裁缝定制', 'certified', 302, 'craft', { equip: 'sewing', days: 30, place: 'home', materialCost: 18, minutes: 360, hasVariance: true }),
+  def('bakery_assistant', '暖炉烘焙点心师', 'certified', 282, 'cooking', { cert: '健康证', equip: 'oven', place: 'home', materialCost: 16, minutes: 330, hasVariance: true }),
+  def('garden_trimmer', '社区园艺修剪师', 'certified', 288, 'labor', { cert: '园艺花艺证', equip: 'garden_kit', place: 'home', minutes: 330, hasVariance: true }),
+  def('archivist', '档案整理专员', 'certified', 276, 'admin', { equip: 'computer', days: 30, place: 'anywhere', minutes: 330, hasVariance: true }),
+  def('handbrew_barista', '手冲咖啡茶艺师', 'certified', 292, 'cooking', { cert: '茶艺咖啡证', equip: 'coffee_kit', place: 'anywhere', materialCost: 14, minutes: 330, hasVariance: true }),
+  def('local_guide', '城市文化讲解导游', 'certified', 298, 'social', { cert: '导游证', place: 'destination', minutes: 360, hasVariance: true }),
+  def('aerial_landscape', '景区风光跟拍师', 'certified', 305, 'photo', { cert: '摄影证', equip: 'camera', place: 'destination', minutes: 360, hasVariance: true }),
+  def('rehab_therapist', '社区理疗康复师', 'certified', 295, 'social', { cert: '护工证', place: 'home', minutes: 360, hasVariance: true }),
 
-  // 专业：证 + 经验，两个都要（7~8 小时）
-  def('nurse', '社区护士', 'professional', 330, 'social', { cert: '护士执业证', days: 30, place: 'home', minutes: 480, hasVariance: true }),
-  def('teacher', '小学代课老师', 'professional', 320, 'writing', { cert: '教师资格证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
-  def('accountant', '会计', 'professional', 340, 'admin', { cert: '会计证', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
-  def('socialworker', '社区社工', 'professional', 300, 'social', { cert: '社工证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
-  def('photo_column', '纪实摄影专栏', 'professional', 325, 'photo', { cert: '摄影证', equip: 'camera', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
+  // 专业：证 + 经验，两个都要（7~8 小时，380–450 元）
+  def('nurse', '社区护士', 'professional', 430, 'social', { cert: '护士执业证', days: 30, place: 'home', minutes: 480, hasVariance: true }),
+  def('teacher', '小学代课老师', 'professional', 410, 'writing', { cert: '教师资格证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
+  def('accountant', '会计', 'professional', 445, 'admin', { cert: '会计证', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
+  def('socialworker', '社区社工', 'professional', 380, 'social', { cert: '社工证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
+  def('photo_column', '纪实摄影专栏', 'professional', 420, 'photo', { cert: '摄影证', equip: 'camera', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
+  def('landscape_chief', '生态林园养护主管', 'professional', 396, 'labor', { cert: '园艺花艺证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
+  def('pastry_chef', '私房研发点心主厨', 'professional', 440, 'cooking', { cert: '厨师证', equip: 'oven', days: 30, place: 'home', materialCost: 22, minutes: 420, hasVariance: true }),
+  def('pottery_master', '陶艺木作主理人', 'professional', 415, 'craft', { days: 30, place: 'home', materialCost: 20, minutes: 420, hasVariance: true }),
+  def('charter_captain', '城际定制包车司导', 'professional', 425, 'driving', { cert: '驾照', days: 30, place: 'anywhere', materialCost: 40, minutes: 420, shift: true, hasVariance: true }),
+  def('travel_editor', '旅行杂志专栏主编', 'professional', 405, 'writing', { equip: 'computer', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
+  def('community_doctor', '社区全科医生', 'professional', 450, 'social', { cert: '执业医师证', days: 30, place: 'home', minutes: 450, hasVariance: true }),
 ];
 
 /** 判断某份活在当前位置阶段能否接：在路上只能接 anywhere；在外地可接 anywhere+destination；在家可接 home+anywhere。 */
@@ -187,13 +207,17 @@ export const CERTS: readonly { name: string; price: number; days: number; need: 
   { name: '健康证', price: 80, days: 1, need: 10 },
   { name: '护工证', price: 400, days: 1, need: 20 },
   { name: '摄影证', price: 380, days: 1, need: 25 },
+  { name: '茶艺咖啡证', price: 350, days: 1, need: 25 },
+  { name: '园艺花艺证', price: 420, days: 1, need: 30 },
   { name: '电工证', price: 450, days: 1, need: 30 },
   { name: '驾照', price: 600, days: 1, need: 30 },
+  { name: '导游证', price: 520, days: 1, need: 40 },
   { name: '厨师证', price: 500, days: 1, need: 40 },
   { name: '社工证', price: 550, days: 1, need: 45 },
   { name: '教师资格证', price: 700, days: 1, need: 55 },
   { name: '护士执业证', price: 800, days: 1, need: 60 },
   { name: '会计证', price: 750, days: 1, need: 65 },
+  { name: '执业医师证', price: 900, days: 1, need: 72 },
 ];
 
 export function certOf(name: string) {

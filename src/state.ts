@@ -34,7 +34,7 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { skyFromExternal, type ExternalWeatherOverride, type WeatherSky } from './config.ts';
-import { type JobDef, findJob, certOf, CERTS, jobAllowedAt } from './jobs.ts';
+import { type JobDef, findJob, defaultJob, certOf, CERTS, jobAllowedAt } from './jobs.ts';
 import { type StreetMods, type StreetProfile, formatStreetMods, normStreetMods } from './bridge.ts';
 import {
   DEFAULT_DAILY_GIFT_CAP,
@@ -347,8 +347,8 @@ export const HOME_TIER_LABEL: Record<HomeTier, string> = {
 export const HOME_TIER_COST: Record<HomeTier, number> = {
   'urban-village': 450,
   old: 1200,
-  new: 2600,
-  villa: 7800,
+  new: 2200,
+  villa: 5400,
 };
 
 /** 城市房价/房租倍率夹紧范围：[0.3, 5.0]，非法或 <=0 返回 1（按基准价）。 */
@@ -714,7 +714,16 @@ export interface LifeState {
   workOutputs: WorkOutputItem[];
   /** 生病静养期间的用户每日照料记录（每天限一次）。 */
   sickCare: { dayKey: string; count: number; history: SickCareRecord[] };
+  /** 持证月度核验：上次考取或复核通过时间（ISO）。 */
+  certVerifiedAt?: Record<string, string>;
+  /** 持证月审临期预警去重标记（证名 → 对应 verifiedAt ISO）。 */
+  certWarnedCycle?: Record<string, string>;
+  /** 最近一次去社区诊所看病日期（YYYY-MM-DD，每天限一次）。 */
+  clinicLastDay?: string;
 }
+
+export const CERT_AUDIT_DAYS = 30;
+export const CERT_WARN_DAYS = 25;
 
 export interface SickCareRecord {
   id: string;
@@ -965,6 +974,7 @@ export const PHYSICAL_JOB_IDS = new Set([
   'porter', 'waiter', 'delivery', 'flyer',
   'kitchen', 'renovation', 'errand', 'stall',
   'caregiver', 'electrician',
+  'greenhouse_helper', 'garden_trimmer', 'landscape_chief', 'pottery_master',
 ]);
 
 export interface AdvanceExt {
@@ -978,14 +988,16 @@ export interface AdvanceExt {
   qualityRoll?: number;
   dreamRoll?: number;
   streetMods?: StreetMods;
+  /** 当前所在城市全局 Buff（Hub v1 传入，默认空）。 */
+  townBuffs?: Record<string, number>;
 }
 
 /** 必须闭门静养、禁止出家门的病症 id。 */
 export const SICK_REST_IDS = new Set<Condition['id']>(['cold', 'overwork']);
 
-/** 闭门生病静养期间允许在家里做的生活动作；其馀外出类动作一律拦下。 */
+/** 闭门生病静养期间允许在家里做（含特许看病 `see_doctor`）的活动；其余外出娱乐/逛街一律拦下。 */
 export const SICK_HOME_ALLOWED_ACTS = new Set([
-  'wake', 'cancel', 'sleep', 'nap', 'rest', 'instant', 'cook', 'wash', 'tidy', 'chat', 'study', 'play', 'miniature',
+  'wake', 'cancel', 'sleep', 'nap', 'rest', 'instant', 'cook', 'wash', 'tidy', 'chat', 'study', 'play', 'miniature', 'see_doctor',
 ]);
 
 export type CareItemId = 'medicine' | 'soup' | 'towel';
@@ -1343,6 +1355,12 @@ export const ACTS: Record<string, ActKind> = {
     scene: '家里书桌台灯下', outfitHint: '舒适居家服', props: '木质微缩书店零件、镊子与暖光台灯',
   }),
 
+  // ---- 医疗就医 ----
+  see_doctor: mkAct('see_doctor', '去社区诊所看病开药', 45, 45, { energy: 8, clean: 4 }, {
+    mood: { text: '看了医生拿了药，心里踏实了不少', kind: 'good', hours: 4 },
+    scene: '社区小诊所', outfitHint: '戴口罩的外套', props: '感冒药包与温水杯',
+  }),
+
   // ---- 控制指令（0 分钟） ----
   wake: mkAct('wake', '起来', 0, 0, {}),
   cancel: mkAct('cancel', '停下来', 0, 0, {}),
@@ -1441,6 +1459,9 @@ export function freshState(now: Date = new Date()): LifeState {
     giftCash: freshGiftCash(now),
     workOutputs: [],
     sickCare: { dayKey: '', count: 0, history: [] },
+    certVerifiedAt: {},
+    certWarnedCycle: {},
+    clinicLastDay: '',
   };
 }
 
@@ -1696,6 +1717,25 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
     giftCash: normGiftCash(s.giftCash, now),
     workOutputs: normWorkOutputs(s.workOutputs),
     sickCare: normSickCare(s.sickCare),
+    certVerifiedAt: (() => {
+      const rawMap = (s.certVerifiedAt && typeof s.certVerifiedAt === 'object' && !Array.isArray(s.certVerifiedAt))
+        ? s.certVerifiedAt as Record<string, unknown>
+        : {};
+      const out: Record<string, string> = {};
+      const owned = Array.isArray((s.job as any)?.certs) ? (s.job as any).certs.filter((x: unknown): x is string => typeof x === 'string') : [];
+      const nowIso = now.toISOString();
+      for (const name of owned) {
+        const v = rawMap[name];
+        out[name] = typeof v === 'string' && Number.isFinite(Date.parse(v)) ? v : nowIso;
+      }
+      return out;
+    })(),
+    certWarnedCycle: (s.certWarnedCycle && typeof s.certWarnedCycle === 'object' && !Array.isArray(s.certWarnedCycle))
+      ? Object.fromEntries(
+        Object.entries(s.certWarnedCycle as Record<string, unknown>).filter(([, v]) => typeof v === 'string'),
+      ) as Record<string, string>
+      : {},
+    clinicLastDay: typeof s.clinicLastDay === 'string' ? s.clinicLastDay : '',
   };
 }
 
@@ -1902,6 +1942,18 @@ export interface AdvanceResult {
   helperRun?: HelperRunSummary | null;
   /** 贷款按日计息、到期扣款与逾期结算。 */
   loanSettlement?: LoanAdvanceSettlement | null;
+  /** 本次推进期间触发临期预警的持证（距月度核验 <=5 天且见识低于门槛）。 */
+  certWarnings?: { cert: string; daysLeft: number; need: number; knowledge: number }[];
+  /** 本次推进因满 30 天核验未达标被吊销的证书。 */
+  certRevoked?: { cert: string; need: number; knowledge: number }[];
+  /** 本次推进顺利通过 30 天月度复核的证书。 */
+  certRenewed?: string[];
+}
+
+function clampBuffMult(raw: unknown, lo = 0.5, hi = 2.0): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  return Math.max(lo, Math.min(hi, n));
 }
 
 /** 她刚醒。`hours` 是这一觉**真的睡了**几个钟点。 */
@@ -1949,6 +2001,16 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   const hours = Math.min(rawHours, MAX_CATCHUP_HOURS);
   /** 真正的结算起点。超长离线被 7 天封顶时，它晚于 `updatedAt`。 */
   const fromMs = to - hours * 3_600_000;
+  const tb = ext?.townBuffs ?? {};
+  const studyKnowMult = clampBuffMult(tb.study_know_mult, 0.5, 2.5);
+  const trainExpMult = clampBuffMult(tb.train_exp_mult, 0.5, 2.5);
+  const qualityLuckBonus = Number.isFinite(Number(tb.quality_luck_bonus)) ? Number(tb.quality_luck_bonus) : 0;
+  const energyDecayMult = clampBuffMult(tb.energy_decay_mult, 0.5, 2.0);
+  const sickRecoveryMult = clampBuffMult(tb.sick_recovery_mult, 0.5, 3.0);
+  const fitGainMult = clampBuffMult(tb.fit_gain_mult, 0.5, 2.5);
+  const loanRateMult = clampBuffMult(tb.loan_rate_mult, 0.5, 2.0);
+  const photoMoodBonus = normalizeMoodBonus(tb.photo_mood_bonus);
+  const socialMoodBonus = normalizeMoodBonus(tb.social_mood_bonus);
 
   const before: Vitals = { ...state.vitals };
   const atHomeTown = ext?.phase !== 'staying' && ext?.phase !== 'traveling';
@@ -2047,7 +2109,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
       if (actTask.knowPerMin && actTask.knowPerMin > 0 && state.knowledge < KNOWLEDGE_MAX) {
         state.knowledge = Math.min(
           KNOWLEDGE_MAX,
-          state.knowledge + actTask.knowPerMin * actualMins * streetGainFactor(sMods, 'know') * activeMood.studyMult,
+          state.knowledge + actTask.knowPerMin * actualMins * streetGainFactor(sMods, 'know') * activeMood.studyMult * studyKnowMult,
         );
       }
 
@@ -2127,11 +2189,21 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
           if (!outOfCash) {
             state.job.days += 1;
             if (def?.domain) {
-              const gain = def.tier === 'odd' ? 2 : def.tier === 'skilled' ? 3 : def.tier === 'cert' ? 3.5 : 4;
+              const gain = (def.tier === 'odd' ? 2 : def.tier === 'skilled' ? 3 : def.tier === 'certified' ? 3.5 : 4) * trainExpMult;
               state.skills[def.domain] = Math.min(100, (state.skills[def.domain] ?? 0) + gain);
             }
             if (PHYSICAL_JOB_IDS.has(actTask.id)) {
-              state.fitness = Math.min(FITNESS_MAX, state.fitness + 1.5 * streetGainFactor(workMods, 'fit') * activeMood.fitMult);
+              state.fitness = Math.min(FITNESS_MAX, state.fitness + 1.5 * streetGainFactor(workMods, 'fit') * activeMood.fitMult * fitGainMult);
+            }
+            if (def?.domain === 'photo' && photoMoodBonus > 0) {
+              state.moodlets = state.moodlets.filter((m) => m.source !== 'photo-town');
+              state.moodlets.push({
+                id: `m-pt-${endAt.getTime().toString(36)}`,
+                source: 'photo-town',
+                text: '这座城的光线和街景真出片，拍得很畅快',
+                kind: 'good',
+                expiresAt: new Date(endAt.getTime() + (3 + Math.min(4, photoMoodBonus)) * 3_600_000).toISOString(),
+              });
             }
           }
 
@@ -2152,6 +2224,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             const q = rollWorkQuality(exp, {
               trainedCount: trainedCnt,
               moodPolarity: workMood.polarity,
+              luckBonus: qualityLuckBonus,
               roll: ext?.qualityRoll ?? ext?.gradeRoll,
             });
             state.workOutputs = state.workOutputs ?? [];
@@ -2172,11 +2245,11 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
               id: 'overwork',
               since: endAt.toISOString(),
               until: new Date(endAt.getTime() + 1.5 * 86_400_000).toISOString(),
-              text: '过劳静养。浑身乏力，不能出家门，最多只能在家照料菜园动植物。',
+              text: '你过劳静养中。浑身乏力，不能出家门，可以去社区诊所看病（see_doctor）或在家照料菜园动植物。',
             };
             state.conditions.push(ov);
             workCaught.push(ov);
-            remember(state, '连着出工累过头了，需要闭门静养一阵，最多在家照料动植物。', endAt);
+            remember(state, '连着出工累过头了，需要闭门静养一阵，最多在家照料动植物或去社区诊所看病。', endAt);
           }
 
           const outText = outputItem ? `，做出【${outputItem.qualityLabel}】${outputItem.name}` : '';
@@ -2203,21 +2276,32 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
           });
         } else {
           if (actTask.mood && !outOfCash) {
+            const extraSocialHrs = socialMoodBonus > 0 && ['meet', 'chat', 'mall', 'karaoke', 'picnic', 'live_show'].includes(actTask.id)
+              ? Math.min(3, socialMoodBonus * 0.5)
+              : 0;
             state.moodlets = state.moodlets.filter((m) => m.source !== actTask.id);
             state.moodlets.push({
               id: `m-${endAt.getTime().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
               source: actTask.id,
               text: actTask.mood.text,
               kind: actTask.mood.kind,
-              expiresAt: new Date(endAt.getTime() + actTask.mood.hours * 3_600_000).toISOString(),
+              expiresAt: new Date(endAt.getTime() + (actTask.mood.hours + extraSocialHrs) * 3_600_000).toISOString(),
             });
+          }
+          if (!outOfCash && actTask.id === 'see_doctor') {
+            const cutMs = 18 * 3_600_000;
+            state.conditions = state.conditions.map((c) => {
+              if (!SICK_REST_IDS.has(c.id) && c.id !== 'injury') return c;
+              return { ...c, until: new Date(Date.parse(c.until) - cutMs).toISOString() };
+            });
+            remember(state, '去社区诊所看了医生、领了退热感冒药，恢复提前了一大截。', endAt);
           }
           let errandEarned = 0;
           if (!outOfCash && actTask.errandPay && actTask.errandPay > 0) {
             errandEarned = Math.round(actTask.errandPay);
             state.money.cash += errandEarned;
             state.money.earned += errandEarned;
-            state.fitness = Math.min(FITNESS_MAX, state.fitness + 0.3 * streetGainFactor(sMods, 'fit') * activeMood.fitMult);
+            state.fitness = Math.min(FITNESS_MAX, state.fitness + 0.3 * streetGainFactor(sMods, 'fit') * activeMood.fitMult * fitGainMult);
             remember(
               state,
               `帮街坊${actTask.errandEmployer || '邻居'}照料农牧场完工，挣了 ${errandEarned} 元零花钱。`,
@@ -2227,7 +2311,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             const actDef = ACTS[actTask.id];
             if (!outOfCash) {
               const fitGain = actDef?.fit ?? 0;
-              if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain * streetGainFactor(sMods, 'fit') * activeMood.fitMult);
+              if (fitGain > 0) state.fitness = Math.min(FITNESS_MAX, state.fitness + fitGain * streetGainFactor(sMods, 'fit') * activeMood.fitMult * fitGainMult);
               const craftGain = actDef?.craft ?? 0;
               if (craftGain > 0) {
                 state.skills = state.skills ?? {};
@@ -2319,7 +2403,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
       : -SLEEP_DECAY_PER_HOUR[key];
     const relief = reliefOf(key);
     const modeFactor = key === 'energy'
-      ? (travelMult?.energy ?? 1)
+      ? (travelMult?.energy ?? 1) * energyDecayMult
       : (key === 'food' ? (travelMult?.food ?? 1) : 1);
     const streetDecay = streetDecayFactor(sMods, key);
     const moodDecay = decayMood.decayMult[key] ?? 1;
@@ -2425,7 +2509,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   const helperRun = (state.farmHelper.mode !== 'off' || Boolean(state.farmHelper.pendingErrand))
     ? runFarmHelperCatchup(state, now)
     : null;
-  const loanSettlement = settleLoansOnAdvance(state, now);
+  const loanSettlement = settleLoansOnAdvance(state, now, { rateMult: loanRateMult });
 
   /*
    * 醒了。
@@ -2512,7 +2596,18 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
     remember(state, `有 ${gone} 件悬着的事自己算了。`, now);
   }
 
-  /* 病好了没有。 */
+  /* 病好了没有（先应用城市康养康复速度 sick_recovery_mult，严格按每条病症在本轮的真实存续时长折算）。 */
+  if (sickRecoveryMult !== 1 && hours > 0) {
+    state.conditions = state.conditions.map((c) => {
+      if (!SICK_REST_IDS.has(c.id)) return c;
+      const sinceMs = Date.parse(c.since);
+      const startMs = Number.isFinite(sinceMs) ? Math.max(fromMs, sinceMs) : fromMs;
+      const activeHours = Math.max(0, Math.min(hours, (to - startMs) / 3_600_000));
+      if (activeHours <= 0) return c;
+      const nextUntil = Date.parse(c.until) - (sickRecoveryMult - 1) * activeHours * 3_600_000;
+      return { ...c, until: new Date(nextUntil).toISOString() };
+    });
+  }
   const recovered: Condition[] = [];
   state.conditions = state.conditions.filter((c) => {
     if (Date.parse(c.until) <= now.getTime()) {
@@ -2535,7 +2630,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
       id: 'cold',
       since: iso,
       until: new Date(now.getTime() + 3 * 86_400_000).toISOString(),
-      text: '感冒静养。有点晕，鼻子不通，不能出家门，最多只能在家照料菜园动植物。',
+      text: '你感冒静养中。有点晕、鼻子不通，不能出家门，可以去社区诊所看病（see_doctor）或在家照料菜园动植物。',
     };
     state.conditions.push(c);
     caught.push(c);
@@ -2545,10 +2640,88 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
       id: 'overwork',
       since: iso,
       until: new Date(now.getTime() + 1.5 * 86_400_000).toISOString(),
-      text: '过劳静养。浑身乏力，不能出家门，最多只能在家照料菜园动植物。',
+      text: '你过劳静养中。浑身乏力，不能出家门，可以去社区诊所看病（see_doctor）或在家照料菜园动植物。',
     };
     state.conditions.push(c);
     caught.push(c);
+  }
+
+  /* 证书一月一核验制度（每 30 天检查见识是否达标；满 25 天且不足先预警）。 */
+  const certWarnings: { cert: string; daysLeft: number; need: number; knowledge: number }[] = [];
+  const certRevoked: { cert: string; need: number; knowledge: number }[] = [];
+  const certRenewed: string[] = [];
+  if (state.job.certs.length > 0) {
+    state.certVerifiedAt = state.certVerifiedAt ?? {};
+    state.certWarnedCycle = state.certWarnedCycle ?? {};
+    const keptCerts: string[] = [];
+    for (const certName of state.job.certs) {
+      const cDef = certOf(certName);
+      if (!cDef) {
+        keptCerts.push(certName);
+        continue;
+      }
+      let verifiedIso = state.certVerifiedAt[certName];
+      if (!verifiedIso || !Number.isFinite(Date.parse(verifiedIso))) {
+        verifiedIso = iso;
+        state.certVerifiedAt[certName] = verifiedIso;
+        keptCerts.push(certName);
+        continue;
+      }
+      const elapsedDays = (to - Date.parse(verifiedIso)) / 86_400_000;
+      const curKnow = Math.round(state.knowledge * 10) / 10;
+      if (elapsedDays >= CERT_AUDIT_DAYS) {
+        if (curKnow >= cDef.need) {
+          state.certVerifiedAt[certName] = iso;
+          delete state.certWarnedCycle[certName];
+          certRenewed.push(certName);
+          keptCerts.push(certName);
+        } else if (state.certWarnedCycle[certName] !== verifiedIso) {
+          // 大离线跨过第 25–30 天且尚未收到预警时，先给 5 天补救宽限期再行吊销
+          const graceIso = new Date(to - CERT_WARN_DAYS * 86_400_000).toISOString();
+          state.certVerifiedAt[certName] = graceIso;
+          state.certWarnedCycle[certName] = graceIso;
+          keptCerts.push(certName);
+          certWarnings.push({
+            cert: certName,
+            daysLeft: CERT_AUDIT_DAYS - CERT_WARN_DAYS,
+            need: cDef.need,
+            knowledge: curKnow,
+          });
+        } else {
+          delete state.certVerifiedAt[certName];
+          delete state.certWarnedCycle[certName];
+          const curDef = (state.job.id ? findJob(state.job.id) : null)
+            ?? (state.job.what ? findJob(state.job.what) : null);
+          if (curDef?.cert === certName) {
+            state.job.id = '';
+            state.job.what = '';
+            state.job.daily = 0;
+          }
+          certRevoked.push({ cert: certName, need: cDef.need, knowledge: curKnow });
+          remember(state, `你的「${certName}」满一个月月度核验时见识只有 ${curKnow}（需 ${cDef.need}），证书被吊销了，得重新看书再考。`, now);
+          state.moodlets = state.moodlets.filter((m) => m.source !== 'cert-revoke');
+          state.moodlets.push({
+            id: `m-crev-${now.getTime().toString(36)}`,
+            source: 'cert-revoke',
+            text: `${certName}月度复核没过被吊销了，得重新攒见识补考`,
+            kind: 'bad',
+            expiresAt: new Date(now.getTime() + 8 * 3_600_000).toISOString(),
+          });
+        }
+      } else {
+        keptCerts.push(certName);
+        if (elapsedDays >= CERT_WARN_DAYS && curKnow < cDef.need && state.certWarnedCycle[certName] !== verifiedIso) {
+          state.certWarnedCycle[certName] = verifiedIso;
+          certWarnings.push({
+            cert: certName,
+            daysLeft: Math.max(1, Math.ceil(CERT_AUDIT_DAYS - elapsedDays)),
+            need: cDef.need,
+            knowledge: curKnow,
+          });
+        }
+      }
+    }
+    state.job.certs = keptCerts;
   }
 
   /*
@@ -2574,6 +2747,9 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   return {
     hours, crossed, critical, bottomed, recovered, caught, rentMissed, rent,
     woke, sleptHours: sleepHours, completed, helperRun, loanSettlement,
+    ...(certWarnings.length ? { certWarnings } : {}),
+    ...(certRevoked.length ? { certRevoked } : {}),
+    ...(certRenewed.length ? { certRenewed } : {}),
   };
 }
 
@@ -2664,6 +2840,7 @@ export interface ActJourneyContext {
   onWay?: { what: string; arriveAt: string; leftMin: number } | null;
   atSpot?: { name: string; until: string } | null;
   weatherSky?: WeatherSky;
+  townBuffs?: Record<string, number>;
 }
 
 /** 是否正乘坐内河游轮航线。 */
@@ -2885,14 +3062,29 @@ const THEME_CRUISE_FREE_ACTS = new Set([
   'eat', 'feast', 'tea', 'supper', 'swim', 'live_show', 'play', 'movie',
 ]);
 const SPOT_BLOCKED_ACTS = new Set(['wash', 'tidy', 'cook', 'sleep', 'nap']);
+const FOOD_COST_ACT_IDS = new Set(['eat', 'feast', 'tea', 'supper', 'cook', 'drink', 'cafe']);
 
-export function actEffectiveCost(act: ActKind, journey?: ActJourneyContext): number {
+export function actEffectiveCost(
+  act: ActKind,
+  journey?: ActJourneyContext,
+  certs?: readonly string[],
+): number {
   if (isThemeCruiseJourney(journey) && THEME_CRUISE_FREE_ACTS.has(act.id)) return 0;
   if (act.id === 'swim' && (
     isCruiseJourney(journey)
     || (journey?.phase === 'staying' && (journey.hotelTier === 'luxury' || journey.hotelTier === 'view'))
   )) {
     return 0;
+  }
+  if (act.id === 'see_doctor') {
+    const hasMedCert = Boolean(certs?.includes('执业医师证') || certs?.includes('护士执业证'));
+    return hasMedCert ? 30 : act.cost;
+  }
+  if (act.cost > 0 && FOOD_COST_ACT_IDS.has(act.id)) {
+    const rawMult = Number(journey?.townBuffs?.food_cost_mult);
+    if (Number.isFinite(rawMult) && rawMult !== 1) {
+      return Math.max(1, Math.round(act.cost * clampBuffMult(rawMult, 0.5, 2.0)));
+    }
   }
   return act.cost;
 }
@@ -3053,12 +3245,36 @@ export function applyAct(
     const hoursLeft = Math.max(1, Math.ceil((Date.parse(sick.until) - now.getTime()) / 3_600_000));
     return {
       ok: false,
-      reason: `你这会儿正在生病静养（${sick.text}，还剩约 ${hoursLeft} 小时），出不了家门去「${act.label}」—— 只能在家歇着（sleep/nap/rest）、自己煮热食或照料菜园动植物。`,
+      reason: `你这会儿正在生病静养（${sick.text}，还剩约 ${hoursLeft} 小时），出不了家门去「${act.label}」—— 只能在家歇着（sleep/nap/rest）、自己煮热食、去社区诊所看病（see_doctor）或照料菜园动植物。`,
       vitals: state.vitals,
       mood: null,
       cost: 0,
       cash: state.money.cash,
     };
+  }
+  if (act.id === 'see_doctor') {
+    const isSickOrInjured = state.conditions.some((c) => SICK_REST_IDS.has(c.id) || c.id === 'injury');
+    if (!isSickOrInjured) {
+      return {
+        ok: false,
+        reason: '你这会儿没生病也没受伤，不用跑社区诊所看病开药。',
+        vitals: state.vitals,
+        mood: null,
+        cost: 0,
+        cash: state.money.cash,
+      };
+    }
+    const today = localDateKey(now);
+    if (state.clinicLastDay === today) {
+      return {
+        ok: false,
+        reason: '今天已经去社区诊所看过一次病了，药效还在发挥，明天再看或等他在面板上照料。',
+        vitals: state.vitals,
+        mood: null,
+        cost: 0,
+        cash: state.money.cash,
+      };
+    }
   }
 
   /* 旅途/通勤物理约束：车上不能洗澡做饭，跨城赶路不能去做本地居家活动；游轮/河轮/观光专列/房车按载具条件放行。 */
@@ -3165,11 +3381,11 @@ export function applyAct(
    * 只说「钱不够」她会愣在那儿，下次再试一次，还是不行。
    * 说「钱不够，只能将就吃一口」，她才知道路在哪儿。
    */
-  const baseCost = actEffectiveCost(act, journey);
+  const baseCost = actEffectiveCost(act, journey, state.job.certs);
   const canUsePantryForCook = act.id === 'cook' && pantryCount(state.pantry) > 0;
   const effectiveCost = canUsePantryForCook ? Math.min(baseCost, 3) : baseCost;
   if (effectiveCost > state.money.cash) {
-    const alt = Object.values(ACTS).filter((a) => actEffectiveCost(a, journey) <= state.money.cash);
+    const alt = Object.values(ACTS).filter((a) => actEffectiveCost(a, journey, state.job.certs) <= state.money.cash);
     const altText = alt.length
       ? `现在还能做：${alt.map((a) => `${a.label}（${a.id}）`).join('　')}。`
       : '现在什么都做不了 —— 一分钱都没有了。';
@@ -3392,6 +3608,9 @@ export function applyAct(
   const sceneOverride = cookPantryNote
     ? `${baseScene || '家里灶台前'}（用${cookPantryNote}）`
     : baseScene;
+  if (act.id === 'see_doctor') {
+    state.clinicLastDay = localDateKey(now);
+  }
   state.activity = {
     kind: 'act',
     id: act.id,
@@ -3486,7 +3705,7 @@ export function applyWork(
   const told = String(what || '').trim();
   const def = told
     ? findJob(told)
-    : (state.job.id ? findJob(state.job.id) : null);
+    : ((state.job.id ? findJob(state.job.id) : null) ?? (state.job.what ? findJob(state.job.what) : null));
 
   let pay: number;
   let skillMult = 1;
@@ -3536,7 +3755,7 @@ export function applyWork(
     }
   } else {
     label = told || state.job.what || '打零工';
-    pay = state.job.daily;
+    pay = state.job.daily > 0 ? state.job.daily : defaultJob().pay;
     load = { energy: 34, clean: 17, fun: 5, social: 0, food: 19, know: 0 };
     minutes = 240;
     state.job.id = '';
@@ -3847,7 +4066,13 @@ export function certChance(knowledge: number, need: number, moodDelta = 0): numb
 /**
  * 去考一张证。
  */
-export function applyCert(state: LifeState, name: string, now: Date, roll?: number): CertResult {
+export function applyCert(
+  state: LifeState,
+  name: string,
+  now: Date,
+  roll?: number,
+  opts?: { passBonus?: number },
+): CertResult {
   if (isBusy(state, now)) {
     return {
       ok: false,
@@ -3888,7 +4113,8 @@ export function applyCert(state: LifeState, name: string, now: Date, roll?: numb
   }
 
   const mood = moodSummary(state, now);
-  const chance = certChance(state.knowledge, c.need, mood.certDelta);
+  const passBonus = Math.max(-0.3, Math.min(0.3, Number(opts?.passBonus) || 0));
+  const chance = certChance(state.knowledge, c.need, mood.certDelta + passBonus);
   const moodNote = mood.polarity === 'good'
     ? '好心情加持 +8%'
     : mood.polarity === 'bad'
@@ -3905,6 +4131,8 @@ export function applyCert(state: LifeState, name: string, now: Date, roll?: numb
 
   if (passed) {
     state.job.certs.push(c.name);
+    state.certVerifiedAt = { ...(state.certVerifiedAt ?? {}), [c.name]: now.toISOString() };
+    if (state.certWarnedCycle) delete state.certWarnedCycle[c.name];
     clearMatchingWantAndPending(state, [c.name]);
     remember(state, `考下了${c.name}，花了 ${c.price} 元。`, now);
     state.updatedAt = now.toISOString();
@@ -3949,7 +4177,12 @@ export interface LearnResult {
 /**
  * 报培训班涨手艺经验，或购置家用设备/轻载具（§4.5 / §4.10 / §4.15）。
  */
-export function applyLearn(state: LifeState, what: string, now: Date): LearnResult {
+export function applyLearn(
+  state: LifeState,
+  what: string,
+  now: Date,
+  opts?: { equipPriceMult?: number; trainExpMult?: number; studyKnowMult?: number },
+): LearnResult {
   if (isBusy(state, now)) {
     return { ok: false, reason: busyRefusal(state, now, '上课/添置家伙'), paid: 0, cash: state.money.cash };
   }
@@ -3958,27 +4191,29 @@ export function applyLearn(state: LifeState, what: string, now: Date): LearnResu
     return { ok: false, reason: sickR, paid: 0, cash: state.money.cash };
   }
   const q = String(what || '').trim();
+  const equipMult = clampBuffMult(opts?.equipPriceMult, 0.5, 2.0);
   const eq = q ? findEquip(q) : null;
   if (eq) {
     if (state.gear.includes(eq.id)) {
       return { ok: false, reason: `「${eq.name}」你已经有了，不用重复买。`, paid: 0, cash: state.money.cash };
     }
-    if (state.money.cash < eq.price) {
+    const eqPrice = Math.max(1, Math.round(eq.price * equipMult));
+    if (state.money.cash < eqPrice) {
       noteAutoWant(
         state,
-        { what: `买「${eq.name}」（¥${eq.price}）`, kind: 'thing', scale: eq.price >= 300 ? 'big' : 'small', note: '差钱没买成' },
+        { what: `买「${eq.name}」（¥${eqPrice}）`, kind: 'thing', scale: eqPrice >= 300 ? 'big' : 'small', note: '差钱没买成' },
         now,
         eq.name,
       );
-      return { ok: false, reason: `「${eq.name}」要 ${eq.price} 元，你手上只有 ${Math.round(state.money.cash)} 元。`, paid: 0, cash: state.money.cash };
+      return { ok: false, reason: `「${eq.name}」要 ${eqPrice} 元，你手上只有 ${Math.round(state.money.cash)} 元。`, paid: 0, cash: state.money.cash };
     }
-    state.money.cash -= eq.price;
-    state.money.spent += eq.price;
+    state.money.cash -= eqPrice;
+    state.money.spent += eqPrice;
     state.gear.push(eq.id);
     clearMatchingWantAndPending(state, [eq.name]);
-    remember(state, `添置了「${eq.name}」，花了 ${eq.price} 元。`, now);
+    remember(state, `添置了「${eq.name}」，花了 ${eqPrice} 元。`, now);
     state.updatedAt = now.toISOString();
-    return { ok: true, kind: 'equip', name: eq.name, paid: eq.price, cash: state.money.cash };
+    return { ok: true, kind: 'equip', name: eq.name, paid: eqPrice, cash: state.money.cash };
   }
 
   const course = q ? findCourse(q) : null;
@@ -4008,8 +4243,12 @@ export function applyLearn(state: LifeState, what: string, now: Date): LearnResu
     state.money.cash -= course.price;
     state.money.spent += course.price;
     state.vitals.energy = clamp100(state.vitals.energy - course.energyCost);
-    state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + course.knowGain);
-    const nextExp = clamp100((state.skills[course.domain] ?? 0) + course.expGain);
+    const studyMult = clampBuffMult(opts?.studyKnowMult, 0.5, 2.5);
+    const trainMult = clampBuffMult(opts?.trainExpMult, 0.5, 2.5);
+    const knowGain = Math.max(1, Math.round(course.knowGain * studyMult * 10) / 10);
+    const expGain = Math.max(1, Math.round(course.expGain * trainMult * 10) / 10);
+    state.knowledge = Math.min(KNOWLEDGE_MAX, state.knowledge + knowGain);
+    const nextExp = clamp100((state.skills[course.domain] ?? 0) + expGain);
     state.skills[course.domain] = nextExp;
     state.trained[course.domain] = (state.trained[course.domain] ?? 0) + 1;
     clearMatchingWantAndPending(state, [course.name]);

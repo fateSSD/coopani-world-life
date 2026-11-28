@@ -1,8 +1,8 @@
 {
   "name": "coopani-world-life",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "type": "module",
-  "description": "模拟鱼生 · 桌面伴侣的真实人生与多城联机：芦花塘信用社微息借贷、零花钱赠与、Hub v1 多城迁居与跨城鱼市街、18种菜园与鸡牛鱼批量照料及七页签手账 UI。（需 Coopani 0.2.22+｜QQ 群 284525159）",
+  "description": "模拟鱼生 · 50职业含医疗就医、30天证书核验、31项城邦Buff、高德天气直连、信用社借贷与七页签手账 UI。（需 Coopani 0.2.22+｜QQ 群 284525159）",
   "author": {
     "name": "Mr.Q"
   },
@@ -38,7 +38,7 @@
     "api": 6,
     "displayName": "模拟鱼生",
     "describe": "describe.json",
-    "webUiClient": "web/panel-1.6.4.js",
+    "webUiClient": "web/panel-1.7.0.js",
     "tags": [
       "companion",
       "internal-state"
@@ -46,11 +46,11 @@
     "locales": {
       "zh": {
         "displayName": "模拟鱼生",
-        "description": "让桌宠有自己真正在过的小日子（需 Coopani 0.2.22+｜QQ 群 284525159）。\n\n- **芦花塘信用社与零花钱赠与**：新增 7 天应急 / 14 天进修农牧 / 30 天置业安居三档微息借贷，授信随住处、持证与累计工龄成长（硬上限 5000 元），到期扣款保底留 80 元生活费并支持逾期收入 50% 自动抵债，面板保持信用社只读、由她自己决定借还；另设「给点零花钱」折叠赠与入口（默认每日软上限 500 元可热调），赠与资金单列记账，怎么花仍由她作主。\n- **Coopanion Hub v1.1 多城联机（可选双轨）**：新增 `hubUrl` / `hubTownId` 热配置，支持跨城迁居（如芦花塘 ↔ 北京）、城邦公告与专属加成（如北京文案打工加成）、全网跨城摆摊买摊（含特产标识与按件快递费明细）、同城邻里代管委托，以及 24 个工具（含鱼间私信与街坊关系、信用社借贷）；留空 `hubUrl` 时 100% 兼容老服 `townUrl` 或纯单机。\n- **全新七页签手账 UI**：全面重塑面板视觉与结构（7 个页签：此刻、职业工坊、她惦记的、你与街坊、农牧与集市、日记时间轴、参考素材库），支持多城迁居、农牧一键批量浇水喂食与直点打理、跨城/本城/特产筛摊、撤单下架与只读鱼间私信收发视图。\n- **真实节奏、打工考证与农牧工坊**：五条需求随真实时间流逝与二十四节气标注；四档出工与八大领域培训考证，18 道菜谱工坊（烤红薯等家常简食免证）；18 种慢熟作物与鸡舍/牛棚/鱼塘养殖（大肥鱼是鲸鱼不算鱼，放心养鱼收肉蛋奶）。"
+        "description": "让桌宠有自己真正在过的小日子（需 Coopani 0.2.22+｜QQ 群 284525159）。\n\n- **50 职业、14 证书与医疗就医闭环**：覆盖 4 档共 50 个职业（含药店店员、社区医生等 4 个医疗康复岗）与 14 本证书（新增茶艺咖啡证、园艺花艺证、导游证、执业医师证），引入熟练度加薪与四档产出品质，新增生病静养每日照料与 `see_doctor` 社区诊所就医，并启用 30 天证书见识复核与 5 天预警宽限。\n- **Coopanion Hub v1.3 多城联机与 31 项城镇加成**：支持 `hubUrl` / `hubTownId` 热配置（面板一键复制与填入总服地址）、跨城迁居、31 项城邦加成联动、跨城鱼市街摆摊买摊、邻里代管、鱼间私信及信用社微息借贷；留空 `hubUrl` 100% 兼容老服或单机。\n- **七页签手账 UI 与高德天气直连**：包含此刻、职业与五大工坊、她惦记的、你与街坊、农牧与集市、日记时间轴与参考素材库，天气支持高德直连复用 `JOURNEY_AMAP_KEY`。\n- **真实节奏与农牧工坊**：五条需求随真实时间流逝与二十四节气变化；18 道菜谱工坊、18 种慢熟作物与鸡舍/牛棚/鱼塘养殖（大肥鱼是鲸鱼不算鱼，放心养鱼收肉蛋奶）。"
       },
       "en": {
         "displayName": "Simulated Fish Life",
-        "description": "A real everyday life simulation for your desktop companion (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Reedpond Credit Union & Pocket Money Gifts**: Adds 3 micro-interest loan tiers (7d/14d/30d) with dynamic credit limits up to 5000 RMB, an 80 RMB living-cash floor on maturity, 50% overdue income garnishment, and strictly read-only UI keeping borrowing autonomous; plus a collapsible Pocket Money gift bar (500 RMB daily soft cap, configurable) tracked separately from earned income.\n- **Coopanion Hub v1.1 Multi-City Online (Dual-Track)**: Optional `hubUrl` and `hubTownId` hot settings enable cross-town relocation (e.g. Lanzhou Reedpond <-> Beijing), town notices and domain buffs, cross-town stalls with specialty tags and transparent shipping breakdown, same-town neighbor errands, and 24 tools total. Leaving `hubUrl` empty keeps 100% compatibility with legacy `townUrl` or offline mode.\n- **Revamped 7-Tab Journal UI**: Refreshed layout and controls across Live Status, Career & 5 Craft Studios (Cooking, Photo, Craft, Writing, Driving), Wants, Companionship & Mail, Farm & Market, Diary & Timeline, and Reference Library—with town switching, batch/direct farm & ranch controls, daily sick care, specialty/local filters, order cancellation, and read-only fish-to-fish mailbox view.\n- **Daily Rhythm, Career & Farm Workshop**: Real-time five needs with 24 solar terms, 30 jobs across 4 tiers with proficiency pay scaling & 4-tier output quality, 10 certs, overwork/cold sick rest & daily care, 18 recipes, 18 crops, and poultry/dairy/pond farming (Big Fish is a whale, not a fish!)."
+        "description": "A real everyday life simulation for your desktop companion (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Reedpond Credit Union & Pocket Money Gifts**: Adds 3 micro-interest loan tiers (7d/14d/30d) with dynamic credit limits up to 5000 RMB, an 80 RMB living-cash floor on maturity, 50% overdue income garnishment, and strictly read-only UI keeping borrowing autonomous; plus a collapsible Pocket Money gift bar (500 RMB daily soft cap, configurable) tracked separately from earned income.\n- **Coopanion Hub v1.1 Multi-City Online (Dual-Track)**: Optional `hubUrl` and `hubTownId` hot settings (plus one-click copy & auto-fill) enable cross-town relocation, town notices and 31 domain buffs, cross-town stalls with specialty tags and transparent shipping breakdown, same-town neighbor errands, and 24 tools total. Leaving `hubUrl` empty keeps 100% compatibility with legacy `townUrl` or offline mode.\n- **Revamped 7-Tab Journal UI**: Refreshed layout and controls across Live Status, Career & 5 Craft Studios (Cooking, Photo, Craft, Writing, Driving), Wants, Companionship & Mail, Farm & Market, Diary & Timeline, and Reference Library—with town switching, batch/direct farm & ranch controls, daily sick care & clinic visits (`see_doctor`), specialty/local filters, order cancellation, and read-only fish-to-fish mailbox view.\n- **Daily Rhythm, Career & Farm Workshop**: Real-time five needs with 24 solar terms & direct Amap weather (`amap` / `auto` reusing `JOURNEY_AMAP_KEY`), 50 jobs across 4 tiers (including 4 medical jobs) with proficiency pay scaling & 4-tier output quality, 14 certs with 30-day knowledge audit, overwork/cold sick rest & daily care, 18 recipes, 18 crops, and poultry/dairy/pond farming (Big Fish is a whale, not a fish!)."
       }
     },
     "icon": "assets/icon.png"

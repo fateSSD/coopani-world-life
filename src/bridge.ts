@@ -1240,7 +1240,11 @@ export async function fetchExternalWeather(
   const ms = clampWeatherTimeoutMs(timeoutMs);
   const timer = setTimeout(() => ctrl.abort(), ms);
   try {
-    const res = await fetch(`${root}/now?city=${encodeURIComponent(cleanCity)}`, {
+    const isAdcode = /^\d{6}$/.test(cleanCity);
+    const qs = isAdcode
+      ? `city=${encodeURIComponent(cleanCity)}&adcode=${encodeURIComponent(cleanCity)}`
+      : `city=${encodeURIComponent(cleanCity)}`;
+    const res = await fetch(`${root}/now?${qs}`, {
       headers: { accept: 'application/json' },
       cache: 'no-store',
       signal: ctrl.signal,
@@ -1279,4 +1283,106 @@ export async function fetchExternalWeather(
   } finally {
     clearTimeout(timer);
   }
+}
+
+const amapAdcodeCache = new Map<string, string>();
+
+async function lookupAmapAdcode(amapKey: string, city: string, timeoutMs: number): Promise<string | null> {
+  const cached = amapAdcodeCache.get(city);
+  if (cached) return cached;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const url = `https://restapi.amap.com/v3/config/district?key=${encodeURIComponent(amapKey)}`
+      + `&keywords=${encodeURIComponent(city)}&subdistrict=0&extensions=base`;
+    const res = await fetch(url, { headers: { accept: 'application/json' }, cache: 'no-store', signal: ctrl.signal });
+    const j: any = await res.json().catch(() => null);
+    const adcode = typeof j?.districts?.[0]?.adcode === 'string' ? j.districts[0].adcode.trim() : '';
+    if (j?.status === '1' && /^\d{6}$/.test(adcode)) {
+      amapAdcodeCache.set(city, adcode);
+      return adcode;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 直连高德实况天气接口：`GET https://restapi.amap.com/v3/weather/weatherInfo?key=...&city=...&extensions=base`。
+ * 若传中文城名未直接命中 `lives[0]`，自动查 `district` 转 6 位 `adcode` 并缓存后重试一次。
+ */
+export async function fetchAmapWeather(
+  amapKey: string,
+  city: string,
+  timeoutMs = 2500,
+): Promise<ExternalWeatherResult> {
+  const key = String(amapKey || '').trim();
+  const cleanCity = String(city || '').trim();
+  if (!key || !cleanCity) {
+    return { ok: false, error: !key ? '未配置高德天气 Key' : '缺少城市名称' };
+  }
+  const ms = clampWeatherTimeoutMs(timeoutMs);
+
+  const queryLive = async (cityParam: string) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      const url = `https://restapi.amap.com/v3/weather/weatherInfo?key=${encodeURIComponent(key)}`
+        + `&city=${encodeURIComponent(cityParam)}&extensions=base&output=JSON`;
+      const res = await fetch(url, { headers: { accept: 'application/json' }, cache: 'no-store', signal: ctrl.signal });
+      const j: any = await res.json().catch(() => null);
+      return { httpOk: res.ok, status: res.status, json: j };
+    } catch (e: unknown) {
+      const msg = e instanceof Error && e.name === 'AbortError'
+        ? `高德天气超时（>${ms}ms）`
+        : (e instanceof Error && e.message ? e.message : '高德天气连接失败');
+      return { httpOk: false, status: 0, json: null, err: msg };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  let resp = await queryLive(cleanCity);
+  if (resp.err) return { ok: false, error: resp.err };
+  if (!resp.httpOk) return { ok: false, error: `高德天气 HTTP ${resp.status}` };
+
+  const infoCode = String(resp.json?.infocode ?? '').trim();
+  const rawInfo = String(resp.json?.info ?? '').trim();
+  const isFatalAuthOrQuota = ['10001', '10003', '10004', '10009', '10010'].includes(infoCode)
+    || /INVALID_USER_KEY|USERKEY_PLAT_NOMATCH|DAILY_QUERY_OVER_LIMIT|CUQPS_HAS_EXCEEDED_THE_LIMIT/i.test(rawInfo);
+
+  let live = resp.json?.status === '1' && Array.isArray(resp.json?.lives) ? resp.json.lives[0] : null;
+  if ((!live || typeof live.weather !== 'string' || !live.weather.trim()) && !isFatalAuthOrQuota && !/^\d{6}$/.test(cleanCity)) {
+    const adcode = await lookupAmapAdcode(key, cleanCity, ms);
+    if (adcode) {
+      resp = await queryLive(adcode);
+      if (resp.err) return { ok: false, error: resp.err };
+      if (!resp.httpOk) return { ok: false, error: `高德天气 HTTP ${resp.status}` };
+      if (resp.json?.status === '1') {
+        live = Array.isArray(resp.json?.lives) ? resp.json.lives[0] : null;
+      }
+    }
+  }
+  if (resp.json?.status !== '1') {
+    const info = String(resp.json?.info || '高德天气返回异常');
+    return { ok: false, error: info };
+  }
+
+  const rawWeather = typeof live?.weather === 'string' ? live.weather.trim() : '';
+  if (!rawWeather) {
+    return { ok: false, error: `高德天气未查到「${cleanCity}」实况数据` };
+  }
+  const tempRaw = Number(live?.temperature);
+  const temperature = Number.isFinite(tempRaw) ? Math.round(tempRaw * 10) / 10 : undefined;
+  return {
+    ok: true,
+    city: cleanCity,
+    sky: skyFromExternal(rawWeather),
+    rawWeather,
+    ...(temperature !== undefined ? { temperature } : {}),
+    source: '高德天气',
+  };
 }

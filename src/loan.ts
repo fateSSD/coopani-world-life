@@ -556,8 +556,15 @@ export function applyRepayLoan(
  * 2. 到期日触发自动还贷（但强制保留 >= 80 元生活底钱）；
  * 3. 还不够的部分转入 `overdue` 并挂逾期情绪胶囊。
  */
-export function settleLoansOnAdvance(state: LoanHostState, now: Date): LoanAdvanceSettlement {
+export function settleLoansOnAdvance(
+  state: LoanHostState,
+  now: Date,
+  opts: { rateMult?: number } = {},
+): LoanAdvanceSettlement {
   const today = localDayKey(now);
+  const rateMult = Number.isFinite(Number(opts.rateMult)) && Number(opts.rateMult) > 0
+    ? Math.max(0.5, Math.min(2, Number(opts.rateMult)))
+    : 1;
   let interestAccrued = 0;
   let autoRepaidTotal = 0;
   let autoRepaidPrincipal = 0;
@@ -571,7 +578,7 @@ export function settleLoansOnAdvance(state: LoanHostState, now: Date): LoanAdvan
     if (remBefore.principal > 0 && today > loan.lastAccruedDay) {
       const days = Math.min(365, daysBetweenDayKeys(loan.lastAccruedDay, today));
       if (days > 0) {
-        const rawInt = (loan.interestCarry ?? 0) + remBefore.principal * loan.ratePerDay * days;
+        const rawInt = (loan.interestCarry ?? 0) + remBefore.principal * loan.ratePerDay * rateMult * days;
         const delta = Math.floor(rawInt + 1e-9);
         loan.interestCarry = Math.round((rawInt - delta) * 10000) / 10000;
         if (delta > 0) {

@@ -1,5 +1,18 @@
 # 变更记录
 
+## 1.7.0 — 2026-11-28（50 职业含医疗系 + `see_doctor` 就医 + 30 天证书复核 + 31 项城镇 Buff + 高德天气直连 + 经济调优与总服一键填入）
+
+- **50 职业、14 张证书、8 件装备与医疗就医闭环**（`src/jobs.ts`、`src/town-life.ts`、`src/state.ts`、`describe.json`、`web/panel-1.7.0.js`）：
+  - 职业表扩充至 50 项（新增 `pharmacy_clerk`、`clinic_assistant`、`rehab_therapist`、`community_doctor` 4 个医疗康复岗与手冲咖啡/园艺修剪/导游等岗，补齐 `greenhouse_helper` 产出目录），证书增至 14 本（新增 `茶艺咖啡证`、`园艺花艺证`、`导游证`、`执业医师证`），装备增至 8 件（新增 `coffee_kit`、`garden_kit`）。
+  - 新增 `see_doctor`（去社区诊所看病开药，45 元 / 持 `执业医师证` 或 `护士执业证` 30 元，每日限 1 次，生病静养期间特许出门并缩短 18 小时病程）。
+  - 启用证书 30 天月度见识核验（`certVerifiedAt`）：第 25 天见识不足触发 `life.cert_warn` 预警，第 30 天仍不足触发 `life.cert_revoked` 吊销证书并同步重置对应固定职业（防省略 `what` 无证续领高薪）；老档升级自动从 `now` 起算并给大离线 5 天补救宽限期。
+- **31 项城镇 Buff 全链路接入与经济再平衡**（`src/jobs.ts`、`src/state.ts`、`src/loan.ts`、`src/farm.ts`、`src/recipes.ts`、`src/world.ts`）：
+  - 全链路落地 `food_cost_mult`（含 `cafe`）、`travel_fare_mult`（写入 `life-public.json.townBuffs` 供环游打折）、`equip_price_mult`（含清单与面板报价对齐）、`study_know_mult`、`train_exp_mult`、`cert_pass_bonus`（双端统一 `[-0.3, 0.3]` 夹紧）、`quality_luck_bonus`（同时作用于出工与 `life_cook`）、`stall_price_mult`、`energy_decay_mult`、`sick_recovery_mult`（按病症本轮真实存续时长折算）、`fit_gain_mult`、`crop_grow_mult`、`loan_rate_mult`、`social_mood_bonus`、`photo_mood_bonus`。
+  - 调整四档日薪为 `100–120` / `165–195` / `260–310` / `380–450`，下调新小区/别墅月租金为 `2200` / `5400`。
+- **高德天气直连复用 `JOURNEY_AMAP_KEY`、生病主语锚定与总服一键填入**（`src/definition.ts`、`src/config.ts`、`src/bridge.ts`、`src/world.ts`、`ENV_PROMPT.md`、`README.md`、`web/panel-1.7.0.js`）：
+  - 天气新增 `amap` 模式并支持 `auto` 通过宿主 `ctx.secret` + `process.env` 复用 `LIFE_AMAP_KEY` / `JOURNEY_AMAP_KEY`（非致命错误与中文城名均支持 `district` 转 6 位 `adcode` 回查与缓存）。
+  - 锚定感冒/过劳文案主语为「你自己」，消除与用户身体状况混淆；面板升至 `web/panel-1.7.0.js`（三同步），在未连总服时提供地址展示、「复制地址」与「一键填入总服」。
+
 ## 1.6.4 — 2026-11-28（Hub v1 注册幂等自愈与超时加固 + `normHubUrl` 双端对齐）
 
 - **Hub v1 首次注册超时丢包幂等自愈**（`src/hub-client.ts`、`test/hub-v1.test.mjs`）：

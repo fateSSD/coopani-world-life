@@ -256,7 +256,7 @@ test('外部天气端到端：真城名查询、小雨做饭心情、10 分钟�
       now: () => fixedNow,
     });
     await worldA.start(silentHost);
-    await waitFor(() => hitsA >= 1);
+    await waitFor(() => hitsA >= 1 && !worldA.externalWeatherInFlight);
 
     // 即使 state.street 已分配为本城具体街道（非「兰州」），请求外部天气仍传城名「兰州」
     assert.ok(worldA.town.streets.includes(worldA.state.street) && worldA.state.street !== '兰州');
@@ -269,7 +269,7 @@ test('外部天气端到端：真城名查询、小雨做饭心情、10 分钟�
       now: () => fixedNow,
     });
     await worldB.start(silentHost);
-    await waitFor(() => citiesQueriedB.length >= 1);
+    await waitFor(() => citiesQueriedB.length >= 1 && !worldB.externalWeatherInFlight);
     assert.deepEqual(citiesQueriedB, ['成都']);
 
     const snapA = await worldA.webUi().invoke('now', 'snapshot');

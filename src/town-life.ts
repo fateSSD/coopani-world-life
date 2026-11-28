@@ -59,6 +59,8 @@ export interface EquipDef {
 export const EQUIP_CATALOG: readonly EquipDef[] = [
   { id: 'oven', name: '家用小烤箱', kind: 'tool', price: 600, note: '能在家里烤点心、做烘焙手艺' },
   { id: 'sewing', name: '老式缝纫机', kind: 'tool', price: 500, note: '缝补改衣与布艺手作的工具' },
+  { id: 'coffee_kit', name: '手冲咖啡套组', kind: 'tool', price: 450, note: '出门或在家萃一杯手冲咖啡与茶饮的便携套具' },
+  { id: 'garden_kit', name: '园艺修枝工具箱', kind: 'tool', price: 360, note: '剪枝造型与养护苗木绿植的手工整套工具' },
   { id: 'camera', name: '二手胶片微单', kind: 'tool', price: 800, note: '接街拍、印明信片与活动跟拍' },
   { id: 'computer', name: '二手笔记本电脑', kind: 'tool', price: 3000, note: '线上修图、文案排版与远程做账' },
   { id: 'folding_bike', name: '折叠自行车', kind: 'vehicle', price: 400, note: '夜间跑代驾的随身代步车（需驾照）' },
@@ -433,6 +435,21 @@ export const JOB_OUTPUT_CATALOG: Record<string, { name: string; basePrice: numbe
   courier_ebike: { name: '片区急件妥投记录', basePrice: 42 },
   driver: { name: '全天安全接送台账', basePrice: 66 },
   designated_driver: { name: '夜间平安代驾记录', basePrice: 62 },
+  charter_captain: { name: '城际定制路书手册', basePrice: 120 },
+  handbrew_barista: { name: '手冲风味单品特调', basePrice: 78 },
+  pastry_chef: { name: '主厨私房酥点拼盘', basePrice: 118 },
+  gift_wrapper: { name: '手扎四季鲜花礼束', basePrice: 28 },
+  garden_trimmer: { name: '盆景造型修剪成品', basePrice: 74 },
+  landscape_chief: { name: '庭院植物养护设计单', basePrice: 115 },
+  pottery_master: { name: '手工拉坯釉面茶盏', basePrice: 128 },
+  homestay_host: { name: '民宿暖心欢迎手卡', basePrice: 46 },
+  local_guide: { name: '老城风物深度讲义', basePrice: 82 },
+  aerial_landscape: { name: '山河航拍大片底片组', basePrice: 98 },
+  travel_editor: { name: '城际深度特稿样刊', basePrice: 125 },
+  archivist: { name: '分类典藏卷宗索引', basePrice: 68 },
+  greenhouse_helper: { name: '温室时令壮苗礼篮', basePrice: 48 },
+  rehab_therapist: { name: '居家理疗调理随访案', basePrice: 76 },
+  community_doctor: { name: '社区健康随访手册', basePrice: 110 },
 };
 
 export function jobOutputOf(jobId: string): { name: string; basePrice: number } | null {
@@ -453,6 +470,7 @@ export function qualityOdds(
     hasGoodMood?: boolean;
     hasBadMood?: boolean;
     moodPolarity?: 'good' | 'bad' | 'neutral';
+    luckBonus?: number;
   } = {},
 ): Record<OutputQualityId, number> {
   const base = Math.min(100, Math.max(0, Number.isFinite(domainExp) ? domainExp : 0)) / 100;
@@ -460,7 +478,10 @@ export function qualityOdds(
   const moodBoost = opts.moodPolarity
     ? (opts.moodPolarity === 'good' ? 0.05 : opts.moodPolarity === 'bad' ? -0.05 : 0)
     : ((opts.hasGoodMood ? 0.05 : 0) - (opts.hasBadMood ? 0.05 : 0));
-  const e = Math.max(0, Math.min(1, base + trainBoost + moodBoost));
+  const townLuck = Number.isFinite(Number(opts.luckBonus))
+    ? Math.max(-0.1, Math.min(0.35, Number(opts.luckBonus)))
+    : 0;
+  const e = Math.max(0, Math.min(1, base + trainBoost + moodBoost + townLuck));
 
   const exquisite = Math.round(1 + e * 24);
   const fine = Math.round(5 + e * 30);
@@ -483,6 +504,7 @@ export function rollWorkQuality(
     hasGoodMood?: boolean;
     hasBadMood?: boolean;
     moodPolarity?: 'good' | 'bad' | 'neutral';
+    luckBonus?: number;
     roll?: number;
     forceCommon?: boolean;
   } = {},

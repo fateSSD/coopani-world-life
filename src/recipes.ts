@@ -494,7 +494,7 @@ export function applyCookRecipe(
   recipeQuery: string,
   mode: 'eat' | 'store',
   now: Date,
-  opts: { noodleBonus?: number; foodMoodBonus?: number; craftMoodBonus?: number; roll?: number } = {},
+  opts: { noodleBonus?: number; foodMoodBonus?: number; craftMoodBonus?: number; luckBonus?: number; roll?: number } = {},
 ): {
   ok: boolean;
   reason?: string;
@@ -555,6 +555,7 @@ export function applyCookRecipe(
   const cookQual = rollWorkQuality(cookExp, {
     trainedCount: cookTrained,
     moodPolarity,
+    luckBonus: opts.luckBonus,
     roll: opts.roll,
   });
   const qualFoodFunFactor = 1 + (cookQual.valueMult - 1) * 0.45;
@@ -726,6 +727,9 @@ export interface CareerOverview {
     need: number;
     chancePct: number;
     unlockJobs: string[];
+    verifiedAt?: string;
+    daysLeft?: number;
+    warnNeedKnow?: boolean;
   }[];
   skills: {
     domain: SkillDomain;
@@ -788,6 +792,7 @@ export function buildCareerOverview(
   state: {
     job: { what: string; id: string; daily: number; certs: string[]; days: number };
     knowledge: number;
+    certVerifiedAt?: Record<string, string>;
     skills?: Partial<Record<SkillDomain, number>>;
     trained?: Partial<Record<SkillDomain, number>>;
     gear?: string[];
@@ -797,6 +802,7 @@ export function buildCareerOverview(
     workOutputs?: WorkOutputItem[];
   },
   now: Date = new Date(),
+  buffs: { certPassBonus?: number; qualityLuckBonus?: number; equipPriceMult?: number } = {},
 ): CareerOverview {
   const ownedCerts = new Set(state.job?.certs ?? []);
   const ownedGear = new Set(state.gear ?? []);
@@ -806,16 +812,28 @@ export function buildCareerOverview(
   const goodMoodCnt = activeMoods.filter((m) => m.kind === 'good').length;
   const badMoodCnt = activeMoods.filter((m) => m.kind === 'bad').length;
   const moodPolarity: 'good' | 'bad' | 'neutral' = goodMoodCnt > badMoodCnt ? 'good' : (badMoodCnt > 0 ? 'bad' : 'neutral');
-  const certMoodDelta = moodPolarity === 'good' ? 0.08 : (moodPolarity === 'bad' ? -0.08 : 0);
+  const rawPassBonus = Number(buffs.certPassBonus) || 0;
+  const clampedPassBonus = Math.max(-0.3, Math.min(0.3, Number.isFinite(rawPassBonus) ? rawPassBonus : 0));
+  const certMoodDelta = (moodPolarity === 'good' ? 0.08 : (moodPolarity === 'bad' ? -0.08 : 0)) + clampedPassBonus;
 
-  const certs = CERTS.map((c) => ({
-    name: c.name,
-    owned: ownedCerts.has(c.name),
-    price: c.price,
-    need: c.need,
-    chancePct: Math.round(calcCertChance(know, c.need, certMoodDelta) * 100),
-    unlockJobs: JOBS.filter((j) => j.cert === c.name).map((j) => j.name),
-  }));
+  const certs = CERTS.map((c) => {
+    const owned = ownedCerts.has(c.name);
+    const verifiedIso = owned ? (state.certVerifiedAt?.[c.name] || '') : '';
+    const vMs = verifiedIso ? Date.parse(verifiedIso) : NaN;
+    const daysLeft = owned && Number.isFinite(vMs)
+      ? Math.max(0, Math.ceil((vMs + 30 * 86_400_000 - nowMs) / 86_400_000))
+      : (owned ? 30 : undefined);
+    return {
+      name: c.name,
+      owned,
+      price: c.price,
+      need: c.need,
+      chancePct: Math.round(calcCertChance(know, c.need, certMoodDelta) * 100),
+      unlockJobs: JOBS.filter((j) => j.cert === c.name).map((j) => j.name),
+      ...(owned && verifiedIso ? { verifiedAt: verifiedIso } : {}),
+      ...(owned && daysLeft !== undefined ? { daysLeft, warnNeedKnow: know < c.need } : {}),
+    };
+  });
 
   const skills = (Object.keys(SKILL_DOMAIN_LABEL) as SkillDomain[]).map((domain) => {
     const exp = Math.round(Number(state.skills?.[domain] ?? 0) * 10) / 10;
@@ -828,15 +846,17 @@ export function buildCareerOverview(
       trained,
       payMult,
       payBonusPct: Math.round((payMult - 1) * 100),
-      odds: qualityOdds(exp, { trainedCount: trained, moodPolarity }),
+      odds: qualityOdds(exp, { trainedCount: trained, moodPolarity, luckBonus: buffs.qualityLuckBonus }),
     };
   });
 
+  const rawEqMult = Number(buffs.equipPriceMult);
+  const eqMult = Number.isFinite(rawEqMult) && rawEqMult > 0 ? Math.max(0.5, Math.min(2.0, rawEqMult)) : 1;
   const gear = EQUIP_CATALOG.map((e) => ({
     id: e.id,
     name: e.name,
     kind: e.kind,
-    price: e.price,
+    price: Math.max(1, Math.round(e.price * eqMult)),
     owned: ownedGear.has(e.id),
     note: e.note,
   }));

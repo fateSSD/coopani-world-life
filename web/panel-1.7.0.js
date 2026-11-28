@@ -238,6 +238,25 @@ const HOME_SLOTS_FALLBACK = {
   villa: 8,
 };
 
+const HUB_RECOMMENDED_URL = 'https://hub.cooppetsjourney.top';
+
+function copyHubText(text) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => {});
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  } catch { /* ignore */ }
+  return Promise.resolve();
+}
+
 const BUFF_LABELS = {
   rent_mult: '房价倍率',
   writing_pay_mult: '写作薪酬',
@@ -255,6 +274,21 @@ const BUFF_LABELS = {
   craft_mood_bonus: '手作心情加成',
   food_mood_bonus: '美食心情加成',
   writing_mood_bonus: '写作心情',
+  food_cost_mult: '餐食花费',
+  travel_fare_mult: '远行票价',
+  equip_price_mult: '装备价格',
+  study_know_mult: '读书涨见识',
+  train_exp_mult: '培训熟练度',
+  cert_pass_bonus: '考证过考率',
+  quality_luck_bonus: '精品几率',
+  stall_price_mult: '摆摊收益',
+  energy_decay_mult: '精力消耗',
+  sick_recovery_mult: '康复速度',
+  fit_gain_mult: '运动体质',
+  crop_grow_mult: '作物生长速度',
+  loan_rate_mult: '信用社日息',
+  social_mood_bonus: '社交心情',
+  photo_mood_bonus: '摄影心情',
 };
 
 function fmtBuffChips(buffs) {
@@ -823,6 +857,9 @@ export default {
         const note = el('div', 'lf-note');
         note.hidden = true;
 
+        const hubBanner = el('div', 'lf-note');
+        hubBanner.hidden = true;
+
         const whoCard = el('div', 'lf-card');
         const vitalsCard = el('div', 'lf-card');
         const twoCol = el('div', 'lf-cols');
@@ -857,7 +894,7 @@ export default {
         const msg = el('span', 'lf-msg', '');
         foot.append(reload, msg);
 
-        app.append(hero, alertBox, note, whoCard, vitalsCard, twoCol, moveFold, giftFold, loanCard, toolsRow, foot);
+        app.append(hero, alertBox, hubBanner, note, whoCard, vitalsCard, twoCol, moveFold, giftFold, loanCard, toolsRow, foot);
 
         let moveTip = null;
         let giftTip = null;
@@ -1305,6 +1342,48 @@ export default {
             alertBox.hidden = true;
           }
 
+          hubBanner.innerHTML = '';
+          const isHubConfigured = Boolean(d.hubConfigured || (d.hub && (d.hub.configured || d.hub.enabled)));
+          if (!isHubConfigured) {
+            const hubUrl = d.hubRecommendedUrl || (d.hub && d.hub.recommendedUrl) || HUB_RECOMMENDED_URL;
+            hubBanner.hidden = false;
+            hubBanner.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px;justify-content:space-between;';
+            const txt = el('span', null, `多城联机总服未填：${hubUrl}`);
+            const btns = el('span', 'lf-row');
+            btns.style.gap = '6px';
+            const cpBtn = el('button', 'lf-btn sm', '复制地址');
+            cpBtn.type = 'button';
+            cpBtn.addEventListener('click', () => {
+              copyHubText(hubUrl).then(() => {
+                cpBtn.textContent = '已复制 ✓';
+                setTimeout(() => { cpBtn.textContent = '复制地址'; }, 1800);
+              });
+            });
+            const fillBtn = el('button', 'lf-btn sm primary', '一键填入总服');
+            fillBtn.type = 'button';
+            fillBtn.addEventListener('click', () => {
+              if (!ctx.setConfig) {
+                msg.textContent = '当前宿主不支持一键写入，请先点「复制地址」后去设置页粘贴';
+                return;
+              }
+              fillBtn.disabled = true;
+              fillBtn.textContent = '写入中…';
+              ctx.setConfig('life.main', { 'worlds.life.hubUrl': hubUrl })
+                .then(() => ctx.invoke('reloadTown'))
+                .then(() => load())
+                .then(() => { msg.textContent = '已一键填入多城总服 ✓'; })
+                .catch((e) => {
+                  fillBtn.disabled = false;
+                  fillBtn.textContent = '一键填入总服';
+                  msg.textContent = (e && e.message) || '一键填入失败，可先复制地址到设置页填入';
+                });
+            });
+            btns.append(cpBtn, fillBtn);
+            hubBanner.append(txt, btns);
+          } else {
+            hubBanner.hidden = true;
+          }
+
           note.hidden = true;
           note.textContent = '';
           const notes = [];
@@ -1554,7 +1633,7 @@ export default {
           const c = d.career || {};
           const jb = c.currentJob || d.job || {};
           const ownedCerts = (jb.certs || []).length;
-          sub.textContent = `${jb.what ? `当前职业：${jb.what}（¥${jb.daily}/天）` : '暂无固定营生'} · 工龄 ${jb.days || 0} 天 · 见识 ${c.knowledge ?? d.knowledge ?? 0} · 已考取 ${ownedCerts}/${(c.certs || []).length || 10} 证`;
+          sub.textContent = `${jb.what ? `当前职业：${jb.what}（¥${jb.daily}/天）` : '暂无固定营生'} · 工龄 ${jb.days || 0} 天 · 见识 ${c.knowledge ?? d.knowledge ?? 0} · 已考取 ${ownedCerts}/${(c.certs || []).length || 14} 证`;
           buffRow.innerHTML = '';
           const buffs = d.town?.buffs || {};
           for (const bTxt of fmtBuffChips(buffs)) {
@@ -1603,9 +1682,16 @@ export default {
             const box = el('div', 'lf-cert' + (ct.owned ? ' owned' : ''));
             const top = el('div', 'ctop');
             top.append(el('span', null, ct.name));
-            top.append(el('span', 'lf-chip ' + (ct.owned ? 'good' : (ct.chancePct >= 70 ? 'info' : '')), ct.owned ? '已持证' : `${ct.chancePct}% 过考率`));
+            const statusText = ct.owned
+              ? (ct.warnNeedKnow ? `剩余 ${ct.daysLeft ?? 30} 天复核 ⚠` : `已持证 (${ct.daysLeft ?? 30}天)`)
+              : `${ct.chancePct}% 过考率`;
+            const chipCls = ct.owned ? (ct.warnNeedKnow ? 'bad' : 'good') : (ct.chancePct >= 70 ? 'info' : '');
+            top.append(el('span', 'lf-chip ' + chipCls, statusText));
             box.append(top);
             box.append(el('div', 'cmeta', `考费 ¥${ct.price} · 建议见识 ${ct.need}`));
+            if (ct.owned && ct.warnNeedKnow) {
+              box.append(el('div', 'cmeta', `⚠ 见识不足(${c.knowledge ?? d.knowledge ?? 0}/${ct.need})，满30天复核将被吊销`));
+            }
             if (ct.unlockJobs && ct.unlockJobs.length) {
               box.append(el('div', 'cmeta', `解锁：${ct.unlockJobs.join('、')}`));
             }
@@ -1667,6 +1753,17 @@ export default {
 
           const domainOutputs = (c.workOutputs || []).filter((o) => o.domain === studioTab);
           if (studioTab === 'cooking') {
+            const cookGateChips = el('div', 'lf-chips');
+            cookGateChips.style.marginBottom = '8px';
+            for (const cname of ['厨师证', '健康证', '茶艺咖啡证']) {
+              const ct = (c.certs || []).find((x) => x.name === cname);
+              if (ct) cookGateChips.append(el('span', 'lf-chip ' + (ct.owned ? 'good' : ''), `${ct.owned ? '✓ ' : ''}${ct.name} (${ct.owned ? '已持证' : `过考率 ${ct.chancePct}%`})`));
+            }
+            for (const gid of ['oven', 'coffee_kit']) {
+              const eq = (c.gear || []).find((x) => x.id === gid);
+              if (eq) cookGateChips.append(el('span', 'lf-chip ' + (eq.owned ? 'good' : ''), `${eq.owned ? '✓ ' : ''}${eq.name}${eq.owned ? '' : ` (¥${eq.price})`}`));
+            }
+            recipeCard.append(cookGateChips);
             const fTabs = el('div', 'lf-tabs');
             for (const [tid, tlab] of [['all', '全部菜谱'], ['ready', `材料齐可做 (${readyRecipes.length})`], ['simple', '零门槛简食'], ['chef', '厨师招牌菜']]) {
               const tb = el('button', 'lf-btn sm lf-tab', tlab);
@@ -1735,8 +1832,8 @@ export default {
               recipeCard.append(rGrid);
             }
           } else {
-            const domainGearIds = { photo: ['camera'], craft: ['sewing'], writing: ['computer'], driving: ['folding_bike', 'ebike'] }[studioTab] || [];
-            const domainCerts = { photo: ['摄影证'], craft: ['电工证'], writing: ['教师资格证'], driving: ['驾照', '健康证'] }[studioTab] || [];
+            const domainGearIds = { photo: ['camera'], craft: ['sewing', 'garden_kit'], writing: ['computer'], driving: ['folding_bike', 'ebike'] }[studioTab] || [];
+            const domainCerts = { photo: ['摄影证'], craft: ['电工证', '园艺花艺证'], writing: ['教师资格证'], driving: ['驾照', '健康证'] }[studioTab] || [];
             const gateChips = el('div', 'lf-chips');
             gateChips.style.marginBottom = '8px';
             if (studioTab === 'driving') {
@@ -2050,7 +2147,40 @@ export default {
           mailCard.append(mHead);
 
           if (!d.hub || !d.hub.enabled) {
-            mailCard.append(el('p', 'lf-muted', '配置 worlds.life.hubUrl 后开启多城邻里与鱼间私信；单机与老服模式静默不占资源。'));
+            const hubUrl = d.hubRecommendedUrl || (d.hub && d.hub.recommendedUrl) || HUB_RECOMMENDED_URL;
+            mailCard.append(el('p', 'lf-muted', `配置 worlds.life.hubUrl 后开启多城邻里与鱼间私信；总服地址：${hubUrl}`));
+            const actRow = el('div', 'lf-row');
+            actRow.style.marginTop = '8px';
+            actRow.style.gap = '8px';
+            const cpBtn = el('button', 'lf-btn sm', '复制地址');
+            cpBtn.type = 'button';
+            cpBtn.addEventListener('click', () => {
+              copyHubText(hubUrl).then(() => {
+                cpBtn.textContent = '已复制 ✓';
+                setTimeout(() => { cpBtn.textContent = '复制地址'; }, 1800);
+              });
+            });
+            const fillBtn = el('button', 'lf-btn sm primary', '一键填入总服');
+            fillBtn.type = 'button';
+            const fbSpan = el('span', 'lf-muted', '');
+            fillBtn.addEventListener('click', () => {
+              if (!ctx.setConfig) {
+                fbSpan.textContent = '请先点「复制地址」后去设置页填入';
+                return;
+              }
+              fillBtn.disabled = true;
+              fillBtn.textContent = '写入中…';
+              ctx.setConfig('life.main', { 'worlds.life.hubUrl': hubUrl })
+                .then(() => ctx.invoke('mailRefresh'))
+                .then(render)
+                .catch((e) => {
+                  fillBtn.disabled = false;
+                  fillBtn.textContent = '一键填入总服';
+                  fbSpan.textContent = (e && e.message) || '写入失败';
+                });
+            });
+            actRow.append(cpBtn, fillBtn, fbSpan);
+            mailCard.append(actRow);
             return;
           }
           const myPetId = d.hub.petId || '';

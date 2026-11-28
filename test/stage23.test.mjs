@@ -55,7 +55,7 @@ test('二期收尾：journey-public.json 四格对齐与 day/wants/relation 三�
     assert.deepEqual(ui.panels.map((p) => p.id), ['now', 'career', 'wants', 'relation', 'market', 'diary', 'library']);
 
     const careerSnap = await ui.invoke('career', 'snapshot');
-    assert.equal(careerSnap.career.certs.length, 10);
+    assert.equal(careerSnap.career.certs.length, 14);
     assert.ok(careerSnap.career.recipes.some((r) => r.id === 'roast_sweet_potato' && r.unlocked === true));
     assert.ok(careerSnap.career.recipes.some((r) => r.id === 'tomato_beef_stew' && r.unlocked === false));
 
@@ -149,7 +149,7 @@ test('三期成长与 G 类轻载具闭环：life_learn 培训/购车、装备�
   const res = advance(s, end, { gradeRoll: 0.99 });
   assert.equal(res.completed.length, 1);
   assert.equal(res.completed[0].gradeLabel, '漂亮');
-  const expectedSkillPay = Math.round(135 * skillPayMultiplier(12));
+  const expectedSkillPay = Math.round(172 * skillPayMultiplier(12));
   assert.equal(res.completed[0].workEarned, Math.round(expectedSkillPay * 1.6));
   assert.match(res.completed[0].shiftSummary ?? '', /11 单/);
   assert.equal(s.money.cash - cashBeforeDone, Math.round(expectedSkillPay * 1.6));
@@ -962,7 +962,7 @@ test('街道体质双边倍率：fit 加成同时作用于锻炼收益与日常�
   assert.equal(fMinus, 49.496);
   assert.ok(fPlus > fNone && fNone > fMinus);
 
-  // 3) 开工街道快照防收工前切街套利（护工日薪 210，无浮动）
+  // 3) 开工街道快照防收工前切街套利（护工日薪 260，无浮动）
   const tStart = new Date('2026-11-23T02:00:00Z');
   const tEnd = new Date(tStart.getTime() + 360 * 60_000);
   const sLow = freshState(tStart);
@@ -972,7 +972,7 @@ test('街道体质双边倍率：fit 加成同时作用于锻炼收益与日常�
   assert.equal(wLow.ok, true);
   // 收工时切到庆阳路（work +15%），仍按开工时的雁滩路（work -10%）结算
   const resLow = advance(sLow, tEnd, { phase: 'home', streetMods: qingyang.mods });
-  assert.equal(resLow.completed[0].workEarned, 189);
+  assert.equal(resLow.completed[0].workEarned, 234);
 
   const sHigh = freshState(tStart);
   sHigh.job.certs = ['护工证'];
@@ -981,7 +981,7 @@ test('街道体质双边倍率：fit 加成同时作用于锻炼收益与日常�
   assert.equal(wHigh.ok, true);
   // 收工时切回雁滩路，仍按开工时的庆阳路（work +15%）结算
   const resHigh = advance(sHigh, tEnd, { phase: 'home', streetMods: yantan.mods });
-  assert.equal(resHigh.completed[0].workEarned, 241);
+  assert.equal(resHigh.completed[0].workEarned, 299);
 });
 
 test('审查回归：panelSnapshot().journey 与面板代码透出游轮舱位（seatId / seat / seatMult）', async () => {
@@ -2779,7 +2779,7 @@ test('她惦记的自动记账（买家伙/考证/搬家遇阻写入与办成消
     fakeDoc.head.ownerDocument = fakeDoc;
     fakeDoc.body.ownerDocument = fakeDoc;
     globalThis.document = fakeDoc;
-    const panelMod = await import(`../web/panel-1.6.4.js?mood=${Date.now()}`);
+    const panelMod = await import(`../web/panel-1.7.0.js?mood=${Date.now()}`);
     const panels = panelMod.default.panels;
 
     const nowRoot = fakeDoc.createElement('div');
@@ -2815,8 +2815,8 @@ test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产�
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
 
-  // 1) 30 个职业与零鱼肉忌讳校验
-  assert.equal(JOBS.length, 30, 'JOBS 应扩充到 30 项');
+  // 1) 50 个职业与零鱼肉忌讳校验
+  assert.equal(JOBS.length, 50, 'JOBS 应扩充到 50 项');
   for (const jb of JOBS) {
     assert.doesNotMatch(jb.name, /鱼肉|生鱼|鱼排|鱼丸|烤鱼|鱼汤|水煮鱼|刺身/);
     assert.ok(jb.pay > 0 && jb.minutes > 0);
@@ -2837,14 +2837,14 @@ test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产�
   sLow.skills = { photo: 0, cooking: 90 };
   const wLow = applyWork(sLow, 'darkroom_print', t0, 'home');
   assert.equal(wLow.ok, true);
-  assert.equal(wLow.expectedPay, 150);
+  assert.equal(wLow.expectedPay, 190);
 
   const sHigh = freshState(t0);
   sHigh.gear = ['camera', 'oven', 'sewing', 'computer'];
   sHigh.skills = { photo: 100, cooking: 95 };
   const wHigh = applyWork(sHigh, 'darkroom_print', t0, 'home');
   assert.equal(wHigh.ok, true);
-  assert.equal(wHigh.expectedPay, 225, '100 熟练度下 150 元基薪应涨到 225 元 (1.5x)');
+  assert.equal(wHigh.expectedPay, 285, '100 熟练度下 190 元基薪应涨到 285 元 (1.5x)');
   const adv = advance(sHigh, new Date(t0.getTime() + 310 * 60_000), { qualityRoll: 0.99 });
   assert.ok(adv.completed?.some((c) => c.outputItem?.quality === 'exquisite' && c.outputItem?.qualityLabel === '臻品'));
   assert.equal(sHigh.workOutputs.length, 1);
@@ -2858,7 +2858,7 @@ test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产�
   assert.equal(sHigh.cookedDishes[0].qualityLabel, '臻品');
 
   const overview = buildCareerOverview(sHigh);
-  assert.equal(overview.jobs.length, 30);
+  assert.equal(overview.jobs.length, 50);
   assert.equal(overview.workOutputs.length, 1);
 
   // 3) 过劳生病门禁（禁外出打工/逛街，放行在家休息与农牧照料）+ 每日照料与 World 广播
@@ -2975,7 +2975,7 @@ test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产�
     fakeDoc.body.ownerDocument = fakeDoc;
     globalThis.document = fakeDoc;
 
-    const panelMod = await import(`../web/panel-1.6.4.js?stage24=${Date.now()}`);
+    const panelMod = await import(`../web/panel-1.7.0.js?stage24=${Date.now()}`);
     const panels = panelMod.default.panels;
 
     const nowSnap = await world.panelInvoke('now', 'snapshot', []);
@@ -2989,7 +2989,7 @@ test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产�
     const careerRoot = fakeDoc.createElement('div');
     await panels.career.mount({ root: careerRoot, language: 'zh', invoke: async () => careerSnap, timeout: () => 0 });
     assert.match(careerRoot.textContent, /五大职业特色工作台/);
-    assert.match(careerRoot.textContent, /30 项/);
+    assert.match(careerRoot.textContent, /50 项/);
     for (const [sid, expectWord] of [
       ['photo', '暗房胶片冲印'],
       ['craft', '亚麻刺绣手作'],
@@ -3188,7 +3188,7 @@ test('复审 P0/P1/P2 全项回归：照料点击不报错、混合心情对齐�
     fakeDoc.body.ownerDocument = fakeDoc;
     globalThis.document = fakeDoc;
 
-    const panelMod = await import(`../web/panel-1.6.4.js?careclick=${Date.now()}`);
+    const panelMod = await import(`../web/panel-1.7.0.js?careclick=${Date.now()}`);
     const nowRoot = fakeDoc.createElement('div');
     await panelMod.default.panels.now.mount({
       root: nowRoot,
@@ -3208,6 +3208,370 @@ test('复审 P0/P1/P2 全项回归：照料点击不报错、混合心情对齐�
   } finally {
     if (prevDoc === undefined) delete globalThis.document;
     else globalThis.document = prevDoc;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('1.7.0 全新特性：医疗系与看病、30天证书核验/25天预警、15项新Buff、高德天气直连与总服一键填入', async () => {
+  const { JOBS, CERTS } = await import('../src/jobs.ts');
+  const { LifeWorld } = await import('../src/world.ts');
+  const { LIFE_DEFAULTS } = await import('../src/config.ts');
+  const {
+    freshState, applyAct, applyCert, applyLearn, advance, normalize, actEffectiveCost, ACTS,
+  } = await import('../src/state.ts');
+  const { fetchAmapWeather } = await import('../src/bridge.ts');
+  const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  assert.equal(JOBS.length, 50);
+  assert.equal(CERTS.length, 14);
+  for (const id of ['pharmacy_clerk', 'clinic_assistant', 'rehab_therapist', 'community_doctor']) {
+    assert.ok(JOBS.some((j) => j.id === id), `缺少医疗岗位 ${id}`);
+  }
+  assert.ok(CERTS.some((c) => c.name === '执业医师证' && c.need === 72));
+
+  // 1) see_doctor：未病拒接，生病特许且减 18h，持医师证 30 元，每日限 1 次
+  const t0 = new Date('2026-11-28T09:00:00+08:00');
+  const s = freshState(t0);
+  s.home.monthly = 0;
+  s.vitals.energy = 80;
+  assert.equal(applyAct(s, 'see_doctor', t0).ok, false, '没生病不应去诊所');
+  s.conditions.push({
+    id: 'cold',
+    since: t0.toISOString(),
+    until: new Date(t0.getTime() + 36 * 3_600_000).toISOString(),
+    text: '你感冒静养中。',
+  });
+  assert.equal(actEffectiveCost(ACTS.see_doctor, {}, []), 45);
+  assert.equal(actEffectiveCost(ACTS.see_doctor, {}, ['执业医师证']), 30);
+  s.job.certs.push('执业医师证');
+  const docAct = applyAct(s, 'see_doctor', t0);
+  assert.equal(docAct.ok, true);
+  assert.equal(applyAct(s, 'see_doctor', new Date(t0.getTime() + 2 * 60_000)).ok, false);
+  advance(s, new Date(t0.getTime() + 45 * 60_000));
+  const leftHrs = (Date.parse(s.conditions[0].until) - (t0.getTime() + 45 * 60_000)) / 3_600_000;
+  assert.ok(leftHrs < 20, `see_doctor 应缩短 18h 病程，剩余 ${leftHrs}`);
+  const t50 = new Date(t0.getTime() + 50 * 60_000);
+  assert.equal(applyAct(s, 'see_doctor', t50).ok, false, '同日第二次 see_doctor 应被限次拦截');
+
+  // 2) 证书月度核验：老档自动补 certVerifiedAt；25 天预警；30 天不足吊销
+  const oldRaw = freshState(t0);
+  oldRaw.job.certs = ['驾照', '健康证'];
+  delete oldRaw.certVerifiedAt;
+  const normOld = normalize(JSON.parse(JSON.stringify(oldRaw)), t0);
+  assert.equal(typeof normOld.certVerifiedAt?.['驾照'], 'string');
+
+  const sAudit = freshState(t0);
+  sAudit.knowledge = 15;
+  sAudit.home.monthly = 0;
+  applyCert(sAudit, '健康证', t0, 0.01);
+  assert.ok(sAudit.job.certs.includes('健康证'));
+  sAudit.knowledge = 5; // 低于 健康证 need=10
+  const t26 = new Date(t0.getTime() + 26 * 86_400_000);
+  const advWarn = advance(sAudit, t26);
+  assert.ok(advWarn.certWarnings?.some((w) => w.cert === '健康证'));
+  assert.ok(sAudit.job.certs.includes('健康证'), '第 26 天仅预警不吊销');
+  const t31 = new Date(t0.getTime() + 31 * 86_400_000);
+  sAudit.knowledge = 4;
+  const advRev = advance(sAudit, t31);
+  assert.ok(advRev.certRevoked?.some((r) => r.cert === '健康证'));
+  assert.equal(sAudit.job.certs.includes('健康证'), false, '满 30 天见识不足应吊销');
+
+  // 3) 15 项新 Buff（餐费/装备价/读书/培训/过考率/摊位价/精力衰减/运动体质/借款利息）
+  const sBuff = freshState(t0);
+  sBuff.money.cash = 1000;
+  sBuff.vitals.energy = 80;
+  assert.equal(actEffectiveCost(ACTS.feast, { townBuffs: { food_cost_mult: 0.75 } }), 30);
+  const learnEq = applyLearn(sBuff, '小烤箱', t0, { equipPriceMult: 0.8 });
+  assert.equal(learnEq.ok, true);
+  assert.equal(learnEq.paid, 480);
+  const learnCourse = applyLearn(sBuff, '家常菜与火候班', t0, { studyKnowMult: 1.5, trainExpMult: 1.5 });
+  assert.equal(learnCourse.ok, true);
+  assert.equal(sBuff.skills.cooking, 18);
+  assert.ok(sBuff.knowledge > 4);
+  const cBonus = applyCert(sBuff, '健康证', t0, 0.5, { passBonus: 0.25 });
+  assert.equal(cBonus.ok, true);
+
+  // 4) 生病事件防指代混淆 + life_public.townBuffs.travelFareMult + JOURNEY_AMAP_KEY 高德直连 + 一键填入总服
+  const dir = mkdtempSync(join(tmpdir(), 'life-v170-'));
+  const prevFetch = globalThis.fetch;
+  const prevJourneyKey = process.env.JOURNEY_AMAP_KEY;
+  const prevDoc = globalThis.document;
+  try {
+    process.env.JOURNEY_AMAP_KEY = 'amap_test_key_123';
+    const seenUrls = [];
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      seenUrls.push(u);
+      if (u.includes('/v3/weather/weatherInfo') && u.includes('city=%E5%85%B0%E5%B7%9E')) {
+        return new Response(JSON.stringify({ status: '1', lives: [] }), { status: 200 });
+      }
+      if (u.includes('/v3/config/district')) {
+        return new Response(JSON.stringify({ status: '1', districts: [{ adcode: '620100' }] }), { status: 200 });
+      }
+      if (u.includes('/v3/weather/weatherInfo') && u.includes('city=620100')) {
+        return new Response(JSON.stringify({ status: '1', lives: [{ weather: '小雨', temperature: '14' }] }), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    };
+    const wRes = await fetchAmapWeather('amap_test_key_123', '兰州', 2000);
+    assert.equal(wRes.ok, true);
+    assert.equal(wRes.sky, '小雨');
+    assert.equal(wRes.temperature, 14);
+    assert.ok(seenUrls.some((u) => u.includes('city=620100')), '应通过 district adcode 回查天气');
+
+    let curNow = t0;
+    const pushed = [];
+    const world = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true, weatherMode: 'amap' },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => curNow,
+    });
+    await world.start({
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => { pushed.push(e); return { ...e, blobs: [] }; },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const lamps = world.webUi().lamps;
+    assert.equal(lamps.find((l) => l.label === '外部天气')?.state, 'online');
+
+    // 验证 setConfig 按钮在未连接总服时渲染并能点击
+    const setConfigCalls = [];
+    const findAll = (n, pred, out = []) => {
+      if (!n) return out;
+      if (pred(n)) out.push(n);
+      for (const ch of n.children || []) findAll(ch, pred, out);
+      return out;
+    };
+    const makeNode = (tag) => ({
+      tagName: String(tag || 'div').toUpperCase(),
+      children: [],
+      attrs: {},
+      style: {},
+      listeners: {},
+      className: '',
+      disabled: false,
+      hidden: false,
+      _text: '',
+      set textContent(v) { this._text = String(v ?? ''); this.children = []; },
+      get textContent() { return this._text + this.children.map((c) => c.textContent).join(''); },
+      set innerHTML(v) { if (!v) { this.children = []; this._text = ''; } },
+      append(...ns) { for (const x of ns) if (x) this.children.push(typeof x === 'string' ? { textContent: x, children: [], attrs: {} } : x); },
+      prepend(...ns) { this.children = [...ns.filter(Boolean), ...this.children]; },
+      setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = String(v); },
+      addEventListener(ev, fn) { (this.listeners[ev] ??= []).push(fn); },
+      click() { for (const fn of this.listeners.click || []) fn({ target: this }); },
+      closest() { return null; },
+    });
+    const fakeDoc = {
+      head: makeNode('head'),
+      body: makeNode('body'),
+      createElement(tag) { return makeNode(tag); },
+      createTextNode(t) { return { textContent: String(t ?? ''), children: [], attrs: {} }; },
+      getElementById(id) { return findAll(this.head, (x) => x.id === id)[0] || findAll(this.body, (x) => x.id === id)[0] || null; },
+    };
+    globalThis.document = fakeDoc;
+    const panelMod = await import(`../web/panel-1.7.0.js?hubbtn=${Date.now()}`);
+    const nowRoot = fakeDoc.createElement('div');
+    await panelMod.default.panels.now.mount({
+      root: nowRoot,
+      language: 'zh',
+      invoke: (m, a) => world.panelInvoke('now', m, a),
+      setConfig: async (grp, vals) => { setConfigCalls.push({ grp, vals }); return { ok: true }; },
+      timeout: () => 0,
+    });
+    assert.match(nowRoot.textContent, /https:\/\/hub\.cooppetsjourney\.top/);
+    const fillBtn = findAll(nowRoot, (n) => n.tagName === 'BUTTON' && n.textContent === '一键填入总服')[0];
+    assert.ok(fillBtn, 'now 面板应渲染「一键填入总服」按钮');
+    fillBtn.click();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(setConfigCalls.length, 1);
+    assert.equal(setConfigCalls[0].grp, 'life.main');
+    assert.equal(setConfigCalls[0].vals['worlds.life.hubUrl'], 'https://hub.cooppetsjourney.top');
+
+    // 验证 relation 面板未配置时也带有一键填入按钮
+    const relRoot = fakeDoc.createElement('div');
+    await panelMod.default.panels.relation.mount({
+      root: relRoot,
+      language: 'zh',
+      invoke: () => world.panelInvoke('relation', 'snapshot'),
+      setConfig: async (grp, vals) => { setConfigCalls.push({ grp, vals }); return { ok: true }; },
+      timeout: () => 0,
+    });
+    assert.match(relRoot.textContent, /一键填入总服/);
+
+    const pub = JSON.parse(readFileSync(join(dir, 'life-public.json'), 'utf8'));
+    assert.equal(typeof pub.townBuffs?.travelFareMult, 'number');
+
+    // 验证触发感冒时推送的 life.sick 事件明确锚定「你自己」防指代混淆
+    curNow = new Date(Date.parse(world.state.updatedAt) + 60_000);
+    world.state.updatedAt = curNow.toISOString();
+    world.state.vitals.energy = 10;
+    world.state.vitals.clean = 10;
+    curNow = new Date(curNow.getTime() + 4 * 3_600_000);
+    await world.tick();
+    const sickEvt = pushed.find((e) => e.type === 'life.sick');
+    assert.ok(sickEvt && String(sickEvt.text).includes('你自己'), `life.sick 事件应锚定「你自己」防止人称混淆，实得: ${JSON.stringify(pushed.map((x) => x.type))}`);
+
+    await world.stop();
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevJourneyKey === undefined) delete process.env.JOURNEY_AMAP_KEY;
+    else process.env.JOURNEY_AMAP_KEY = prevJourneyKey;
+    if (prevDoc === undefined) delete globalThis.document;
+    else globalThis.document = prevDoc;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('审核 P0/P1/P2 修复回归：防无证穿门、老档宽限、ctx.secret 复用、sick_recovery_mult 时长切片与 Buff 多出口对齐', async () => {
+  const {
+    freshState, normalize, advance, applyWork, applyAct, actEffectiveCost, ACTS,
+  } = await import('../src/state.ts');
+  const { applyCookRecipe, buildCareerOverview } = await import('../src/recipes.ts');
+  const { fetchAmapWeather } = await import('../src/bridge.ts');
+  const { jobOutputOf } = await import('../src/town-life.ts');
+  const { LifeWorld } = await import('../src/world.ts');
+  const { LIFE_DEFAULTS } = await import('../src/config.ts');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const t0 = new Date('2026-11-28T09:00:00+08:00');
+
+  // 1) P0 #1: 证书吊销时清空 job.id/what/daily，且即使历史档保留 job.what，省略 what 出工仍走 jobGate()
+  const sRev = freshState(t0);
+  sRev.home.monthly = 0;
+  sRev.job = { what: '社区全科医生', id: 'community_doctor', daily: 450, certs: ['执业医师证'], days: 35, lastAt: '' };
+  sRev.certVerifiedAt = { '执业医师证': t0.toISOString() };
+  sRev.certWarnedCycle = { '执业医师证': t0.toISOString() };
+  sRev.knowledge = 10;
+  const revAdv = advance(sRev, new Date(t0.getTime() + 31 * 86_400_000));
+  assert.ok(revAdv.certRevoked?.some((x) => x.cert === '执业医师证'));
+  assert.equal(sRev.job.id, '');
+  assert.equal(sRev.job.what, '');
+  assert.equal(sRev.job.daily, 0);
+
+  const sSneaky = freshState(t0);
+  sSneaky.job = { what: '社区全科医生', id: '', daily: 450, certs: [], days: 35, lastAt: '' };
+  const sneakyWork = applyWork(sSneaky, '', t0, 'home');
+  assert.equal(sneakyWork.ok, false, '有 job.what 即使 job.id 为空也不得绕过 jobGate 领原高薪');
+  assert.match(sneakyWork.reason ?? '', /执业医师证/);
+
+  // 2) P0 #2 & P1 #6: 老档缺失 certVerifiedAt 从 now 起算不秒吊销；大离线先预警+5天宽限；9.96 与 need=10 不混淆
+  const oldTime = new Date(t0.getTime() - 45 * 86_400_000);
+  const oldRaw = freshState(oldTime);
+  oldRaw.job.certs = ['健康证'];
+  delete oldRaw.certVerifiedAt;
+  const migrated = normalize(JSON.parse(JSON.stringify(oldRaw)), t0);
+  assert.equal(migrated.certVerifiedAt?.['健康证'], t0.toISOString());
+  const migAdv = advance(migrated, new Date(t0.getTime() + 3_600_000));
+  assert.equal(migAdv.certRevoked?.length ?? 0, 0, '升级后首次推进不得秒吊销老用户证书');
+
+  const sBigOff = freshState(t0);
+  sBigOff.home.monthly = 0;
+  sBigOff.job.certs = ['健康证'];
+  sBigOff.certVerifiedAt = { '健康证': t0.toISOString() };
+  sBigOff.knowledge = 5;
+  const advGrace = advance(sBigOff, new Date(t0.getTime() + 31 * 86_400_000));
+  assert.equal(advGrace.certRevoked?.length ?? 0, 0, '大离线跨越 30 天首次见识不足应先预警给 5 天宽限');
+  assert.ok(advGrace.certWarnings?.some((w) => w.cert === '健康证' && w.daysLeft === 5));
+  assert.ok(sBigOff.job.certs.includes('健康证'));
+  sBigOff.knowledge = 5;
+  const advRev2 = advance(sBigOff, new Date(t0.getTime() + 37 * 86_400_000));
+  assert.ok(advRev2.certRevoked?.some((x) => x.cert === '健康证'), '5 天宽限期满仍不足才应吊销');
+
+  const sRound = freshState(t0);
+  sRound.home.monthly = 0;
+  sRound.job.certs = ['健康证'];
+  const past30d = new Date(t0.getTime() - 30 * 86_400_000).toISOString();
+  sRound.certVerifiedAt = { '健康证': past30d };
+  sRound.certWarnedCycle = { '健康证': past30d };
+  sRound.knowledge = 9.97; // 推进 1 分钟几乎不掉见识，Math.round(cur*10)/10 === 10 === need(10)，不得出现「见识10(需10)被吊销」
+  const advRound = advance(sRound, new Date(t0.getTime() + 60_000));
+  assert.equal(advRound.certRevoked?.length ?? 0, 0);
+  assert.ok(sRound.job.certs.includes('健康证'));
+
+  // 3) P1 #4: sick_recovery_mult 只按本轮实际存续时长折算（最后半小时才触发过劳不得白扣整段 24h）
+  const sOver = freshState(t0);
+  sOver.home.monthly = 0;
+  sOver.vitals = { food: 90, energy: 95, clean: 90, fun: 80, social: 80 };
+  applyWork(sOver, '搬货', t0, 'home'); // minutes=240 -> 4h 后完工
+  // 假定之前已连续疲惫，收工前调低 energy 让过劳在 t0 + 4h 收工时触发，推进整段 t0 -> t0 + 24h（过劳只在 20h 窗口内存在）
+  sOver.vitals.energy = 20;
+  const t24 = new Date(t0.getTime() + 24 * 3_600_000);
+  advance(sOver, t24, { townBuffs: { sick_recovery_mult: 1.5 } });
+  const overCond = sOver.conditions.find((c) => c.id === 'overwork');
+  assert.ok(overCond, '应触发 overwork');
+  const remH = (Date.parse(overCond.until) - t24.getTime()) / 3_600_000;
+  // 总时长 36h；在 20h 存活期内以 1.5x 额外多缩 20*(1.5-1)=10h => 剩余约 36 - 20 - 10 = 6h（若误按整段 24h 会多扣）
+  assert.ok(remH >= 5 && remH <= 7.5, `sick_recovery_mult 应按实际存活时长折算，实剩 ${remH.toFixed(2)}h`);
+
+  // 4) P1 #5 & P2 #7: quality_luck_bonus 下厨 + certPassBonus 夹紧 + equipPriceMult 报价 + cafe/instant + greenhouse_helper
+  assert.equal(actEffectiveCost(ACTS.cafe, { townBuffs: { food_cost_mult: 0.8 } }), 24);
+  assert.equal(actEffectiveCost(ACTS.instant, { townBuffs: { food_cost_mult: 0.8 } }), 0);
+  assert.ok(jobOutputOf('greenhouse_helper')?.name);
+
+  const sCook = freshState(t0);
+  sCook.skills = { cooking: 0 };
+  sCook.pantry.push({ id: 'p_luck', itemId: 'sweet_potato', kind: 'veg', name: '蜜薯红薯', qty: 6, unitCost: 2, acquiredAt: t0.toISOString() });
+  // roll=0.98 下：e=0 时 exquisite 仅 1% (0.99..1.00) -> 落入 fine；luckBonus=0.1 使 exquisite 升至 3% (0.97..1.00) -> 跃升 exquisite
+  const cookBase = applyCookRecipe(sCook, '烤红薯', 'store', t0, { luckBonus: 0, roll: 0.98 });
+  assert.equal(cookBase.ok, true);
+  assert.equal(cookBase.quality, 'fine');
+  sCook.skills.cooking = 0; // applyCookRecipe 会加 1.5，清零保证只对比 luckBonus
+  const cookLuck = applyCookRecipe(sCook, '烤红薯', 'store', new Date(t0.getTime() + 1000), { luckBonus: 0.1, roll: 0.98 });
+  assert.equal(cookLuck.ok, true);
+  assert.equal(cookLuck.quality, 'exquisite', 'quality_luck_bonus 应作用于 applyCookRecipe');
+
+  const ovClamped = buildCareerOverview(sCook, t0, { certPassBonus: 0.99, equipPriceMult: 0.8 });
+  assert.ok(ovClamped.certs.find((c) => c.name === '会计证').chancePct <= 60, 'certPassBonus 应夹紧到 0.30（<= 0.15 + 0.30）');
+  assert.equal(ovClamped.gear.find((g) => g.id === 'oven').price, 480, 'buildCareerOverview 装备价格应乘 equip_price_mult');
+
+  // 5) P1 #3 & P2 #8: ctx.secret 持久化复用（清空 process.env）+ status !== '1' 非致命时自动走 district adcode 回查
+  const prevFetch = globalThis.fetch;
+  const prevEnv = process.env.JOURNEY_AMAP_KEY;
+  const prevLifeEnv = process.env.LIFE_AMAP_KEY;
+  const dir = mkdtempSync(join(tmpdir(), 'life-sec-'));
+  try {
+    delete process.env.JOURNEY_AMAP_KEY;
+    delete process.env.LIFE_AMAP_KEY;
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes('/v3/weather/weatherInfo') && u.includes('city=620100')) {
+        return new Response(JSON.stringify({ status: '1', lives: [{ weather: '晴', temperature: '18' }] }), { status: 200 });
+      }
+      if (u.includes('/v3/weather/weatherInfo')) {
+        return new Response(JSON.stringify({ status: '0', infocode: '20000', info: 'INVALID_PARAMS' }), { status: 200 });
+      }
+      if (u.includes('/v3/config/district')) {
+        return new Response(JSON.stringify({ status: '1', districts: [{ adcode: '620100' }] }), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const resFallback = await fetchAmapWeather('sec_key_ok', '兰州', 2000);
+    assert.equal(resFallback.ok, true, 'status !== 1 非致命错误时应继续查 district adcode 兜底');
+    assert.equal(resFallback.sky, '晴');
+
+    const wSec = new LifeWorld({
+      cfg: { ...LIFE_DEFAULTS(), enabled: true, weatherMode: 'amap' },
+      dataDir: dir,
+      botName: '大肥鱼',
+      secret: (name) => (name === 'JOURNEY_AMAP_KEY' ? 'sec_key_ok' : undefined),
+      now: () => t0,
+    });
+    await wSec.start({ log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} }, pushEvent: async (e) => e });
+    await new Promise((r) => setTimeout(r, 40));
+    const lamp = wSec.webUi().lamps.find((l) => l.label === '外部天气');
+    assert.equal(lamp?.state, 'online', '无 process.env 时通过 ctx.secret 复用 JOURNEY_AMAP_KEY 仍应在线');
+    await wSec.stop();
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevEnv !== undefined) process.env.JOURNEY_AMAP_KEY = prevEnv;
+    if (prevLifeEnv !== undefined) process.env.LIFE_AMAP_KEY = prevLifeEnv;
     rmSync(dir, { recursive: true, force: true });
   }
 });

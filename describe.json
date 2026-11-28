@@ -19,7 +19,7 @@
     },
     {
       "name": "life_act",
-      "description": "开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m) swim(60m/35元/涨体质/泳池免费)；闲/学/社：study(60m/涨见识) play(60m/22元) live_show(120m/88元) craft_shop(90m/55元/涨手作) glamping(120m/95元) miniature(75m/25元/涨手作与见识) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。",
+      "description": "开始一项活动（除 wake/cancel 外均按分钟结算五维与花销，进行中不可并发）。吃：feast(60m/40元) eat(40m/15元) instant(15m/0元) cook(55m/10元) supper(30m/18元)；饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m) swim(60m/35元/涨体质/泳池免费)；闲/学/社：study(60m/涨见识) play(60m/22元) live_show(120m/88元) craft_shop(90m/55元/涨手作) glamping(120m/95元) miniature(75m/25元/涨手作与见识) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；医：see_doctor(45m/45元，持医师或护士证30元，生病静养特许出门，缩短18h病程，每日限1次)；控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -63,10 +63,11 @@
               "craft_shop",
               "glamping",
               "miniature",
+              "see_doctor",
               "wake",
               "cancel"
             ],
-            "description": "动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/swim/study/play/live_show/craft_shop/glamping/miniature/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。"
+            "description": "动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/swim/study/play/live_show/craft_shop/glamping/miniature/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/see_doctor/wake/cancel。"
           }
         }
       },
@@ -80,7 +81,7 @@
     },
     {
       "name": "life_work",
-      "description": "去上班/出工挣钱。**一天一次**，按你本地的自然日算，**而且需要占用一段完整工时** —— 零工约 3–4 小时（80–95 元）、熟练活约 4.5–5 小时（130–150 元，需满 30 天或自备轻载具）、有证岗 5.5–6 小时（210–240 元，需考证或装备）、专业岗 7–8 小时（300–340 元，需考证+出工积累）。对应领域熟练度越高日薪加成越高（最高 +50%），且摄影/手艺/写作/烹饪/跑单类活在熟练度、心情加持下可产出四档品质作品（普通/良品/精品/臻品）；干活期间社交不会掉，但精力、清爽、饱腹和少量娱乐（5–6 点）会消耗；干完收工才发全薪。感冒或过劳静养期间出不了家门干活。中途可用 `life_act` 的 `cancel` 早退：干满 30 分钟按比例打六折、不满 30 分钟白干，都不涨工龄且当天不能重接。精力低于 20 或正在做别的事时去不了。",
+      "description": "去上班/出工挣钱。**一天一次**，按你本地的自然日算，**而且需要占用一段完整工时** —— 零工约 3–4 小时（100–120 元）、熟练活约 4.5–5 小时（165–195 元，需满 30 天或自备轻载具）、有证岗 5.5–6 小时（260–310 元，需考证或装备）、专业岗 7–8 小时（380–450 元，需考证+出工积累）。对应领域熟练度越高日薪加成越高（最高 +50%），且摄影/手艺/写作/烹饪/跑单类活在熟练度、心情加持下可产出四档品质作品（普通/良品/精品/臻品）；干活期间社交不会掉，但精力、清爽、饱腹和少量娱乐（5–6 点）会消耗；干完收工才发全薪。感冒或过劳静养期间出不了家门干活。中途可用 `life_act` 的 `cancel` 早退：干满 30 分钟按比例打六折、不满 30 分钟白干，都不涨工龄且当天不能重接。精力低于 20 或正在做别的事时去不了。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -101,7 +102,7 @@
     },
     {
       "name": "life_cert",
-      "description": "去考一张证。花钱、花精力，**考不考得过看你见识够不够**。健康证 80（要见识 10）/ 护工证 400（20）/ 摄影证 380（25）/ 电工证 450（30）/ 驾照 600（30）/ 厨师证 500（40）/ 社工证 550（45）/ 教师资格证 700（55）/ 护士执业证 800（60）/ 会计证 750（65）。**报名费先交，考不过不退**；见识越高，过的概率越大（见识 0 时只有一成半，够了就到九成）。见识靠两样涨：`life_act` 的 study（看书，一次 6 点）和出工（越高级的活长得越多）；**不学不看会退**，一天掉一点二。钱不够就考不了，先攒。同一张证不用考两遍，一天也只考一次。",
+      "description": "去考一张证。花钱、花精力，**考不考得过看你见识够不够**。健康证 80（要见识 10）/ 护工证 400（20）/ 摄影证 380（25）/ 茶艺咖啡证 350（25）/ 园艺花艺证 420（30）/ 电工证 450（30）/ 驾照 600（30）/ 导游证 520（40）/ 厨师证 500（40）/ 社工证 550（45）/ 教师资格证 700（55）/ 护士执业证 800（60）/ 会计证 750（65）/ 执业医师证 900（72）。**报名费先交，考不过不退**；见识越高，过的概率越大（见识 0 时只有一成半，够了就到九成）。见识靠两样涨：`life_act` 的 study（看书，一次 6 点）和出工（越高级的活长得越多）；**不学不看会退**，一天掉一点二；所有已持证书每满 30 天会做一次月度见识核验（满 25 天若低于门槛会收到 `life.cert_warn` 预警），到期见识不足会被吊销需重考。钱不够就考不了，先攒。同一张证不用考两遍，一天也只考一次。",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -111,7 +112,7 @@
         "properties": {
           "cert": {
             "type": "string",
-            "description": "考哪张证，写名字，比如「驾照」「护工证」。"
+            "description": "考哪张证，写名字，比如「驾照」「护工证」「执业医师证」。"
           }
         }
       },
@@ -981,6 +982,22 @@
         "en": "Recovered from illness."
       },
       "trigger": "debounce"
+    },
+    {
+      "type": "life.cert_warn",
+      "description": {
+        "zh": "持证临近月度核验且见识不足门槛，提前预警提醒补足见识。",
+        "en": "Certificate monthly audit approaching with insufficient knowledge."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "life.cert_revoked",
+      "description": {
+        "zh": "证书满 30 天月度核验时见识低于门槛，证书被吊销。",
+        "en": "Certificate revoked after monthly audit due to low knowledge."
+      },
+      "trigger": "flush"
     },
     {
       "type": "life.care",

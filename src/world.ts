@@ -37,7 +37,7 @@ import {
 } from './state.ts';
 import { JOBS, certOf, jobAllowedAt } from './jobs.ts';
 import {
-  BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown, fetchExternalWeather,
+  BUILTIN_TOWN, DAYPART_LABEL, clockGapHours, dayPart, herNow, readJourney, readSpendRequests, readTown, fetchExternalWeather, fetchAmapWeather,
   readPendingRequests, archivePendingRequest, fetchTownStalls, buyTownStall, joinTown, readMeetUid,
   pickTownStreet, postTownStall, fetchTownDeals, ackTownDeals, findStreetProfile, formatStreetMods, normStallEffects, resolveStallEffects, formatStallEffects,
   type JourneyView, type TownView, type TownStall, type TownDeal, type StreetMods, type StallEffects,
@@ -67,6 +67,8 @@ export interface LifeWorldOptions {
   cfg: LifeConfigSection;
   dataDir: string;
   botName: string;
+  /** 可选宿主密钥读取器（由 definition.ts 传入 ctx.secret，持久读取 .env 密钥）。 */
+  secret?: (name: string) => string | undefined;
   /** 可选时钟注入（供测试固定白昼窗口）。 */
   now?: () => Date;
 }
@@ -863,12 +865,20 @@ export class LifeWorld implements World {
 
   private weatherMode(): WeatherMode {
     const raw = String(this.cfg.weatherMode || 'auto').trim();
-    if (raw === 'external' || raw === 'builtin') return raw;
+    if (raw === 'amap' || raw === 'external' || raw === 'builtin') return raw;
     return 'auto';
   }
 
+  private resolveAmapKey(): string {
+    return String(this.cfg.amapKey || '').trim()
+      || String(this.opts.secret?.('LIFE_AMAP_KEY') || '').trim()
+      || String(process.env.LIFE_AMAP_KEY || '').trim()
+      || String(this.opts.secret?.('JOURNEY_AMAP_KEY') || '').trim()
+      || String(process.env.JOURNEY_AMAP_KEY || '').trim();
+  }
+
   private weatherCfgKey(): string {
-    return `${this.weatherMode()}|${normWeatherUrl(this.cfg.weatherUrl)}|${clampWeatherTimeoutMs(this.cfg.weatherTimeoutMs)}`;
+    return `${this.weatherMode()}|${normWeatherUrl(this.cfg.weatherUrl)}|${this.resolveAmapKey()}|${clampWeatherTimeoutMs(this.cfg.weatherTimeoutMs)}`;
   }
 
   /** 解析应传给外部天气服务的真实地理城名，绝不传街道名或未确认的内置假名以外的街道串。 */
@@ -885,7 +895,12 @@ export class LifeWorld implements World {
   private activeExternalWeatherOverride(city: string): ExternalWeatherOverride | null {
     const mode = this.weatherMode();
     const url = normWeatherUrl(this.cfg.weatherUrl);
-    if (mode === 'builtin' || !url || !this.externalWeather) return null;
+    const hasAmap = Boolean(this.resolveAmapKey());
+    if (mode === 'builtin') return null;
+    if (mode === 'external' && !url) return null;
+    if (mode === 'amap' && !hasAmap) return null;
+    if (mode === 'auto' && !url && !hasAmap) return null;
+    if (!this.externalWeather) return null;
     if (this.externalWeather.city !== city) return null;
     if (Date.now() - this.externalWeather.fetchedAt >= 10 * 60_000) return null;
     return {
@@ -906,7 +921,10 @@ export class LifeWorld implements World {
   private async refreshExternalWeather(now: Date, opts: { force?: boolean } = {}): Promise<void> {
     const mode = this.weatherMode();
     const url = normWeatherUrl(this.cfg.weatherUrl);
-    if (mode === 'builtin' || !url) {
+    const amapKey = this.resolveAmapKey();
+    const useExternal = mode === 'external' ? Boolean(url) : (mode === 'auto' && Boolean(url));
+    const useAmap = !useExternal && (mode === 'amap' || mode === 'auto') && Boolean(amapKey);
+    if (mode === 'builtin' || (!useExternal && !useAmap)) {
       this.externalWeather = null;
       this.externalWeatherError = '';
       this.externalWeatherAttemptAt = 0;
@@ -928,9 +946,12 @@ export class LifeWorld implements World {
       await this.externalWeatherInFlight.catch(() => {});
     }
     const generation = this.stateGeneration;
+    const timeoutMs = clampWeatherTimeoutMs(this.cfg.weatherTimeoutMs);
     const run = (async (): Promise<void> => {
       this.externalWeatherAttemptAt = Date.now();
-      const res = await fetchExternalWeather(url, city, clampWeatherTimeoutMs(this.cfg.weatherTimeoutMs));
+      const res = useExternal
+        ? await fetchExternalWeather(url, city, timeoutMs)
+        : await fetchAmapWeather(amapKey, city, timeoutMs);
       if (generation !== this.stateGeneration) return;
       if (res.ok && res.sky) {
         this.externalWeather = {
@@ -938,13 +959,13 @@ export class LifeWorld implements World {
           sky: res.sky,
           rawWeather: res.rawWeather ?? res.sky,
           ...(res.temperature !== undefined ? { temperature: res.temperature } : {}),
-          source: res.source ?? '外部天气',
+          source: res.source ?? (useAmap ? '高德天气' : '外部天气'),
           fetchedAt: Date.now(),
         };
         this.externalWeatherError = '';
-        this.log?.debug?.(`模拟鱼生：外部天气已更新 ${city} ${this.externalWeather.rawWeather}（${this.externalWeather.source}）`);
+        this.log?.debug?.(`模拟鱼生：天气已更新 ${city} ${this.externalWeather.rawWeather}（${this.externalWeather.source}）`);
       } else {
-        this.externalWeatherError = res.error || '外部天气获取失败';
+        this.externalWeatherError = res.error || (useAmap ? '高德天气获取失败' : '外部天气获取失败');
         if (
           !this.externalWeather
           || this.externalWeather.city !== city
@@ -952,7 +973,7 @@ export class LifeWorld implements World {
         ) {
           this.externalWeather = null;
         }
-        this.log?.debug?.(`模拟鱼生：外部天气获取失败（${city}），回退内置天气：${this.externalWeatherError}`);
+        this.log?.debug?.(`模拟鱼生：天气获取失败（${city}），回退内置天气：${this.externalWeatherError}`);
       }
     })().finally(() => {
       this.externalWeatherInFlight = null;
@@ -1408,7 +1429,9 @@ export class LifeWorld implements World {
       }
       const unitPrice = this.resolveDealPrice(d);
       if (unitPrice <= 0) continue;
-      const income = unitPrice * Math.max(1, d.qty);
+      const rawStallMult = Number(this.currentTownBuffs().stall_price_mult);
+      const stallMult = Number.isFinite(rawStallMult) && rawStallMult > 0 ? Math.max(0.5, Math.min(2.5, rawStallMult)) : 1;
+      const income = Math.max(1, Math.round(unitPrice * Math.max(1, d.qty) * stallMult));
       settled.add(d.id);
       this.state.settledDeals.push(d.id);
       this.state.money.cash += income;
@@ -1660,6 +1683,7 @@ export class LifeWorld implements World {
           seat: j.seat,
           journeyCity: j.installed ? j.cityName : '',
           streetMods: this.currentStreetMods(),
+          townBuffs: this.currentTownBuffs(),
         });
       }
       const s = snapshot(previewState, now, this.activeExternalWeatherOverride(this.weatherCityName(j)));
@@ -1953,6 +1977,7 @@ export class LifeWorld implements World {
       seat: this.journey.seat,
       journeyCity: this.journey.installed ? this.journey.cityName : '',
       streetMods: this.currentStreetMods(),
+      townBuffs: this.currentTownBuffs(),
     });
     if (r.hours <= 0) {
       const hasRetriable = !this.stateCleared && (
@@ -2343,12 +2368,12 @@ export class LifeWorld implements World {
       this.enqueueNotice({
         id: `sick:${c.id}:${Math.round(now.getTime() / 1000)}`,
         type: 'life.sick',
-        text: `${c.text}`,
+        text: `[你自己的身体状态] 你自己生病了（${c.text}），并不是用户生病；生病静养期间不能出门，但可以调用 life_act({ kind: "see_doctor" }) 去社区诊所看病缩短病程，或在家照料动植物。`,
         trigger: 'flush',
       });
     }
     for (const c of r.recovered) {
-      const recoveredMsg = `${String(c.text ?? '不舒服').replace(/。$/, '')}，已经好了。`;
+      const recoveredMsg = `你自己之前的身体不适（${String(c.text ?? '不舒服').replace(/。$/, '')}）已经恢复了。`;
       remember(this.state, recoveredMsg, now);
       this.enqueueNotice({
         id: `rec:${c.id}:${Math.round(now.getTime() / 1000)}`,
@@ -2356,6 +2381,25 @@ export class LifeWorld implements World {
         text: recoveredMsg,
         trigger: 'debounce',
       });
+    }
+    for (const w of r.certWarnings ?? []) {
+      this.enqueueNotice({
+        id: `certwarn:${w.cert}:${Math.round(now.getTime() / 1000)}`,
+        type: 'life.cert_warn',
+        text: `你的「${w.cert}」还有 ${w.daysLeft} 天到月度核验，当前见识 ${w.knowledge} 低于门槛 ${w.need}，请尽快读书或上课补足见识，否则到期会被吊销重考。`,
+        trigger: 'flush',
+      });
+    }
+    for (const rv of r.certRevoked ?? []) {
+      this.enqueueNotice({
+        id: `certrev:${rv.cert}:${Math.round(now.getTime() / 1000)}`,
+        type: 'life.cert_revoked',
+        text: `你的「${rv.cert}」满一个月月度核验时见识只有 ${rv.knowledge}（需 ${rv.need}），证书已被吊销，请重新看书攒够见识再考。`,
+        trigger: 'flush',
+      });
+    }
+    if ((r.certRevoked?.length ?? 0) > 0) {
+      this.broadcastLife(now);
     }
     if (r.woke?.reason === 'hungry') {
       this.enqueueNotice({
@@ -2571,6 +2615,7 @@ export class LifeWorld implements World {
       seat: this.journey.seat,
       journeyCity: this.journey.installed ? this.journey.cityName : '',
       streetMods: this.currentStreetMods(),
+      townBuffs: this.currentTownBuffs(),
     });
     if (r.hours <= 0) {
       const hasRetriable = !this.stateCleared && (
@@ -2686,6 +2731,9 @@ export class LifeWorld implements World {
         certs: [...this.state.job.certs],
         sickUntil: isHouseboundSick(this.state, now)?.until ?? '',
         sickReason: isHouseboundSick(this.state, now)?.text ?? '',
+        townBuffs: {
+          travelFareMult: Number(this.currentTownBuffs().travel_fare_mult) || 1,
+        },
       }, null, 2));
       renameSync(tmp, file);
     } catch (e) {
@@ -3100,6 +3148,7 @@ export class LifeWorld implements World {
         + '饮：tea(45m/28元) drink(60m/28元) cafe(60m/30元)；'
         + '休/护/动：sleep(8h) nap(60m) rest(20m) wash(30m) spa(60m/120元) sunbathe(40m) tidy(45m) workout(45m) swim(60m/35元/涨体质/泳池免费)；'
         + '闲/学/社：study(60m/涨见识) play(60m/22元) live_show(120m/88元) craft_shop(90m/55元/涨手作) glamping(120m/95元) miniature(75m/25元/涨手作与见识) meet(45m/30元) chat(20m/0元) mall(90m/81元) market(45m) picnic(90m/36元) movie(120m/36元) karaoke(120m/66元) museum(90m/18元) paint(90m) pond(40m)；'
+        + '医：see_doctor(45m/45元，持医师或护士证30元，生病静养特许出门，缩短18h病程，每日限1次)；'
         + '控制：wake(睡着时起来) cancel(中途打断或早退，钱不退且有惩罚)。',
       parameters: {
         type: 'object',
@@ -3110,7 +3159,7 @@ export class LifeWorld implements World {
             type: 'string',
             enum: Object.keys(ACTS),
             description: '动作 id：eat/feast/instant/cook/supper/tea/drink/cafe/sleep/nap/rest/wash/spa/sunbathe/tidy/workout/swim/'
-              + 'study/play/live_show/craft_shop/glamping/miniature/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/wake/cancel。',
+              + 'study/play/live_show/craft_shop/glamping/miniature/mall/market/picnic/movie/karaoke/museum/paint/meet/chat/pond/see_doctor/wake/cancel。',
           },
         },
       },
@@ -3133,6 +3182,7 @@ export class LifeWorld implements World {
           onWay: j.onWay,
           atSpot: j.atSpot,
           weatherSky: this.currentWeather(now, j).sky,
+          townBuffs: this.currentTownBuffs(),
         });
         if (!r.ok) return { text: r.reason ?? '这件事做不了。' };
         if (r.advanced && r.advanced.hours > 0) {
@@ -3246,8 +3296,8 @@ export class LifeWorld implements World {
       name: 'life_work',
       description:
         '去上班/出工挣钱。**一天一次**，按你本地的自然日算，**而且需要占用一段完整工时** —— '
-        + '零工约 3–4 小时（80–95 元）、熟练活约 4.5–5 小时（130–150 元，需满 30 天或自备轻载具）、'
-        + '有证岗 5.5–6 小时（210–240 元，需考证或装备）、专业岗 7–8 小时（300–340 元，需考证+出工积累）。'
+        + '零工约 3–4 小时（100–120 元）、熟练活约 4.5–5 小时（165–195 元，需满 30 天或自备轻载具）、'
+        + '有证岗 5.5–6 小时（260–310 元，需考证或装备）、专业岗 7–8 小时（380–450 元，需考证+出工积累）。'
         + '对应领域熟练度越高日薪加成越高（最高 +50%），且摄影/手艺/写作/烹饪/跑单类活在熟练度、心情加持下可产出四档品质作品（普通/良品/精品/臻品）；'
         + '干活期间社交不会掉，但精力、清爽、饱腹和少量娱乐（5–6 点）会消耗；干完收工才发全薪。'
         + '感冒或过劳静养期间出不了家门干活。'
@@ -3358,11 +3408,11 @@ export class LifeWorld implements World {
       name: 'life_cert',
       description:
         '去考一张证。花钱、花精力，**考不考得过看你见识够不够**。'
-        + '健康证 80（要见识 10）/ 护工证 400（20）/ 摄影证 380（25）/ 电工证 450（30）/ 驾照 600（30）/ 厨师证 500（40）/ '
-        + '社工证 550（45）/ 教师资格证 700（55）/ 护士执业证 800（60）/ 会计证 750（65）。'
+        + '健康证 80（要见识 10）/ 护工证 400（20）/ 摄影证 380（25）/ 茶艺咖啡证 350（25）/ 园艺花艺证 420（30）/ 电工证 450（30）/ 驾照 600（30）/ 导游证 520（40）/ 厨师证 500（40）/ '
+        + '社工证 550（45）/ 教师资格证 700（55）/ 护士执业证 800（60）/ 会计证 750（65）/ 执业医师证 900（72）。'
         + '**报名费先交，考不过不退**；见识越高，过的概率越大（见识 0 时只有一成半，够了就到九成）。'
         + '见识靠两样涨：`life_act` 的 study（看书，一次 6 点）和出工（越高级的活长得越多）；'
-        + '**不学不看会退**，一天掉一点二。'
+        + '**不学不看会退**，一天掉一点二；所有已持证书每满 30 天会做一次月度见识核验（满 25 天若低于门槛会收到 `life.cert_warn` 预警），到期见识不足会被吊销需重考。'
         + '钱不够就考不了，先攒。同一张证不用考两遍，一天也只考一次。',
       parameters: {
         type: 'object',
@@ -3371,7 +3421,7 @@ export class LifeWorld implements World {
         properties: {
           cert: {
             type: 'string',
-            description: '考哪张证，写名字，比如「驾照」「护工证」。',
+            description: '考哪张证，写名字，比如「驾照」「护工证」「执业医师证」。',
           },
         },
       },
@@ -3379,7 +3429,9 @@ export class LifeWorld implements World {
       handler: async (args: any) => {
         const now = this.now();
         await this.settleBeforeTool(now);
-        const r = applyCert(this.state, String(args?.cert ?? ''), now);
+        const r = applyCert(this.state, String(args?.cert ?? ''), now, undefined, {
+          passBonus: Number(this.currentTownBuffs().cert_pass_bonus) || 0,
+        });
         if (!r.ok) {
           try { this.store.save(this.state); } catch { /* ignore */ }
           return { text: r.reason ?? '没考成。' };
@@ -3998,15 +4050,23 @@ export class LifeWorld implements World {
             ? this.state.gear.map((id) => EQUIP_CATALOG.find((e) => e.id === id)?.name ?? id).join('、')
             : '暂无';
           const courses = TRAIN_COURSES.map((c) => `${c.name}（${SKILL_DOMAIN_LABEL[c.domain]}，${c.price}元）`).join('；');
+          const tbList = this.currentTownBuffs();
+          const rawEqMult = Number(tbList.equip_price_mult);
+          const eqMult = Number.isFinite(rawEqMult) && rawEqMult > 0 ? Math.max(0.5, Math.min(2.0, rawEqMult)) : 1;
           const equips = EQUIP_CATALOG.filter((e) => !this.state.gear.includes(e.id))
-            .map((e) => `${e.name}（${e.price}元）`).join('；');
+            .map((e) => `${e.name}（${Math.max(1, Math.round(e.price * eqMult))}元）`).join('；');
           return {
             text: `当前熟练度：${skillsLine}。已备家伙：${gearOwned}。\n`
               + `可报培训：${courses}。\n`
               + `${equips ? `可买装备/载具：${equips}。` : '清单装备都已配齐。'}`,
           };
         }
-        const r = applyLearn(this.state, what, now);
+        const tbLearn = this.currentTownBuffs();
+        const r = applyLearn(this.state, what, now, {
+          equipPriceMult: Number(tbLearn.equip_price_mult) || 1,
+          trainExpMult: Number(tbLearn.train_exp_mult) || 1,
+          studyKnowMult: Number(tbLearn.study_know_mult) || 1,
+        });
         if (!r.ok) {
           try { this.store.save(this.state); } catch { /* ignore */ }
           return { text: r.reason ?? '这次没办成。' };
@@ -4956,7 +5016,9 @@ export class LifeWorld implements World {
 
         if (action === 'plant') {
           const seedQ = String(args?.seed ?? '').trim();
-          const r = applyPlant(this.state, seedQ, now, term.name);
+          const r = applyPlant(this.state, seedQ, now, term.name, {
+            growMult: Number(this.currentTownBuffs().crop_grow_mult) || 1,
+          });
           if (!r.ok) return { text: r.reason ?? '没种下去。' };
           if (generation !== this.stateGeneration) return cleared();
           appendLedger(this.opts.dataDir, {
@@ -5293,6 +5355,7 @@ export class LifeWorld implements World {
             noodleBonus: Number(buffs.noodle_craft_bonus) || 0,
             foodMoodBonus: Number(buffs.food_mood_bonus) || 0,
             craftMoodBonus: Number(buffs.craft_mood_bonus) || 0,
+            luckBonus: Number(buffs.quality_luck_bonus) || 0,
           });
           if (!r.ok) return { text: r.reason ?? '这次没做成这道菜。' };
           if (generation !== this.stateGeneration) return cleared();
@@ -5605,9 +5668,19 @@ export class LifeWorld implements World {
 
     if (s.conditions.length) {
       const sickHint = s.houseboundSick
-        ? `（闭门静养中·还剩约 ${s.houseboundSick.hoursLeft}h，最多在家照料菜园动植物，出不了家门）`
+        ? `（你自己正闭门静养中·还剩约 ${s.houseboundSick.hoursLeft}h，出不了家门，可用 life_act(kind="see_doctor") 去社区诊所看病或在家照料动植物）`
         : '';
-      parts.push(`身上不舒服：${s.conditions.map((c) => c.text).join('；')}${sickHint}`);
+      parts.push(`你自己身体状态（不是用户生病）：${s.conditions.map((c) => c.text).join('；')}${sickHint}`);
+    }
+    const statusTb = this.currentTownBuffs();
+    const certWarnList = buildCareerOverview(this.state, now, {
+      certPassBonus: Number(statusTb.cert_pass_bonus) || 0,
+      qualityLuckBonus: Number(statusTb.quality_luck_bonus) || 0,
+      equipPriceMult: Number(statusTb.equip_price_mult) || 1,
+    }).certs.filter((c) => c.owned && c.warnNeedKnow && (c.daysLeft ?? 30) <= 5);
+    if (certWarnList.length) {
+      const dispKnow = Math.round(this.state.knowledge * 10) / 10;
+      parts.push(`证书复核预警：${certWarnList.map((c) => `「${c.name}」还剩 ${c.daysLeft} 天到期核验（当前见识 ${dispKnow}，需 ${c.need}）`).join('；')}`);
     }
     if (s.moodlets.length || s.moodEffect.effectsText) {
       const mText = s.moodlets.map((m) => m.text).join('；');
@@ -6403,27 +6476,30 @@ export class LifeWorld implements World {
     /* ---- 外部天气 ---- */
     const wMode = this.weatherMode();
     const wUrl = normWeatherUrl(this.cfg.weatherUrl);
+    const wAmap = this.resolveAmapKey();
     const wCity = this.weatherCityName(j);
     const wExt = this.activeExternalWeatherOverride(wCity);
     const weatherLamp: WorldLamp = wMode === 'builtin'
       ? { label: '外部天气', state: 'offline', hint: '已设为仅用内置节气天气 —— **不用管**' }
-      : !wUrl
-        ? (wMode === 'external'
-          ? { label: '外部天气', state: 'error', hint: '选了外部优先模式，但还没填外部天气地址；暂用内置天气兜底' }
-          : { label: '外部天气', state: 'offline', hint: '没配外部天气地址，用内置节气天气 —— **不用管**' })
-        : wExt
-          ? {
-            label: '外部天气',
-            state: 'online',
-            hint: `${wExt.source || '外部天气'} · ${wCity} ${wExt.rawWeather || wExt.sky}${typeof wExt.temperature === 'number' ? ` ${wExt.temperature}°C` : ''}（映射：${wExt.sky}）`,
-          }
-          : (this.externalWeatherError || wMode === 'external')
-            ? {
-              label: '外部天气',
-              state: 'error',
-              hint: `${this.externalWeatherError || '外部天气暂不可达'}；已回退内置天气兜底，不影响过日子`,
-            }
-            : { label: '外部天气', state: 'offline', hint: `正在获取 ${wCity} 外部天气，暂用内置天气` };
+      : (wMode === 'external' && !wUrl)
+        ? { label: '外部天气', state: 'error', hint: '选了外部优先模式，但还没填外部天气地址；暂用内置天气兜底' }
+        : (wMode === 'amap' && !wAmap)
+          ? { label: '外部天气', state: 'error', hint: '选了高德直连模式，但未填高德 Key 且环境变量无 LIFE_AMAP_KEY / JOURNEY_AMAP_KEY；暂用内置天气兜底' }
+          : (!wUrl && !wAmap)
+            ? { label: '外部天气', state: 'offline', hint: '没配外部天气地址或高德 Key，用内置节气天气 —— **不用管**' }
+            : wExt
+              ? {
+                label: '外部天气',
+                state: 'online',
+                hint: `${wExt.source || '外部天气'} · ${wCity} ${wExt.rawWeather || wExt.sky}${typeof wExt.temperature === 'number' ? ` ${wExt.temperature}°C` : ''}（映射：${wExt.sky}）`,
+              }
+              : (this.externalWeatherError || wMode === 'external' || wMode === 'amap')
+                ? {
+                  label: '外部天气',
+                  state: 'error',
+                  hint: `${this.externalWeatherError || '实时天气暂不可达'}；已回退内置天气兜底，不影响过日子`,
+                }
+                : { label: '外部天气', state: 'offline', hint: `正在获取 ${wCity} 实时天气，暂用内置天气` };
 
     return [alive, town, travel, weatherLamp];
   }
@@ -6753,9 +6829,14 @@ export class LifeWorld implements World {
 
     if (panel === 'career') {
       if (method === 'snapshot' || method === 'list' || method === '') {
+        const tb = this.currentTownBuffs();
         return {
           ...this.panelSnapshot(now),
-          career: buildCareerOverview(this.state, now),
+          career: buildCareerOverview(this.state, now, {
+            certPassBonus: Number(tb.cert_pass_bonus) || 0,
+            qualityLuckBonus: Number(tb.quality_luck_bonus) || 0,
+            equipPriceMult: Number(tb.equip_price_mult) || 1,
+          }),
         };
       }
       throw new Error(`职业与工坊页不认识这个方法：${method}`);
@@ -6874,7 +6955,10 @@ export class LifeWorld implements World {
 
         if (method === 'plant') {
           const seedQ = String(raw?.seed ?? '').trim();
-          const r = applyPlant(this.state, seedQ, now, term.name, { byUser: true });
+          const r = applyPlant(this.state, seedQ, now, term.name, {
+            byUser: true,
+            growMult: Number(this.currentTownBuffs().crop_grow_mult) || 1,
+          });
           if (!r.ok) return { ok: false, reason: r.reason || '没种下去。', ...marketPayload() };
           appendLedger(this.opts.dataDir, {
             id: `farm-seed-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
@@ -7319,8 +7403,12 @@ export class LifeWorld implements World {
           metaVersion: this.hubTownMeta?.metaVersion ?? this.town.metaVersion ?? 1,
           hubMode: this.isHubMode(),
         },
+        hubConfigured: Boolean(normHubUrl(this.cfg.hubUrl)),
+        hubRecommendedUrl: 'https://hub.cooppetsjourney.top',
         hub: {
           enabled: this.isHubMode(),
+          configured: Boolean(normHubUrl(this.cfg.hubUrl)),
+          recommendedUrl: 'https://hub.cooppetsjourney.top',
           url: this.activeHubUrl(),
           petId: this.hubAuth?.petId ?? '',
           displayName: this.hubAuth?.displayName ?? '',
