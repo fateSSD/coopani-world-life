@@ -1,5 +1,17 @@
 # 变更记录
 
+## 1.8.0 — 2026-11-28（35 种植 × 20 养殖 × 45 三档菜谱 × 20 工作台 × 69 职业四维成本 × 双城街市与 14 项特产）
+
+- **植物与农牧场扩充**（`src/farm.ts`、`src/ranch.ts`）：
+  - `SEEDS` 由 18 种扩充至 35 种（零鱼虾蟹贝字样），新增 `craft_mat` 承接非食手作原料并严格与可食用下厨/鲜蔬摆摊隔离；打通自制有机花肥在播种与浇水环节缩短 15% 熟期的闭环。
+  - `ANIMALS` 由 4 种扩充至 20 种，城郊农牧场调为 `+3禽/+3畜/+3鱼`，温和冷链换购与生态采集替代屠宰文案；自动起塘排除持续副产类，`fish_bait` 优先抵扣鱼塘饲料。
+- **三档菜谱、五大工作台与 14 项城市特产**（`src/recipes.ts`、`src/town-life.ts`、`src/world.ts`）：
+  - `RECIPES` 扩充至 45 道（家常简食/厨师招牌/宴席硬菜三档，含兰州/北京风味），消解特产 `lily_dry` 与 `chestnut` 引用；新增 20 项五大职业工作台配方并打通 `life_cook(action="workbench", mode="use"|"store")` 与 `life_stall` 摆摊直销。
+  - `streetWindowOf` / `marketCatalogOf` / `buildDreamSlice` 支持兰州/北京双城风味（在途不泄漏目的地城市），新增 14 项城市特产与 `life_buy` 购置/享用、摆摊联动。
+- **69 职业四维成本与面板升级**（`src/jobs.ts`、`src/state.ts`、`web/panel-1.8.0.js`）：
+  - 新增 19 个职业（含兰州/北京限定，修复常驻城限定口径与在途拦截），落齐耗材垫付、9 项装备定期保养（含 `life_learn(action="maintain")` 与 `vehicle_car` 提示）、跨自然日连续劳作提醒与 30 天证书轻续期费。
+  - 面板同步升级为 `web/panel-1.8.0.js`（新增农牧自制工坊台页签、运营车辆保养状态、宴席菜谱筛选与特产总览，保持只读与三同步）；并在主面板 `now` 底部新增默认收起的支付宝二维码资助折叠栏（按需通过 `sponsorQr` 加载 `assets/sponsor-alipay.jpg`）。
+
 ## 1.7.0 — 2026-11-28（50 职业含医疗系 + `see_doctor` 就医 + 30 天证书复核 + 31 项城镇 Buff + 高德天气直连 + 经济调优与总服一键填入）
 
 - **50 职业、14 张证书、8 件装备与医疗就医闭环**（`src/jobs.ts`、`src/town-life.ts`、`src/state.ts`、`describe.json`、`web/panel-1.7.0.js`）：

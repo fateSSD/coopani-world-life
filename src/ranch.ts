@@ -14,8 +14,8 @@ import { applyYieldBonus } from './town-life.ts';
 export type AnimalGroup = 'chicken' | 'cow' | 'fish';
 
 export const ANIMAL_GROUP_LABEL: Record<AnimalGroup, string> = {
-  chicken: '鸡舍',
-  cow: '牛棚',
+  chicken: '禽舍',
+  cow: '畜棚',
   fish: '鱼塘',
 };
 
@@ -27,9 +27,9 @@ export const HOME_RANCH_SLOTS: Record<FarmHomeTier, Record<AnimalGroup, number>>
 };
 
 export const RANCH_LEASE_SLOTS: Record<AnimalGroup, number> = {
-  chicken: 2,
-  cow: 2,
-  fish: 2,
+  chicken: 3,
+  cow: 3,
+  fish: 3,
 };
 
 export const RANCH_SIGNUP_FEE = 180;
@@ -54,6 +54,7 @@ export interface AnimalDef {
   harvestProductName: string;
   harvestProductKind: IngredientKind;
   harvestYield: number;
+  harvestStyle?: 'coop_exchange' | 'pond_net' | 'eco_collect';
   note: string;
 }
 
@@ -75,6 +76,7 @@ export const ANIMALS: readonly AnimalDef[] = [
     harvestProductName: '土鸡肉',
     harvestProductKind: 'meat',
     harvestYield: 3,
+    harvestStyle: 'coop_exchange',
     note: '每天产 2 枚鲜鸡蛋（本周期喂过食多收 1 枚，最多攒 3 天量）；养满 5 天后可出栏收 3 份土鸡肉（累计喂满 2 次再 +1 份）。',
   },
   {
@@ -94,6 +96,7 @@ export const ANIMALS: readonly AnimalDef[] = [
     harvestProductName: '精选牛肉',
     harvestProductKind: 'meat',
     harvestYield: 5,
+    harvestStyle: 'coop_exchange',
     note: '每天产 2 瓶鲜牛奶（本周期喂过食多收 1 瓶，需签约城郊农牧场）；养满 7 天后可出栏收 5 份精选牛肉（累计喂满 2 次再 +1 份）。',
   },
   {
@@ -110,6 +113,7 @@ export const ANIMALS: readonly AnimalDef[] = [
     harvestProductName: '塘养鲜鱼',
     harvestProductKind: 'fish',
     harvestYield: 3,
+    harvestStyle: 'pond_net',
     note: '4 天育成起塘收 3 份塘养鲜鱼（累计喂满 2 次再 +1 份），炖豆腐汤或葱烧都很鲜甜。',
   },
   {
@@ -126,7 +130,307 @@ export const ANIMALS: readonly AnimalDef[] = [
     harvestProductName: '清江鲜鲈鱼',
     harvestProductKind: 'fish',
     harvestYield: 4,
+    harvestStyle: 'pond_net',
     note: '6 天育成起塘收 4 份清江鲜鲈鱼（累计喂满 2 次再 +1 份），肉质细嫩。',
+  },
+  {
+    id: 'crucian',
+    name: '塘养嫩鲫鱼',
+    aliases: ['鲫鱼', '嫩鲫鱼'],
+    group: 'fish',
+    price: 16,
+    feedCost: 2,
+    cycleHours: 0,
+    cycleYield: 0,
+    matureHours: 96,
+    harvestProductId: 'crucian_fish',
+    harvestProductName: '鲜鲫鱼',
+    harvestProductKind: 'fish',
+    harvestYield: 3,
+    harvestStyle: 'pond_net',
+    note: '4 天快熟起塘收 3 份鲜鲫鱼，熬奶白豆腐汤最鲜。',
+  },
+  {
+    id: 'river_shrimp',
+    name: '浅塘青虾',
+    aliases: ['青虾', '河虾', '虾苗'],
+    group: 'fish',
+    price: 20,
+    feedCost: 2,
+    cycleHours: 0,
+    cycleYield: 0,
+    matureHours: 96,
+    harvestProductId: 'river_shrimp',
+    harvestProductName: '鲜青虾',
+    harvestProductKind: 'fish',
+    harvestYield: 4,
+    harvestStyle: 'pond_net',
+    note: '4 天浅塘拉网收 4 份鲜青虾，清炒虾仁嫩弹鲜甜。',
+  },
+  {
+    id: 'yellow_catfish',
+    name: '塘养黄颡鱼',
+    aliases: ['黄颡鱼', '昂刺鱼', '黄辣丁'],
+    group: 'fish',
+    price: 24,
+    feedCost: 3,
+    cycleHours: 0,
+    cycleYield: 0,
+    matureHours: 120,
+    harvestProductId: 'fresh_fish',
+    harvestProductName: '鲜黄颡鱼',
+    harvestProductKind: 'fish',
+    harvestYield: 3,
+    harvestStyle: 'pond_net',
+    note: '5 天育成起塘，肉嫩刺少，直接兼容各类鲜鱼炖汤菜谱。',
+  },
+  {
+    id: 'black_carp',
+    name: '肥水大青鱼',
+    aliases: ['青鱼', '大青鱼'],
+    group: 'fish',
+    price: 32,
+    feedCost: 3,
+    cycleHours: 0,
+    cycleYield: 0,
+    matureHours: 168,
+    harvestProductId: 'black_carp',
+    harvestProductName: '肥青鱼',
+    harvestProductKind: 'fish',
+    harvestYield: 4,
+    harvestStyle: 'pond_net',
+    note: '7 天育成起塘收 4 份肥青鱼，可在农牧自制台晒成高价风干青鱼干。',
+  },
+  {
+    id: 'mandarin_fish',
+    name: '芦花肥鳜鱼',
+    aliases: ['鳜鱼', '桂鱼', '肥鳜鱼'],
+    group: 'fish',
+    price: 48,
+    feedCost: 4,
+    cycleHours: 0,
+    cycleYield: 0,
+    matureHours: 192,
+    harvestProductId: 'mandarin_fish',
+    harvestProductName: '肥鳜鱼',
+    harvestProductKind: 'fish',
+    harvestYield: 3,
+    harvestStyle: 'pond_net',
+    note: '8 天慢养的高阶水乡名鱼，清蒸肥鳜鱼的核心招牌料。',
+  },
+  {
+    id: 'pond_mussel',
+    name: '清水育珠蚌',
+    aliases: ['河蚌', '育珠蚌', '珍珠蚌'],
+    group: 'fish',
+    price: 45,
+    feedCost: 2,
+    cycleHours: 48,
+    cycleProductId: 'pearl',
+    cycleProductName: '淡水小珍珠',
+    cycleProductKind: 'craft_mat',
+    cycleYield: 1,
+    matureHours: 240,
+    harvestProductId: 'pearl',
+    harvestProductName: '精品淡水珠',
+    harvestProductKind: 'craft_mat',
+    harvestYield: 3,
+    harvestStyle: 'eco_collect',
+    note: '每 2 天温和采收 1 颗淡水小珍珠，10 天满期采收成品珠后放归清塘。',
+  },
+  {
+    id: 'quail',
+    name: '乖巧小鹌鹑',
+    aliases: ['鹌鹑', '小鹌鹑'],
+    group: 'chicken',
+    price: 18,
+    feedCost: 1,
+    cycleHours: 24,
+    cycleProductId: 'quail_egg',
+    cycleProductName: '鹌鹑蛋',
+    cycleProductKind: 'egg_dairy',
+    cycleYield: 3,
+    matureHours: 96,
+    harvestProductId: 'chicken_meat',
+    harvestProductName: '冷鲜小禽肉',
+    harvestProductKind: 'meat',
+    harvestYield: 2,
+    harvestStyle: 'coop_exchange',
+    note: '门槛最低、饲料只要 1 元，每天拾 3 份鹌鹑蛋；满 4 天可交合作社换冷鲜禽肉。',
+  },
+  {
+    id: 'reed_duck',
+    name: '芦花水鸭',
+    aliases: ['鸭子', '水鸭', '芦花鸭'],
+    group: 'chicken',
+    price: 34,
+    feedCost: 3,
+    cycleHours: 24,
+    cycleProductId: 'duck_egg',
+    cycleProductName: '青壳鸭蛋',
+    cycleProductKind: 'egg_dairy',
+    cycleYield: 2,
+    matureHours: 144,
+    harvestProductId: 'duck_meat',
+    harvestProductName: '冷鲜鸭胸肉',
+    harvestProductKind: 'meat',
+    harvestYield: 3,
+    harvestStyle: 'coop_exchange',
+    note: '每天拾 2 枚青壳鸭蛋；满 6 天由镇上合作社冷链车接走，结算回冷鲜鸭胸肉。',
+  },
+  {
+    id: 'pigeon',
+    name: '塘畔白鸽',
+    aliases: ['鸽子', '白鸽'],
+    group: 'chicken',
+    price: 38,
+    feedCost: 3,
+    cycleHours: 24,
+    cycleProductId: 'pigeon_egg',
+    cycleProductName: '鲜鸽蛋',
+    cycleProductKind: 'egg_dairy',
+    cycleYield: 2,
+    matureHours: 144,
+    harvestProductId: 'pigeon_meat',
+    harvestProductName: '冷鲜老鸽食材',
+    harvestProductKind: 'meat',
+    harvestYield: 2,
+    harvestStyle: 'coop_exchange',
+    note: '每天拾 2 枚鲜鸽蛋；满 6 天可由合作社换回滋补炖盅冷鲜食材。',
+  },
+  {
+    id: 'white_goose',
+    name: '肥白大鹅',
+    aliases: ['大鹅', '白鹅', '鹅'],
+    group: 'chicken',
+    price: 50,
+    feedCost: 4,
+    cycleHours: 24,
+    cycleProductId: 'goose_egg',
+    cycleProductName: '大鹅蛋',
+    cycleProductKind: 'egg_dairy',
+    cycleYield: 1,
+    matureHours: 168,
+    harvestProductId: 'goose_down',
+    harvestProductName: '蓬松落羽绒',
+    harvestProductKind: 'craft_mat',
+    harvestYield: 4,
+    harvestStyle: 'eco_collect',
+    note: '每天拾 1 枚大鹅蛋，满 7 天收集换季掉落绒羽后送往合作社生态水塘。',
+  },
+  {
+    id: 'angora_rabbit',
+    name: '长毛安哥拉兔',
+    aliases: ['兔子', '长毛兔', '安哥拉兔'],
+    group: 'chicken',
+    price: 55,
+    feedCost: 3,
+    cycleHours: 24,
+    cycleProductId: 'rabbit_fur',
+    cycleProductName: '细软兔绒',
+    cycleProductKind: 'craft_mat',
+    cycleYield: 2,
+    matureHours: 168,
+    harvestProductId: 'rabbit_fur',
+    harvestProductName: '精品兔绒',
+    harvestProductKind: 'craft_mat',
+    harvestYield: 4,
+    harvestStyle: 'eco_collect',
+    note: '纯治愈梳毛副产，零肉食压力，兔绒专供织造手作台编软围巾。',
+  },
+  {
+    id: 'reed_beehive',
+    name: '芦花木蜂箱',
+    aliases: ['蜂箱', '蜜蜂', '蜂蜜'],
+    group: 'chicken',
+    price: 42,
+    feedCost: 1,
+    cycleHours: 24,
+    cycleProductId: 'honey',
+    cycleProductName: '百花蜜',
+    cycleProductKind: 'herb',
+    cycleYield: 2,
+    matureHours: 192,
+    harvestProductId: 'beeswax',
+    harvestProductName: '天然蜂蜡',
+    harvestProductKind: 'craft_mat',
+    harvestYield: 4,
+    harvestStyle: 'eco_collect',
+    note: '每天摇取 2 罐百花蜜，满 8 天换框采收天然蜂蜡，供香薰与修书护封。',
+  },
+  {
+    id: 'silkworm_frame',
+    name: '桑蚕竹匾',
+    aliases: ['桑蚕', '蚕宝宝', '蚕茧'],
+    group: 'chicken',
+    price: 30,
+    feedCost: 2,
+    cycleHours: 0,
+    cycleYield: 0,
+    matureHours: 120,
+    harvestProductId: 'silk_cocoon',
+    harvestProductName: '羽化空蚕茧',
+    harvestProductKind: 'craft_mat',
+    harvestYield: 4,
+    harvestStyle: 'eco_collect',
+    note: '5 天采收羽化后的洁白空茧丝绵，零伤害，供织造书签与线装手账。',
+  },
+  {
+    id: 'dairy_goat',
+    name: '温顺奶山羊',
+    aliases: ['山羊', '奶山羊', '羊'],
+    group: 'cow',
+    price: 90,
+    feedCost: 4,
+    cycleHours: 24,
+    cycleProductId: 'goat_milk',
+    cycleProductName: '鲜羊奶',
+    cycleProductKind: 'egg_dairy',
+    cycleYield: 2,
+    matureHours: 168,
+    harvestProductId: 'mutton',
+    harvestProductName: '冷鲜精选羊肉',
+    harvestProductKind: 'meat',
+    harvestYield: 4,
+    harvestStyle: 'coop_exchange',
+    note: '需签约城郊农牧场；每天挤 2 瓶鲜羊奶，满 7 天可交合作社换冷鲜羊肉。',
+  },
+  {
+    id: 'wool_sheep',
+    name: '软毛绵羊',
+    aliases: ['绵羊', '小绵羊', '羊毛'],
+    group: 'cow',
+    price: 95,
+    feedCost: 4,
+    cycleHours: 24,
+    cycleProductId: 'wool',
+    cycleProductName: '软绵羊毛',
+    cycleProductKind: 'craft_mat',
+    cycleYield: 2,
+    matureHours: 192,
+    harvestProductId: 'wool',
+    harvestProductName: '精品秋剪羊毛',
+    harvestProductKind: 'craft_mat',
+    harvestYield: 5,
+    harvestStyle: 'eco_collect',
+    note: '纯剪毛治愈畜棚，定期剃毛换清爽，羊毛专供织造手作台。',
+  },
+  {
+    id: 'black_pig',
+    name: '芦花小黑猪',
+    aliases: ['黑猪', '小黑猪', '猪'],
+    group: 'cow',
+    price: 85,
+    feedCost: 5,
+    cycleHours: 0,
+    cycleYield: 0,
+    matureHours: 168,
+    harvestProductId: 'pork',
+    harvestProductName: '冷鲜五花排骨',
+    harvestProductKind: 'meat',
+    harvestYield: 5,
+    harvestStyle: 'coop_exchange',
+    note: '无需每天收副产的省心畜棚；满 7 天由镇上合作社车队接走，换回冷鲜五花排骨。',
   },
 ];
 
@@ -336,7 +640,7 @@ export function applyRentRanch(
   opts: { byUser?: boolean } = {},
 ): { ok: boolean; reason?: string; paid: number; cash: number } {
   if (state.ranch.leased) {
-    return { ok: false, reason: '已经签约了城郊农牧场（+2鸡/+2牛/+2鱼，月租 240 元）。', paid: 0, cash: state.money.cash };
+    return { ok: false, reason: '已经签约了城郊农牧场（+3禽/+3畜/+3鱼，月租 240 元）。', paid: 0, cash: state.money.cash };
   }
   if (state.money.cash < RANCH_SIGNUP_FEE) {
     return {
@@ -482,7 +786,11 @@ export function applyFeedAnimal(
   let stopReason = '';
   for (const target of targets) {
     const def = findAnimal(target.animalId) ?? ANIMALS[0];
-    if (state.money.cash < def.feedCost) {
+    const baitIdx = (def.group === 'fish' || def.group === 'chicken')
+      ? state.pantry.findIndex((p) => p.itemId === 'fish_bait' && p.qty >= 1)
+      : -1;
+    const useBait = baitIdx >= 0;
+    if (!useBait && state.money.cash < def.feedCost) {
       stopReason = `给「${target.name}」买饲料要 ${def.feedCost} 元，手上现金不够了。`;
       break;
     }
@@ -490,9 +798,15 @@ export function applyFeedAnimal(
       stopReason = `精力只剩 ${Math.round(state.vitals.energy)} 点了，歇一歇再去喂食吧。`;
       break;
     }
-    state.money.cash -= def.feedCost;
-    state.money.spent += def.feedCost;
-    totalPaid += def.feedCost;
+    if (useBait) {
+      const bait = state.pantry[baitIdx]!;
+      bait.qty -= 1;
+      if (bait.qty <= 0) state.pantry.splice(baitIdx, 1);
+    } else {
+      state.money.cash -= def.feedCost;
+      state.money.spent += def.feedCost;
+      totalPaid += def.feedCost;
+    }
     if (!opts.byUser) state.vitals.energy = Math.max(0, state.vitals.energy - 3);
     target.feedCount += 1;
     target.fedAt = now.toISOString();
@@ -594,7 +908,7 @@ export function applyHarvestRanch(
   penId: string,
   now: Date,
   opts: { byUser?: boolean; ranchYieldBonus?: number; fishYieldBonus?: number } = {},
-): { ok: boolean; reason?: string; harvested: { name: string; qty: number }[]; totalQty: number } {
+): { ok: boolean; reason?: string; harvested: { name: string; qty: number }[]; totalQty: number; messages?: string[] } {
   if (!state.ranch.pens.length) {
     return { ok: false, reason: '养殖栏位眼下都空着呢。', harvested: [], totalQty: 0 };
   }
@@ -603,10 +917,14 @@ export function applyHarvestRanch(
     return { ok: false, reason: `没找到 id 为「${penId}」的栏位。`, harvested: [], totalQty: 0 };
   }
 
-  // 不传 penId 时，仅自动起塘已成熟的鱼塘，避免误把持续产蛋产奶的鸡牛一键出栏
+  // 不传 penId 时，仅自动起塘已成熟且无周期采收的鱼塘（排除持续产珠的 pond_mussel 与禽舍/畜棚）
   const candidates = target
     ? [target]
-    : state.ranch.pens.filter((p) => p.group === 'fish' && Date.parse(p.matureAt) <= now.getTime());
+    : state.ranch.pens.filter((p) => (
+      p.group === 'fish'
+      && (findAnimal(p.animalId)?.cycleHours ?? 0) === 0
+      && Date.parse(p.matureAt) <= now.getTime()
+    ));
 
   if (!candidates.length) {
     const earliest = state.ranch.pens
@@ -615,7 +933,7 @@ export function applyHarvestRanch(
     return {
       ok: false,
       reason: earliest
-        ? `暂时没有可直接自动起塘的鱼塘（鸡舍和牛棚需指定栏位出栏）。最近一期「${earliest.name}」育成还需 ${earliest.daysLeft} 天。`
+        ? `暂时没有可直接自动起塘的鱼塘（禽舍、畜棚及育珠池需指定栏位操作）。最近一期「${earliest.name}」育成还需 ${earliest.daysLeft} 天。`
         : '暂时没有成熟可收获的养殖产出。',
       harvested: [],
       totalQty: 0,
@@ -633,6 +951,7 @@ export function applyHarvestRanch(
   }
 
   const harvested: { name: string; qty: number }[] = [];
+  const messages: string[] = [];
   let totalQty = 0;
   const harvestedIds = new Set<string>();
   for (const pen of candidates) {
@@ -651,6 +970,13 @@ export function applyHarvestRanch(
       unitCost,
       acquiredAt: now.toISOString(),
     });
+    const style = def.harvestStyle ?? (pen.group === 'fish' ? 'pond_net' : 'coop_exchange');
+    const styleMsg = style === 'coop_exchange'
+      ? `满龄的「${def.name}」已由镇上合作社的冷链车队稳妥接走，按约定结算回 ${def.harvestProductName}×${qty}，冷鲜食材已直接入储物篮。`
+      : style === 'pond_net'
+        ? `在鱼塘收网起塘，收获了新鲜的 ${def.harvestProductName}×${qty}，放进了储物篮。`
+        : `完成本轮温和采收，收好了 ${def.harvestProductName}×${qty} 放进储物篮，小家伙也妥善安置好了。`;
+    messages.push(styleMsg);
     harvested.push({ name: def.harvestProductName, qty });
     totalQty += qty;
     harvestedIds.add(pen.id);
@@ -667,9 +993,9 @@ export function applyHarvestRanch(
     kind: 'good',
     expiresAt: new Date(now.getTime() + 5 * 3_600_000).toISOString(),
   });
-  pushMemory(state, `${opts.byUser ? '你在面板上帮忙起塘/收获了' : '从农牧场收获了'} ${sumStr}，放进了储物篮。`, now);
+  pushMemory(state, messages.length === 1 ? messages[0]! : `${opts.byUser ? '你在面板上帮忙起塘/收获了' : '从农牧场收获了'} ${sumStr}，放进了储物篮。`, now);
   state.updatedAt = now.toISOString();
-  return { ok: true, harvested, totalQty };
+  return { ok: true, harvested, totalQty, messages };
 }
 
 /* ------------------------------------------------------------------ */
@@ -857,7 +1183,7 @@ export function countPendingFarmWork(
       collectablePens += 1;
       penNeedsWork = true;
     }
-    if (mode === 'full' && pen.group === 'fish' && Date.parse(pen.matureAt) <= nowMs) {
+    if (mode === 'full' && pen.group === 'fish' && (def?.cycleHours ?? 0) === 0 && Date.parse(pen.matureAt) <= nowMs) {
       readyFishPens += 1;
       penNeedsWork = true;
     }
@@ -1069,25 +1395,26 @@ function runHelperTasksForDate(
 
     const keepPens: RanchPen[] = [];
     for (const pen of state.ranch.pens) {
-      if (pen.group !== 'fish' || Date.parse(pen.matureAt) > nowMs) {
+      const def = findAnimal(pen.animalId);
+      if (pen.group !== 'fish' || (def?.cycleHours ?? 0) > 0 || Date.parse(pen.matureAt) > nowMs) {
         keepPens.push(pen);
         continue;
       }
-      const def = findAnimal(pen.animalId) ?? ANIMALS[0];
+      const defUse = def ?? ANIMALS[0];
       const view = ranchPenView(pen, dayDate);
       const qty = view.harvestYield;
-      const unitCost = calcHarvestProductUnitCost(def, pen, qty);
+      const unitCost = calcHarvestProductUnitCost(defUse, pen, qty);
       addPantryItem(state.pantry, {
-        itemId: def.harvestProductId,
-        kind: def.harvestProductKind,
-        name: def.harvestProductName,
+        itemId: defUse.harvestProductId,
+        kind: defUse.harvestProductKind,
+        name: defUse.harvestProductName,
         qty,
         freshVeg: true,
         origin: 'ranch',
         unitCost,
         acquiredAt: dayDate.toISOString(),
       });
-      harvestedItems.set(def.harvestProductName, (harvestedItems.get(def.harvestProductName) ?? 0) + qty);
+      harvestedItems.set(defUse.harvestProductName, (harvestedItems.get(defUse.harvestProductName) ?? 0) + qty);
     }
     state.ranch.pens = keepPens;
   }

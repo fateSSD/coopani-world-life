@@ -550,7 +550,7 @@ console.log('\n[28] 职业：门槛决定工资（2026-11-15）');
   const care = applyWork(s, '护工', t2);
   ok(care.ok && care.started, '护工开工');
   advance(s, new Date(t2.getTime() + (care.minutes || 360) * 60_000));
-  ok(s.money.cash - cashBeforeCare === 260, '有证之后护工一天 260', String(s.money.cash - cashBeforeCare));
+  ok(s.money.cash - cashBeforeCare === 252, '有证之后护工一天 260（先垫付 8 元耗材，净增 252）', String(s.money.cash - cashBeforeCare));
 
   /* 同一张证不用考两遍 */
   const again = applyCert(s, '护工证', t2, 0);
@@ -1664,13 +1664,13 @@ console.log('\n[56] 18 种种子、养殖场（鸡舍/牛棚/鱼塘）按天扣�
   const s = freshState(t0);
   s.home.monthly = 0;
 
-  ok(SEEDS.length === 18, '种子目录已扩充至 18 种', String(SEEDS.length));
-  ok(ANIMALS.length === 4, '养殖目录包含 4 种品类（土鸡/奶牛/草鱼/鲈鱼）', String(ANIMALS.length));
-  ok(RECIPES.length === 18, '菜谱库包含 18 道分级菜谱', String(RECIPES.length));
+  ok(SEEDS.length === 35, '种子目录已扩充至 35 种', String(SEEDS.length));
+  ok(ANIMALS.length === 20, '养殖目录包含 20 种品类', String(ANIMALS.length));
+  ok(RECIPES.length === 45, '菜谱库包含 45 道分级菜谱', String(RECIPES.length));
 
   // 城中村 0 养殖位拦截土鸡/奶牛
   const noPen = applyBuyAnimal(s, '散养土鸡', t0);
-  ok(!noPen.ok && noPen.reason?.includes('鸡舍'), '城中村 0 栏位拦截放养土鸡');
+  ok(!noPen.ok && noPen.reason?.includes('禽舍'), '城中村 0 栏位拦截放养土鸡');
 
   // 搬入老小区自带 1 个鸡舍位
   s.home.tier = 'old';

@@ -17,14 +17,17 @@ import {
   PENDING_BLOCK_LABEL, PENDING_TTL_DAYS, StateStore, VITAL_LABEL, SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG,
   HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_MONTHLY_RENT, LEASE_SIGNUP_FEE, SEEDS, STALL_CATEGORY_LABEL, STALL_RULES_GUIDE,
   ANIMAL_GROUP_LABEL, HOME_RANCH_SLOTS, RANCH_LEASE_SLOTS, RANCH_SIGNUP_FEE, RANCH_MONTHLY_RENT, ANIMALS, HELPER_PLANS, NEIGHBOR_ERRAND_TTL_HOURS,
-  RECIPES,
+  RECIPES, WORKBENCH_RECIPES,
+  EQUIP_MAINTAIN, equipMaintainName, CITY_SPECIALTIES, specialtiesForCity, normalizeCityName,
   advance, applyAct, applyMove, applyStreetMove, applySpend, applyWork, applyCert, applyLearn, applyGift, asleepRefusal, busyRefusal, freshState, isAsleep, isBusy, isCruiseJourney, isThemeCruiseJourney, isRiverCruiseJourney, isScenicTrainJourney, isCampervanJourney,
+  applyMaintainEquip, applyBuySpecialty, applyUseSpecialty,
   applyPlant, applyWater, applyHarvest, applyRentFarm, applyUnrentFarm, farmPlotView, addPantryItem, consumePantry, pantryCount, evaluateStallPlan, solarTermOf,
   consumeCookedDish, cookedDishCount,
   applyRentRanch, applyUnrentRanch, applyBuyAnimal, applyFeedAnimal, applyCollectRanch, applyHarvestRanch, ranchPenView,
   countPendingFarmWork, calcNeighborErrandQuote, parseErrandMinutes, recordPostedNeighborErrand,
   applyNeighborErrandCompleted, refundExpiredErrand, applyHireHelper, applyUnhireHelper,
   findRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
+  findWorkbenchRecipe, evaluateAllWorkbenchRecipes, applyWorkbenchCraft,
   clampRentMult, effectiveHomeMonthly, normalizeMoodBonus,
   jobGate, localDateKey, noteVisit, quoteMove, readyGoals,
   isHouseboundSick, sickRefusal, applyUserCare, skillPayMultiplier,
@@ -62,6 +65,20 @@ import { findJob } from './jobs.ts';
  * 扩展永远起不来 —— 看起来完全不像路径问题。
  */
 const ENV_PROMPT_FILE = fileURLToPath(new URL('../ENV_PROMPT.md', import.meta.url));
+
+let cachedSponsorQrDataUrl: string | null | undefined;
+function readSponsorQrDataUrl(): string | null {
+  if (cachedSponsorQrDataUrl !== undefined) return cachedSponsorQrDataUrl;
+  try {
+    const p = fileURLToPath(new URL('../assets/sponsor-alipay.jpg', import.meta.url));
+    if (!existsSync(p)) return null;
+    const b64 = readFileSync(p).toString('base64');
+    cachedSponsorQrDataUrl = `data:image/jpeg;base64,${b64}`;
+    return cachedSponsorQrDataUrl;
+  } catch {
+    return null;
+  }
+}
 
 export interface LifeWorldOptions {
   cfg: LifeConfigSection;
@@ -892,6 +909,17 @@ export class LifeWorld implements World {
     return String(this.cfg.homeCity || '').trim() || this.town.name.trim() || '兰州';
   }
 
+  /** 当前已安顿/驻留所在城市（traveling 在途时不泄露目的地城市，保留常驻城口径）。 */
+  private settledCityName(j?: JourneyView): string {
+    if (j?.installed && j.phase === 'staying' && j.cityName.trim()) {
+      return normalizeCityName(j.cityName);
+    }
+    if ((this.town.source === 'server' || this.town.source === 'own') && this.town.name.trim()) {
+      return normalizeCityName(this.town.name);
+    }
+    return normalizeCityName(String(this.cfg.homeCity || '').trim() || this.town.name.trim() || '兰州');
+  }
+
   private activeExternalWeatherOverride(city: string): ExternalWeatherOverride | null {
     const mode = this.weatherMode();
     const url = normWeatherUrl(this.cfg.weatherUrl);
@@ -1682,11 +1710,12 @@ export class LifeWorld implements World {
           seatId: j.seatId,
           seat: j.seat,
           journeyCity: j.installed ? j.cityName : '',
+          currentCity: this.settledCityName(j),
           streetMods: this.currentStreetMods(),
           townBuffs: this.currentTownBuffs(),
         });
       }
-      const s = snapshot(previewState, now, this.activeExternalWeatherOverride(this.weatherCityName(j)));
+      const s = snapshot(previewState, now, this.activeExternalWeatherOverride(this.weatherCityName(j)), this.settledCityName(j));
       const body = (Object.keys(VITAL_LABEL) as VitalKey[])
         .map((k) => `${VITAL_LABEL[k]} ${Math.round(s.vitals[k])}`)
         .join(' ');
@@ -1976,6 +2005,7 @@ export class LifeWorld implements World {
       seatId: this.journey.seatId,
       seat: this.journey.seat,
       journeyCity: this.journey.installed ? this.journey.cityName : '',
+      currentCity: this.settledCityName(this.journey),
       streetMods: this.currentStreetMods(),
       townBuffs: this.currentTownBuffs(),
     });
@@ -2276,6 +2306,20 @@ export class LifeWorld implements World {
                   ? `${c.label}（【${c.outputItem.qualityLabel}】${c.outputItem.name}）`
                   : c.label,
         });
+        if (c.maintainPaid && c.maintainPaid > 0) {
+          appendLedger(this.opts.dataDir, {
+            id: `work-maint-${c.id}-${now.getTime().toString(36)}`,
+            ts: now.toISOString(),
+            kind: 'expense',
+            amount: c.maintainPaid,
+            source: 'life_maintain',
+            payee: '装备检修铺',
+            note: `${c.maintainLabel ?? c.label}定期保养`,
+          });
+        }
+        if (c.streakNotice) {
+          remember(this.state, c.streakNotice, now);
+        }
         if (c.loanGarnished && c.loanGarnished.deductedTotal > 0) {
           appendLedger(this.opts.dataDir, {
             id: `loan-garnish-work-${c.id}-${now.getTime().toString(36)}`,
@@ -2397,6 +2441,19 @@ export class LifeWorld implements World {
         text: `你的「${rv.cert}」满一个月月度核验时见识只有 ${rv.knowledge}（需 ${rv.need}），证书已被吊销，请重新看书攒够见识再考。`,
         trigger: 'flush',
       });
+    }
+    for (const rf of r.certRenewFees ?? []) {
+      if (rf.fee > 0) {
+        appendLedger(this.opts.dataDir, {
+          id: `cert-renew-${rf.cert}-${now.getTime().toString(36)}`,
+          ts: now.toISOString(),
+          kind: 'expense',
+          amount: rf.fee,
+          source: 'life_cert_renew',
+          payee: '考证中心',
+          note: `月度复核轻续期费：${rf.cert}`,
+        });
+      }
     }
     if ((r.certRevoked?.length ?? 0) > 0) {
       this.broadcastLife(now);
@@ -2614,6 +2671,7 @@ export class LifeWorld implements World {
       seatId: this.journey.seatId,
       seat: this.journey.seat,
       journeyCity: this.journey.installed ? this.journey.cityName : '',
+      currentCity: this.settledCityName(this.journey),
       streetMods: this.currentStreetMods(),
       townBuffs: this.currentTownBuffs(),
     });
@@ -3133,7 +3191,7 @@ export class LifeWorld implements World {
         await this.settleBeforeTool(now);
         const j = readJourney(this.opts.dataDir, now);
         this.journey = j;
-        const s = snapshot(this.state, now, this.activeExternalWeatherOverride(this.weatherCityName(j)));
+        const s = snapshot(this.state, now, this.activeExternalWeatherOverride(this.weatherCityName(j)), this.settledCityName(j));
         return { text: this.statusText(s, j, now) };
       },
     };
@@ -3297,9 +3355,9 @@ export class LifeWorld implements World {
       description:
         '去上班/出工挣钱。**一天一次**，按你本地的自然日算，**而且需要占用一段完整工时** —— '
         + '零工约 3–4 小时（100–120 元）、熟练活约 4.5–5 小时（165–195 元，需满 30 天或自备轻载具）、'
-        + '有证岗 5.5–6 小时（260–310 元，需考证或装备）、专业岗 7–8 小时（380–450 元，需考证+出工积累）。'
+        + '有证岗 5.5–6 小时（260–310 元，需考证或装备）、专业岗 7–8 小时（380–450 元，需考证+出工积累）；部分岗位限兰州或北京本地承接。'
         + '对应领域熟练度越高日薪加成越高（最高 +50%），且摄影/手艺/写作/烹饪/跑单类活在熟练度、心情加持下可产出四档品质作品（普通/良品/精品/臻品）；'
-        + '干活期间社交不会掉，但精力、清爽、饱腹和少量娱乐（5–6 点）会消耗；干完收工才发全薪。'
+        + '部分工种开工前须先垫付少量耗材或油电成本，常用装备到次数周期会触发保养检修（缺钱拖欠保养会暂锁对应装备）；干活期间社交不会掉（外向导览/交际类反而不掉或微涨），精力、清爽、饱腹按岗位耗损且重体力/农艺活收工涨体质，干完收工才发全薪。'
         + '感冒或过劳静养期间出不了家门干活。'
         + '中途可用 `life_act` 的 `cancel` 早退：干满 30 分钟按比例打六折、不满 30 分钟白干，都不涨工龄且当天不能重接。'
         + '精力低于 20 或正在做别的事时去不了。',
@@ -3309,7 +3367,7 @@ export class LifeWorld implements World {
         properties: {
           what: {
             type: 'string',
-            description: '今天干什么活，一句话。不填且之前没定过活时，会先按当前条件列出可接的 3–5 项。',
+            description: '今天干什么活，一句话。不填且之前没定过活时，会先按当前条件与所在城市列出可接的 3–5 项。',
           },
         },
       },
@@ -3320,15 +3378,16 @@ export class LifeWorld implements World {
         const j = readJourney(this.opts.dataDir, now);
         this.journey = j;
         const phase = j.installed && (j.phase === 'staying' || j.phase === 'traveling') ? j.phase : 'home';
+        const city = this.settledCityName(j);
         const what = String(args?.what ?? '').trim();
         if (!what && !this.state.job.what) {
-          const avail = JOBS.filter((job) => jobAllowedAt(job, phase) && jobGate(this.state, job, phase) === null).slice(0, 5);
-          const fallback = avail.length ? avail : JOBS.filter((job) => jobAllowedAt(job, phase)).slice(0, 5);
+          const avail = JOBS.filter((job) => jobAllowedAt(job, phase, city) && jobGate(this.state, job, phase, city) === null).slice(0, 5);
+          const fallback = avail.length ? avail : JOBS.filter((job) => jobAllowedAt(job, phase, city)).slice(0, 5);
           return {
-            text: `现在可接的活（挑一个填进 what）：${fallback.map((a) => `${a.name}（${a.pay}元/${a.minutes}分钟${a.equip ? '·自备家伙' : ''}）`).join('、')}。`,
+            text: `现在${phase === 'traveling' ? '在路上' : `在${city}`}可接的活（挑一个填进 what）：${fallback.map((a) => `${a.name}（${a.pay}元/${a.minutes}分钟${a.materialCost ? `·垫${a.materialCost}元` : ''}${a.equip ? '·自备家伙' : ''}）`).join('、')}。`,
           };
         }
-        const r = applyWork(this.state, what, now, phase, phase === 'home' ? this.currentStreetMods() : undefined);
+        const r = applyWork(this.state, what, now, phase, phase === 'home' ? this.currentStreetMods() : undefined, city);
         if (!r.ok) {
           try { this.store.save(this.state); } catch { /* ignore */ }
           return { text: r.reason ?? '今天去不了。' };
@@ -4025,15 +4084,20 @@ export class LifeWorld implements World {
     return {
       name: 'life_learn',
       description:
-        '报名手艺培训班（烹饪/影像/文字/手作/体力/交际/办事/驾驶）或购置工具与轻载具（如家用小烤箱/老式缝纫机/二手胶片微单/二手笔记本电脑/折叠自行车/二手电动车）。'
-        + '不传参数先看可报课程与待买装备清单；传入名称或 id 即上课扣精力长熟练度，或花钱把家伙配齐（配齐后才能接对应手艺单和跑单活）。',
+        '报名手艺培训班（烹饪/影像/文字/手作/体力/交际/办事/驾驶）、购置工具与轻载具（如家用小烤箱/老式缝纫机/手冲咖啡套组/二手胶片微单/二手笔记本电脑/折叠自行车/二手电动车/园艺修枝工具箱），或检修保养到期的装备与载具。'
+        + '不传参数先看可报课程、待买装备清单与当前保养状态；传入 action="maintain"（或 what="保养 ..."）可检修到期装备解除接活限制。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          action: {
+            type: 'string',
+            enum: ['list', 'learn', 'maintain'],
+            description: '可选操作：list(看课程/装备/保养状态)/learn(报课或买装备，默认)/maintain(检修保养到期装备)。',
+          },
           what: {
             type: 'string',
-            description: '要报名的课程名/领域，或要购买的装备/轻载具名。不填先看清单和当前熟练度。',
+            description: '要报名的课程名/领域、要购买的装备/轻载具名，或 maintain 时要检修的装备名（不填则保养全部待维护项）。',
           },
         },
       },
@@ -4041,13 +4105,44 @@ export class LifeWorld implements World {
       handler: async (args: any) => {
         const now = this.now();
         await this.settleBeforeTool(now);
+        const action = String(args?.action ?? '').trim();
         const what = String(args?.what ?? '').trim();
-        if (!what || what === 'list') {
+        if (action === 'maintain' || /^(?:保养|检修|维护)(?:\s|$|[:：])/.test(what)) {
+          const target = what.replace(/^(?:保养|检修|维护)[:：\s]*/, '').trim();
+          const mr = applyMaintainEquip(this.state, target, now);
+          if (!mr.ok) {
+            try { this.store.save(this.state); } catch { /* ignore */ }
+            return { text: mr.reason ?? '这次没保养成。' };
+          }
+          if (mr.paid > 0) {
+            appendLedger(this.opts.dataDir, {
+              id: `equip-maint-${now.getTime().toString(36)}`,
+              ts: now.toISOString(),
+              kind: 'expense',
+              amount: mr.paid,
+              source: 'life_maintain',
+              payee: '装备检修铺',
+              note: `保养：${mr.repaired.map((x) => x.name).join('、')}`,
+            });
+          }
+          try { this.store.save(this.state); } catch { /* 下一跳会再存 */ }
+          this.broadcastLife(now);
+          return {
+            text: `把「${mr.repaired.map((x) => `${x.name} ${x.cost}元`).join('、')}」检修保养好了，花了 ${mr.paid} 元，手上剩 ${Math.round(mr.cash)} 元。`,
+          };
+        }
+        if (action === 'list' || !what || what === 'list') {
           const skillsLine = (Object.keys(SKILL_DOMAIN_LABEL) as SkillDomain[])
             .map((k) => `${SKILL_DOMAIN_LABEL[k]} ${Math.round(this.state.skills[k] ?? 0)}`)
             .join(' / ');
           const gearOwned = this.state.gear.length
-            ? this.state.gear.map((id) => EQUIP_CATALOG.find((e) => e.id === id)?.name ?? id).join('、')
+            ? this.state.gear.map((id) => {
+              const name = EQUIP_CATALOG.find((e) => e.id === id)?.name ?? id;
+              const used = this.state.equipUsage?.[id] ?? 0;
+              const rule = EQUIP_MAINTAIN[id];
+              const pend = (this.state.equipPendingMaintain ?? []).includes(id) ? '【待保养】' : '';
+              return rule ? `${name}(用${used}/${rule.every}次)${pend}` : name;
+            }).join('、')
             : '暂无';
           const courses = TRAIN_COURSES.map((c) => `${c.name}（${SKILL_DOMAIN_LABEL[c.domain]}，${c.price}元）`).join('；');
           const tbList = this.currentTownBuffs();
@@ -4055,10 +4150,13 @@ export class LifeWorld implements World {
           const eqMult = Number.isFinite(rawEqMult) && rawEqMult > 0 ? Math.max(0.5, Math.min(2.0, rawEqMult)) : 1;
           const equips = EQUIP_CATALOG.filter((e) => !this.state.gear.includes(e.id))
             .map((e) => `${e.name}（${Math.max(1, Math.round(e.price * eqMult))}元）`).join('；');
+          const pendLine = (this.state.equipPendingMaintain ?? []).length
+            ? `\n待检修：${this.state.equipPendingMaintain!.map((k) => `${equipMaintainName(k)}(¥${EQUIP_MAINTAIN[k]?.cost ?? 0})`).join('、')}，传 action="maintain" 即可修好。`
+            : '';
           return {
             text: `当前熟练度：${skillsLine}。已备家伙：${gearOwned}。\n`
               + `可报培训：${courses}。\n`
-              + `${equips ? `可买装备/载具：${equips}。` : '清单装备都已配齐。'}`,
+              + `${equips ? `可买装备/载具：${equips}。` : '清单装备都已配齐。'}${pendLine}`,
           };
         }
         const tbLearn = this.currentTownBuffs();
@@ -4097,12 +4195,17 @@ export class LifeWorld implements World {
     return {
       name: 'life_buy',
       description:
-        '去晨集、尾货摊或鱼市街看看今天有什么可买的，接入 Hub v1 多城总服时还能跨城逛别座城的特产摊位（明算跨城快递费），也可接下同城街坊发出的农牧代管委托帮忙干活挣零花钱（不传参数看摊位、邻里委托与街口黑板报，传委托编号或摊位/菜名到 stall_id 就购买或接单；接邻里代管委托不扣钱且仅限本城、干完领工钱且不占今天正式打工额度；买鲜蔬果品还会收入储物篮供下厨与摆摊）。',
+        '去所在城市晨集、尾货摊或鱼市街看看今天有什么可买的（支持兰州/北京双城时令与本地特色铺），接入 Hub v1 多城总服时还能跨城逛别座城的特产摊位（明算跨城快递费），也可接下同城街坊发出的农牧代管委托帮忙干活挣零花钱；还可用 action="buy_specialty" 购入所在城风物特产（14 项风味好物），或 action="use_specialty" 享用随身背包里的特产。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          stall_id: { type: 'string', description: '摊位编号、邻里代管委托编号（支持写「最短」直接接耗时最短的那份）或早市/尾货/节气菜名；不填则先逛逛看看价。' },
+          action: {
+            type: 'string',
+            enum: ['market', 'buy_specialty', 'use_specialty'],
+            description: '可选操作：market(逛市集/买摊货/接委托，默认)/buy_specialty(买当前城市本地特产)/use_specialty(使用背包里的城市特产)。',
+          },
+          stall_id: { type: 'string', description: '摊位编号、邻里代管委托编号（支持写「最短」直接接耗时最短的那份）、早市/尾货/节气菜名，或 buy_specialty/use_specialty 时的特产名称；不填则先逛逛看看价。' },
         },
       },
       tags: ['write'],
@@ -4112,7 +4215,54 @@ export class LifeWorld implements World {
         const generation = this.stateGeneration;
         const cleared = () => ({ text: '生活档案刚刚被清理，这次旧购买操作已停止，未写入新档案。' });
         if (isBusy(this.state, now)) return { text: busyRefusal(this.state, now, '去鱼市街') };
+        const j = readJourney(this.opts.dataDir, now);
+        this.journey = j;
+        const settledCity = this.settledCityName(j);
+        const action = String(args?.action ?? 'market').trim() || 'market';
         const pick = String(args?.stall_id ?? '').trim();
+
+        if (action === 'buy_specialty') {
+          if (j.installed && j.phase === 'traveling') {
+            return { text: `这会儿人在往${j.toName || '下一站'}去的路上，进站安顿下来后再逛当地特产铺吧。` };
+          }
+          const sr = applyBuySpecialty(this.state, pick, settledCity, now);
+          if (!sr.ok) {
+            try { this.store.save(this.state); } catch { /* ignore */ }
+            return { text: sr.reason ?? '这次特产没买成。' };
+          }
+          if (sr.paid > 0 && sr.spec) {
+            appendLedger(this.opts.dataDir, {
+              id: `spec-buy-${sr.spec.id}-${now.getTime().toString(36)}`,
+              ts: now.toISOString(),
+              kind: 'expense',
+              amount: sr.paid,
+              source: 'life_specialty',
+              payee: `${sr.spec.city}特产铺`,
+              note: `特产：${sr.spec.name}`,
+            });
+          }
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          const placeDesc = sr.intoPantry ? '已收入储物篮做原料' : `共 ${sr.chargesAdded} 次可用，已收进随身特产包`;
+          const knowTxt = sr.knowGained ? `，初识见识 +${sr.knowGained}` : '';
+          return {
+            text: `在${sr.spec!.city}特产铺买下了「${sr.spec!.name}」（${sr.paid} 元，${placeDesc}${knowTxt}），手上剩 ${Math.round(sr.cash)} 元。`,
+          };
+        }
+
+        if (action === 'use_specialty') {
+          const ur = applyUseSpecialty(this.state, pick, now);
+          if (!ur.ok) {
+            try { this.store.save(this.state); } catch { /* ignore */ }
+            return { text: ur.reason ?? '这会儿用不了手头的特产。' };
+          }
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          const fxTxt = ur.appliedParts?.length ? `（${ur.appliedParts.join('、')}）` : '';
+          const leftTxt = (ur.remainingCharges ?? 0) > 0 ? `，还剩 ${ur.remainingCharges} 次` : '，这份刚好用完了';
+          return { text: `享用了手头的特产「${ur.name}」${fxTxt}${leftTxt}。` };
+        }
+
         if (pick) {
           const sickR = sickRefusal(this.state, now, '出门买货或接委托');
           if (sickR) return { text: sickR };
@@ -4150,9 +4300,12 @@ export class LifeWorld implements World {
             this.townBulletin = remote.bulletin;
             this.updateTownStallsCache(remote.stalls, myName);
           }
-          const local = fullMarketPrices(now);
-          const s = snapshot(this.state, now);
+          const local = fullMarketPrices(now, settledCity);
+          const s = snapshot(this.state, now, undefined, settledCity);
           const winTxt = s.streetWindow ? `此刻「${s.streetWindow.place}${s.streetWindow.label}」开着（${s.streetWindow.hint}）。` : '';
+          const specList = specialtiesForCity(settledCity);
+          const specHint = specList.length ? `\n${settledCity}特产铺（传 action="buy_specialty" 可囤）：${specList.map((sp) => `${sp.name}(${sp.price}元/${sp.charges ?? 1}次)`).join('、')}。` : '';
+          const bagHint = (this.state.specialties ?? []).length ? `\n随身特产包：${this.state.specialties!.map((b) => `${b.name}×${b.charges}`).join('、')}。` : '';
           const boardTxt = this.townBulletin.length ? `\n街口黑板报：${this.townBulletin.slice(0, 3).join('；')}` : '';
           if (remote.ok && remote.stalls.length) {
             const hasErrands = remote.stalls.some((st) => st.kind === 'errand');
@@ -4174,11 +4327,11 @@ export class LifeWorld implements World {
                 const specTag = st.isSpecialty ? '[特产]' : '';
                 const noteTxt = st.note ? ` · 「${st.note}」` : '';
                 return `${specTag}${st.item} ${st.price}元${shipTag}（${st.seller}，id:${st.id}，${fx}${noteTxt}）`;
-              }).join('；')}。${errandGuide}${boardTxt}`,
+              }).join('；')}。${errandGuide}${specHint}${bagHint}${boardTxt}`,
             };
           }
           return {
-            text: `${winTxt}节气·${s.solarTerm.name}市集菜价：${local.map((p) => `${p.item}${p.discounted ? '[特惠]' : ''} ${p.price}元/${p.unit}`).join('；')}。想买哪个把名字写进 stall_id。${boardTxt}`,
+            text: `${winTxt}节气·${s.solarTerm.name}市集菜价：${local.map((p) => `${p.item}${p.discounted ? '[特惠]' : ''} ${p.price}元/${p.unit}`).join('；')}。想买哪个把名字写进 stall_id。${specHint}${bagHint}${boardTxt}`,
           };
         }
 
@@ -4309,7 +4462,7 @@ export class LifeWorld implements World {
           return { text: `鱼市街上没找着编号或委托「${pick}」，没有误买任何普通摊货。${errandListHint}` };
         }
         if (!item) {
-          const local = fullMarketPrices(now);
+          const local = fullMarketPrices(now, settledCity);
           const hit = local.find((p) => p.item === pick || p.item.includes(pick));
           if (!hit) {
             return { text: `没找着「${pick}」，今天摊上有：${local.map((p) => p.item).join('、')}。` };
@@ -4497,11 +4650,26 @@ export class LifeWorld implements World {
           );
           return d ? findRecipe(d.recipeId) : null;
         })();
+        const matchedWb = findWorkbenchRecipe(item);
+        const matchedWorkOut = (this.state.workOutputs ?? []).find(
+          (o) => (o.count ?? 0) > 0 && (o.name === item || o.name.includes(item) || item.includes(o.name)),
+        );
+        const hasBagSpec = (this.state.specialties ?? []).some(
+          (sp) => sp.charges > 0 && (sp.name === item || sp.name.includes(item) || item.includes(sp.name)),
+        );
+        const matchedSpecDef = hasBagSpec
+          ? (CITY_SPECIALTIES.find((sp) => sp.name === item || sp.name.includes(item) || item.includes(sp.name)) ?? null)
+          : null;
+        const autoSuggestedPrice = matchedRecipe?.suggestedPrice
+          ?? matchedWb?.suggestedPrice
+          ?? matchedWorkOut?.value
+          ?? matchedSpecDef?.price
+          ?? 0;
         const hasRawPrice = args?.price !== undefined && args?.price !== null && args?.price !== '';
         let price = hasRawPrice ? Math.round(Number(args?.price)) : NaN;
         let usedSuggestedPrice = false;
-        if (!hasRawPrice && matchedRecipe && matchedRecipe.suggestedPrice > 0) {
-          price = matchedRecipe.suggestedPrice;
+        if (!hasRawPrice && autoSuggestedPrice > 0) {
+          price = autoSuggestedPrice;
           usedSuggestedPrice = true;
         }
         const stock = args?.stock !== undefined ? Math.round(Number(args.stock)) : 3;
@@ -4586,8 +4754,37 @@ export class LifeWorld implements World {
           consumedSources.push(...usedCooked.sources);
           pantryUnitCostSum += usedCooked.totalUnitCost;
         }
+        if (plan.workOutputUsed > 0 && this.state.workOutputs?.length) {
+          let remW = plan.workOutputUsed;
+          for (const wo of this.state.workOutputs) {
+            if (remW <= 0) break;
+            if ((wo.count ?? 0) > 0 && (wo.name === item || wo.name.includes(item) || item.includes(wo.name))) {
+              const take = Math.min(remW, wo.count);
+              wo.count -= take;
+              remW -= take;
+              pantryUnitCostSum += take * Math.max(1, wo.value);
+              consumedSources.push(`工坊「${wo.name}」×${take}`);
+            }
+          }
+          this.state.workOutputs = this.state.workOutputs.filter((w) => w.count > 0);
+        }
+        if (plan.specialtyUsed > 0 && this.state.specialties?.length) {
+          let remS = plan.specialtyUsed;
+          for (const sp of this.state.specialties) {
+            if (remS <= 0) break;
+            if (sp.charges > 0 && (sp.name === item || sp.name.includes(item) || item.includes(sp.name))) {
+              const take = Math.min(remS, sp.charges);
+              sp.charges -= take;
+              remS -= take;
+              const sDef = CITY_SPECIALTIES.find((x) => x.id === sp.id);
+              pantryUnitCostSum += take * Math.max(1, sDef?.price ?? postedPrice);
+              consumedSources.push(`特产「${sp.name}」×${take}`);
+            }
+          }
+          this.state.specialties = this.state.specialties.filter((s) => s.charges > 0);
+        }
         if (plan.pantryUsed > 0) {
-          const used = consumePantry(this.state.pantry, plan.pantryUsed, { homeOnly: plan.category === 'produce' });
+          const used = consumePantry(this.state.pantry, plan.pantryUsed, { homeOnly: plan.category === 'produce', edibleOnly: true });
           consumedSources.push(...used.sources);
           pantryUnitCostSum += used.totalUnitCost;
         }
@@ -4874,11 +5071,11 @@ export class LifeWorld implements World {
     return {
       name: 'life_farm',
       description:
-        '打理家里阳台/院子的种植槽，或签约城郊菜地种慢熟果蔬（18 种节气作物，4–9 天成熟）：'
+        '打理家里阳台/院子的种植槽，或签约城郊菜地种慢熟果蔬（35 种节气果蔬粮薯与手作植料，4–9 天成熟）：'
         + 'action=status 看槽位、作物进度、储物篮与农牧代管状态；'
-        + 'plant 选种子播种（需空槽与种子费，莲藕/冬瓜/稻谷需 ≥2 槽）；'
+        + 'plant 选种子播种（需空槽与种子费，莲藕/冬瓜/稻谷等需 ≥2 槽）；'
         + 'water 浇水（每块地每天限 1 次，耗 3 精力，累计浇满 2 次收成 +1 份）；'
-        + 'harvest 采摘成熟作物入储物篮（供下厨按菜谱做菜或上鱼市街卖鲜蔬，顺手涨体质）；'
+        + 'harvest 采摘成熟作物入储物篮（供下厨按菜谱做菜、工作台手作或上鱼市街卖鲜蔬，顺手涨体质）；'
         + `rent 签约 ${LEASE_PLOT_COUNT} 槽城郊菜地（签约费 ${LEASE_SIGNUP_FEE} 元 + 月租 ${LEASE_MONTHLY_RENT} 元按天扣）；unrent 退租；`
         + 'hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天浇水喂食收蛋奶，或 full 农牧全托管20元/天并自动收菜起塘；prefer_neighbor 默认 true 优先发鱼市街邻里真鱼代管单¥6–15按量计价且6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手；'
         + 'accept_errand 查看或接取鱼市街街坊发出的邻里代管委托挣钱（不填 errand_id 列出在架委托，传入委托编号（如 `err_...` 或 16 位编号）或「最短」即可接单，不扣钱、不占今天正式打工额度）。',
@@ -4893,7 +5090,7 @@ export class LifeWorld implements World {
           },
           seed: {
             type: 'string',
-            description: 'plant 时传种子 id 或名字（支持 18 种，如 红薯、土豆、胡萝卜、大白菜、白萝卜、玉米、黄豆、冬瓜、菠菜、南瓜、稻谷、香葱、小青菜、西红柿、香菇、茄子、莲藕、草莓）。',
+            description: 'plant 时传种子 id 或名字（共 35 种，如 红薯、土豆、胡萝卜、大白菜、白萝卜、玉米、黄豆、冬瓜、菠菜、南瓜、稻谷、香葱、小青菜、西红柿、香菇、茄子、莲藕、草莓、水蜜桃、黄金枇杷、爆浆蓝莓、冰糖翠冠梨、蜜汁无花果、红灯甜柿子、清凉薄荷、洋甘菊与桂花、水乡脆茭白、黄金冬小麦等）。',
           },
           plot_id: {
             type: 'string',
@@ -5071,12 +5268,12 @@ export class LifeWorld implements World {
     return {
       name: 'life_ranch',
       description:
-        '打理自家小院与城郊农牧场的鸡舍、牛棚、鱼塘（大肥鱼本体是鲸鱼不算鱼，可放心养草鱼/鲈鱼收鲜鱼，另可养鸡收蛋收鸡肉、养牛挤奶收牛肉）：'
-        + 'action=status 查看鸡/牛/鱼栏位、产蛋产奶倒计时、养成进度与代管状态；'
-        + 'buy 放养幼苗（需对应栏位空位，城中村无栏位、老小区自带1鸡位、新小区1鸡+1鱼、别墅区2鸡+2鱼，签约城郊农牧场再加 +2鸡/+2牛/+2鱼）；'
+        '打理自家小院与城郊农牧场的禽舍、畜棚、鱼塘（共 20 种养殖品类；大肥鱼本体是鲸鱼不算鱼，可放心养淡水鱼虾贝，另可养禽收蛋收羽、养畜挤奶育毛绒）：'
+        + 'action=status 查看禽/畜/鱼栏位、产蛋产奶周期与养成进度；'
+        + `buy 放养幼苗（需对应栏位空位，城中村无栏位、老小区自带1禽位、新小区1禽+1鱼、别墅区2禽+2鱼，签约城郊农牧场再加 +${RANCH_LEASE_SLOTS.chicken}禽/+${RANCH_LEASE_SLOTS.cow}畜/+${RANCH_LEASE_SLOTS.fish}鱼）；`
         + 'feed 喂饲料（每天每栏限 1 次，扣精力 3 点与少量饲料费，增产 +1）；'
-        + 'collect 收取鲜鸡蛋与鲜牛奶进储物篮；'
-        + 'harvest 起塘收鲜鱼（不传 pen_id 自动收熟鱼塘）或指定鸡/牛 pen_id 出栏收土鸡肉/精选牛肉；'
+        + 'collect 收取蛋奶蜂蜡珍珠等周期产出进储物篮；'
+        + 'harvest 起塘收鱼或指定禽舍/畜棚 pen_id 经合作社冷链车队换购鲜肉；'
         + `rent 签约城郊农牧场（签约费 ${RANCH_SIGNUP_FEE} 元 + 月租 ${RANCH_MONTHLY_RENT} 元按天扣 8 元）；unrent 退租；`
         + 'hire 雇用农牧帮手（helper_mode=care 日常照料工12元/天，或 full 农牧全托管20元/天；prefer_neighbor 默认 true 优先找鱼市街真鱼代管¥6–15，6h无人接自动退回并转自动照料，当日活干完或空场0元免扣）；post_errand 单次发今日鱼市街邻里真鱼代管委托；unhire 解雇帮手；'
         + 'accept_errand 查看或接取鱼市街街坊发出的邻里代管委托挣钱（不填 errand_id 列出在架委托，传入委托编号（如 `err_...` 或 16 位编号）或「最短」即可接单，不扣钱、不占今天正式打工额度）。',
@@ -5087,11 +5284,11 @@ export class LifeWorld implements World {
           action: {
             type: 'string',
             enum: ['status', 'buy', 'feed', 'collect', 'harvest', 'rent', 'unrent', 'hire', 'post_errand', 'unhire', 'accept_errand'],
-            description: '操作类型：status(查看牧场，默认)/buy(放养)/feed(投喂)/collect(收蛋奶)/harvest(起塘或出栏)/rent(租城郊农牧场)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)/accept_errand(查看或接取鱼市街邻里委托挣钱)。',
+            description: '操作类型：status(查看牧场，默认)/buy(放养)/feed(投喂)/collect(收蛋奶副产)/harvest(起塘或出栏)/rent(租城郊农牧场)/unrent(退租)/hire(雇农牧帮手)/post_errand(发今日邻里真鱼代管委托)/unhire(解雇帮手)/accept_errand(查看或接取鱼市街邻里委托挣钱)。',
           },
           animal: {
             type: 'string',
-            description: 'buy 时传养殖品种 id 或名字（散养土鸡/农庄奶牛/塘养草鱼/清江鲈鱼）。',
+            description: 'buy 时传养殖品种 id 或名字（共 20 种，如 散养土鸡/农庄奶牛/塘养草鱼/清江鲈鱼/浅塘青虾/芦花肥鳜鱼/清水育珠蚌/芦花水鸭/长毛安哥拉兔/芦花木蜂箱/温顺奶山羊/软毛绵羊等）。',
           },
           pen_id: {
             type: 'string',
@@ -5188,11 +5385,11 @@ export class LifeWorld implements World {
             amount: r.paid,
             source: 'life_ranch',
             payee: '城郊农牧场',
-            note: '签约城郊农牧场（+2鸡/+2牛/+2鱼）',
+            note: `签约城郊农牧场（+${RANCH_LEASE_SLOTS.chicken}禽/+${RANCH_LEASE_SLOTS.cow}畜/+${RANCH_LEASE_SLOTS.fish}鱼）`,
           });
           this.saveDeliveredState();
           this.broadcastLife(now);
-          return { text: `签下城郊农牧场了！鸡舍、牛棚、鱼塘各多出 2 个栏位（签约费 ${r.paid} 元，往后按天扣月租 ${RANCH_MONTHLY_RENT} 元），手上剩 ${Math.round(r.cash)} 元。` };
+          return { text: `签下城郊农牧场了！禽舍、畜棚、鱼塘各多出 ${RANCH_LEASE_SLOTS.chicken} 个栏位（签约费 ${r.paid} 元，往后按天扣月租 ${RANCH_MONTHLY_RENT} 元），手上剩 ${Math.round(r.cash)} 元。` };
         }
 
         if (action === 'unrent') {
@@ -5281,27 +5478,28 @@ export class LifeWorld implements World {
     return {
       name: 'life_cook',
       description:
-        '对照储物篮里的具体食材按菜谱下厨（家常简食零门槛免厨师证，如炭烤红薯/烤土豆/葱油拌面/番茄鸡蛋汤；厨师招牌菜需厨师证或烹饪≥20，如西红柿炖牛腩/鲜鱼豆腐汤/香菇滑鸡煲）：'
-        + 'action=menu 查看眼下材料齐了能做什么菜、缺什么料与成品菜格余量；'
-        + 'cook 按菜谱下厨，可选 mode=eat(立刻做完趁热吃) 或 mode=store(做出 2 份存进成品菜格，后续可热吃或零原料费上鱼市街摆料理摊)；'
-        + 'eat_dish 加热吃之前存进成品菜格的菜。',
+        '对照储物篮食材按 45 道三档菜谱下厨（家常简食免证、厨师招牌菜、宴席硬菜含兰州/北京风味复刻），或在五大职业工作台手作 20 样文创/茶点/底片/手账/农牧加工品：'
+        + 'action=menu 查看眼下材料齐了能做什么菜、工作台可做成品与成品菜格余量；'
+        + 'cook 按菜谱下厨（eat 立刻吃 / store 存成品菜格可热吃或摆料理摊）；'
+        + 'eat_dish 加热吃成品菜格里的菜；'
+        + 'workbench 在工作台制作 20 项手作/文创/茶叶/胶片成品（产出进入工作台作品仓，可上鱼市街摆摊）。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
           action: {
             type: 'string',
-            enum: ['menu', 'cook', 'eat_dish'],
-            description: '操作类型：menu(看可做菜谱与储物篮匹配，默认)/cook(按菜谱下厨)/eat_dish(吃成品菜格里的菜)。',
+            enum: ['menu', 'cook', 'eat_dish', 'workbench'],
+            description: '操作类型：menu(看可做菜谱与工作台状态，默认)/cook(按菜谱下厨)/eat_dish(吃成品菜格里的菜)/workbench(五大职业工作台手作)。',
           },
           recipe: {
             type: 'string',
-            description: 'cook 时传菜谱 id 或菜名（如 炭烤红薯、番茄鸡蛋汤、西红柿炖牛腩、奶白鲜鱼豆腐汤）。',
+            description: 'cook 或 workbench 时传菜谱/工作台配方 id 或名字（如 炭烤红薯、一清二白牛肉面、老北京小碗干炸酱面、薄荷洋甘菊安神茶包、安哥拉兔绒软围巾）。',
           },
           mode: {
             type: 'string',
-            enum: ['eat', 'store'],
-            description: 'cook 时可选：eat(做好立刻吃，默认)/store(做出 2 份存入成品菜格，可留吃或摆料理摊)。',
+            enum: ['eat', 'store', 'use'],
+            description: 'cook 时可选 eat(做好立刻吃，默认)/store(做出 2 份存入成品菜格，可留吃或摆料理摊)；workbench 时可选 store(入作品仓摆摊)/use(立刻自用或产花肥鱼饵，花肥与鱼饵配方省略 mode 时默认 use)。',
           },
           dish: {
             type: 'string',
@@ -5321,23 +5519,29 @@ export class LifeWorld implements World {
           const evals = evaluateAllRecipes(this.state);
           const ready = evals.filter((e) => e.canCook);
           const lockedReady = evals.filter((e) => !e.unlocked && e.missingLabels.length === 0);
+          const wbReady = evaluateAllWorkbenchRecipes(this.state).filter((w) => w.canCraft);
           const panTxt = this.state.pantry.length
             ? this.state.pantry.map((p) => `${p.name}×${p.qty}`).join('、')
             : '空着';
           const dishTxt = (this.state.cookedDishes ?? []).length
             ? (this.state.cookedDishes ?? []).map((d) => `${d.name}×${d.qty}`).join('、')
             : '暂无';
+          const tierLabel = (t: string) => (t === 'feast' ? '宴席硬菜' : t === 'chef' ? '厨师招牌' : '免证简食');
           const readyStr = ready.length
-            ? ready.map((e) => `${e.recipe.name}[${e.recipe.tier === 'simple' ? '免证简食' : '厨师招牌'}](回饱腹+${e.recipe.foodGain}/油盐${e.recipe.fuelCost}元/建议摊价${e.recipe.suggestedPrice}元)`).join('；')
+            ? ready.map((e) => `${e.recipe.name}[${tierLabel(e.recipe.tier)}](回饱腹+${e.recipe.foodGain}/油盐${e.recipe.fuelCost}元/建议摊价${e.recipe.suggestedPrice}元)`).join('；')
             : '眼下没有材料齐整的菜';
+          const wbStr = wbReady.length
+            ? `\n工作台此刻可制（action="workbench"）：${wbReady.map((w) => `${w.recipe.name}(${w.recipe.stationLabel}/摊价参考${w.recipe.suggestedPrice}元)`).join('；')}。`
+            : '';
           const lackPreview = evals
             .filter((e) => e.unlocked && e.missingLabels.length > 0)
             .slice(0, 6)
             .map((e) => `${e.recipe.name}(缺${e.missingLabels.join('、')})`)
             .join('；');
           return {
-            text: `储物篮原料：${panTxt}。\n成品菜格：${dishTxt}。\n现在能开火做：${readyStr}。`
+            text: `储物篮原料：${panTxt}。\n成品菜格：${dishTxt}。\n现在能开火做（共 ${evals.length} 道）：${readyStr}。`
               + (lockedReady.length ? `\n材料齐但缺厨师资质：${lockedReady.map((e) => `${e.recipe.name}(${e.lockReason})`).join('、')}。` : '')
+              + wbStr
               + (lackPreview ? `\n已解锁但缺料示例：${lackPreview}。` : ''),
           };
         }
@@ -5345,7 +5549,52 @@ export class LifeWorld implements World {
         const j = readJourney(this.opts.dataDir, now);
         this.journey = j;
         if (this.inJourneyTrip(j) && !isCampervanJourney(j)) {
-          return { text: `这会儿人在${j.cityName || '外面'}旅行，没法用家里灶台按菜谱下厨（房车在途或回家后再做吧）。` };
+          return { text: `这会儿人在${j.cityName || '外面'}旅行，没法用家里灶台或工作台动手制作（房车在途或回家后再做吧）。` };
+        }
+
+        if (action === 'workbench') {
+          const wbPick = String(args?.recipe ?? '').trim();
+          if (!wbPick) {
+            const evals = evaluateAllWorkbenchRecipes(this.state);
+            const ready = evals.filter((e) => e.canCraft);
+            const other = evals.filter((e) => !e.canCraft).slice(0, 8);
+            return {
+              text: `五大工作台配方（共 ${WORKBENCH_RECIPES.length} 项）：`
+                + (ready.length ? `眼下可作 ${ready.map((e) => `${e.recipe.name}[${e.recipe.stationLabel}]`).join('、')}。` : '眼下缺料或资质，暂无可立刻开做的。')
+                + (other.length ? `\n示例与缺项：${other.map((e) => `${e.recipe.name}(${!e.unlocked ? e.lockReason : `缺${e.missingLabels.join('、')}`})`).join('；')}。` : ''),
+            };
+          }
+          const buffs = this.currentTownBuffs();
+          const wbDef = findWorkbenchRecipe(wbPick);
+          const wbMode: 'store' | 'use' = (args?.mode === 'use' || args?.mode === 'eat')
+            ? 'use'
+            : (args?.mode === 'store' ? 'store' : (wbDef?.selfUse?.farmBoost ? 'use' : 'store'));
+          const wr = applyWorkbenchCraft(this.state, wbPick, wbMode, now, {
+            craftMoodBonus: Number(buffs.craft_mood_bonus) || 0,
+            luckBonus: Number(buffs.quality_luck_bonus) || 0,
+          });
+          if (!wr.ok) return { text: wr.reason ?? '这次工作台制作没做成。' };
+          if (generation !== this.stateGeneration) return cleared();
+          if (wr.paid > 0) {
+            appendLedger(this.opts.dataDir, {
+              id: `wb-${wr.recipe?.id ?? 'craft'}-${now.getTime().toString(36)}`,
+              ts: now.toISOString(),
+              kind: 'expense',
+              amount: wr.paid,
+              source: 'life_workbench',
+              payee: '工作台耗材',
+              note: `工作台制作：${wr.recipe?.name ?? wbPick}`,
+            });
+          }
+          this.saveDeliveredState();
+          this.broadcastLife(now);
+          const out = wr.outputItem;
+          const tail = wr.effectText
+            ? `${wr.effectText}。`
+            : `估价约 ${out?.value ?? wr.recipe?.suggestedPrice} 元，已收进作品仓可上鱼市街摆摊。`;
+          return {
+            text: `在「${wr.recipe?.stationLabel}」用${wr.usedSources.join('、')}做出了【${wr.qualityLabel}】「${wr.recipe?.name}」（耗材 ${wr.paid} 元，精力剩 ${Math.round(this.state.vitals.energy)}，现金剩 ${Math.round(wr.cash)} 元），${tail}`,
+          };
         }
 
         if (action === 'cook') {
@@ -6830,12 +7079,18 @@ export class LifeWorld implements World {
     if (panel === 'career') {
       if (method === 'snapshot' || method === 'list' || method === '') {
         const tb = this.currentTownBuffs();
+        const cCity = this.settledCityName(this.journey);
+        const cPhase = this.journey?.installed && (this.journey.phase === 'staying' || this.journey.phase === 'traveling')
+          ? this.journey.phase
+          : 'home';
         return {
           ...this.panelSnapshot(now),
           career: buildCareerOverview(this.state, now, {
             certPassBonus: Number(tb.cert_pass_bonus) || 0,
             qualityLuckBonus: Number(tb.quality_luck_bonus) || 0,
             equipPriceMult: Number(tb.equip_price_mult) || 1,
+            currentCity: cCity,
+            phase: cPhase,
           }),
         };
       }
@@ -6896,6 +7151,8 @@ export class LifeWorld implements World {
           },
           homeRanchSlotsMap: HOME_RANCH_SLOTS,
           animalGroupLabels: ANIMAL_GROUP_LABEL,
+          citySpecialties: CITY_SPECIALTIES,
+          currentCity: this.settledCityName(this.journey),
           helperPlans: Object.values(HELPER_PLANS),
           pendingWork,
           neighborQuotes: {
@@ -7086,11 +7343,11 @@ export class LifeWorld implements World {
             amount: r.paid,
             source: 'life_ranch',
             payee: '城郊农牧场',
-            note: '面板签约城郊农牧场（+2鸡/+2牛/+2鱼）',
+            note: `面板签约城郊农牧场（+${RANCH_LEASE_SLOTS.chicken}禽/+${RANCH_LEASE_SLOTS.cow}畜/+${RANCH_LEASE_SLOTS.fish}鱼）`,
           });
           this.saveDeliveredState();
           this.broadcastLife(now);
-          await this.push('life.farm', `他刚刚在面板上签下了城郊农牧场（+2鸡/+2牛/+2鱼，签约费 ¥${r.paid}）。`, 'debounce');
+          await this.push('life.farm', `他刚刚在面板上签下了城郊农牧场（+${RANCH_LEASE_SLOTS.chicken}禽/+${RANCH_LEASE_SLOTS.cow}畜/+${RANCH_LEASE_SLOTS.fish}鱼，签约费 ¥${r.paid}）。`, 'debounce');
           return { ok: true, message: `已签约城郊农牧场（-¥${r.paid}）`, ...marketPayload() };
         }
         if (method === 'unrentRanch') {
@@ -7339,6 +7596,13 @@ export class LifeWorld implements World {
       return { ok: true, town: this.town };
     }
 
+    if (method === 'sponsorQr') {
+      const dataUrl = readSponsorQrDataUrl();
+      return dataUrl
+        ? { ok: true, dataUrl }
+        : { ok: false, reason: '暂未找到资助二维码图片。' };
+    }
+
     throw new Error(`没有这个方法：${method}`);
   }
 
@@ -7548,6 +7812,12 @@ export class LifeWorld implements World {
         houseboundSick: s.houseboundSick,
         sickCare: s.sickCare,
         stallRecords: s.stallRecords,
+        equipUsage: s.equipUsage,
+        equipPendingMaintain: s.equipPendingMaintain,
+        equipMaintainRules: EQUIP_MAINTAIN,
+        ownedSpecialties: s.specialties,
+        citySpecialties: CITY_SPECIALTIES,
+        currentCity: this.settledCityName(j),
         bulletin: [...this.townBulletin],
         myStalls: [...this.myStallsCache],
         otherStalls: [...this.otherStallsCache],

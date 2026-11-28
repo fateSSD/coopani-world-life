@@ -1133,8 +1133,8 @@ test('ensureHubAuth 409 竞态自愈 + panel-1.5.0 独立报错区 lf-alert 与 
     assert.equal(missed.ok, false);
     assert.equal(missed.code, 'LEGACY_UID_CLAIMED');
 
-    // 验证 panel-1.7.0.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
-    const panelMod = await import(`../web/panel-1.7.0.js?alertbuff=${Date.now()}`);
+    // 验证 panel-1.8.0.js：报错进入 lf-alert（不混入 lf-note），且兰州小数 bonus 汉化为百分比
+    const panelMod = await import(`../web/panel-1.8.0.js?alertbuff=${Date.now()}`);
     const root = new FakeNode('div');
     root.ownerDocument = fakeDoc;
     fakeDoc.body.append(root);

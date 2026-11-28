@@ -34,7 +34,7 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { skyFromExternal, type ExternalWeatherOverride, type WeatherSky } from './config.ts';
-import { type JobDef, findJob, defaultJob, certOf, CERTS, jobAllowedAt } from './jobs.ts';
+import { type JobDef, findJob, defaultJob, certOf, CERTS, normalizeCityName, jobAllowedAt } from './jobs.ts';
 import { type StreetMods, type StreetProfile, formatStreetMods, normStreetMods } from './bridge.ts';
 import {
   DEFAULT_DAILY_GIFT_CAP,
@@ -75,9 +75,12 @@ export {
 export { skyFromExternal, type ExternalWeatherOverride, type WeatherSky };
 import {
   SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, findCourse, findEquip,
+  EQUIP_MAINTAIN, equipMaintainName, jobMaintainKey,
+  CITY_SPECIALTIES, findSpecialty, specialtiesForCity,
   rollWorkGrade, solarTermOf, streetWindowOf, marketCatalogOf, isLateNightQuiet, buildDreamSlice,
   applyYieldBonus, normalizeMoodBonus,
   OUTPUT_QUALITY_META, jobOutputOf, qualityOdds, rollWorkQuality, skillPayMultiplier,
+  type EquipMaintainRule, type SpecialtyDef,
   type OutputQualityId, type SkillDomain, type SolarTermInfo, type StreetWindow, type MarketItem, type WorkOutputItem,
 } from './town-life.ts';
 import {
@@ -106,22 +109,29 @@ import {
   type PendingFarmErrand, type NeighborErrandQuote, type PendingFarmWork,
 } from './ranch.ts';
 import {
-  RECIPES,
-  findRecipe, evaluateRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
+  RECIPES, WORKBENCH_RECIPES,
+  findRecipe, evaluateRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish,
+  findWorkbenchRecipe, evaluateWorkbenchRecipe, evaluateAllWorkbenchRecipes, applyWorkbenchCraft,
+  buildCareerOverview,
   type RecipeDef, type RecipeIngredientReq, type RecipeEvalResult, type CareerOverview,
+  type WorkbenchStation, type WorkbenchRecipeDef, type WorkbenchEvalResult,
 } from './recipes.ts';
 
 export type {
   SkillDomain, SolarTermInfo, StreetWindow, MarketItem, OutputQualityId, WorkOutputItem,
+  EquipMaintainRule, SpecialtyDef,
   FarmState, FarmPlot, FarmPlotView, PantryItem, CookedDishItem, IngredientKind,
   StallCategory, StallRecord, StallPlanResult, SeedDef,
   AnimalGroup, AnimalDef, RanchPen, RanchState, RanchPenView,
   HelperMode, FarmHelperState, HelperRunSummary,
   PendingFarmErrand, NeighborErrandQuote, PendingFarmWork,
   RecipeDef, RecipeIngredientReq, RecipeEvalResult, CareerOverview,
+  WorkbenchStation, WorkbenchRecipeDef, WorkbenchEvalResult,
 };
 export {
-  SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, solarTermOf, streetWindowOf, rollWorkGrade,
+  SKILL_DOMAIN_LABEL, TRAIN_COURSES, EQUIP_CATALOG, EQUIP_MAINTAIN, equipMaintainName, jobMaintainKey,
+  CITY_SPECIALTIES, findSpecialty, specialtiesForCity, normalizeCityName, jobAllowedAt,
+  solarTermOf, streetWindowOf, rollWorkGrade,
   OUTPUT_QUALITY_META, jobOutputOf, qualityOdds, rollWorkQuality, skillPayMultiplier,
   applyYieldBonus, normalizeMoodBonus,
   HOME_FARM_SLOTS, LEASE_PLOT_COUNT, LEASE_SIGNUP_FEE, LEASE_MONTHLY_RENT,
@@ -138,8 +148,10 @@ export {
   freshFarmHelper, normFarmHelper, countPendingFarmWork, calcNeighborErrandQuote, parseErrandMinutes,
   recordPostedNeighborErrand, applyNeighborErrandCompleted, refundExpiredErrand,
   runFarmHelperCatchup, applyHireHelper, applyUnhireHelper,
-  RECIPES,
-  findRecipe, evaluateRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish, buildCareerOverview,
+  RECIPES, WORKBENCH_RECIPES,
+  findRecipe, evaluateRecipe, evaluateAllRecipes, applyCookRecipe, applyEatCookedDish,
+  findWorkbenchRecipe, evaluateWorkbenchRecipe, evaluateAllWorkbenchRecipes, applyWorkbenchCraft,
+  buildCareerOverview,
 };
 
 /* ------------------------------------------------------------------ */
@@ -720,6 +732,24 @@ export interface LifeState {
   certWarnedCycle?: Record<string, string>;
   /** 最近一次去社区诊所看病日期（YYYY-MM-DD，每天限一次）。 */
   clinicLastDay?: string;
+  /** 装备/载具使用次数累计（装备 key → 累计出工次数）。 */
+  equipUsage?: Record<string, number>;
+  /** 到保养周期但当时缺钱尚未完成保养的装备 key。 */
+  equipPendingMaintain?: string[];
+  /** 当日按负荷标签累计的连续出工次数。 */
+  jobStreak?: { day: string; labor: number; social: number; focus: number };
+  /** 随身城市特产背包。 */
+  specialties?: SpecialtyBagItem[];
+  /** 已打卡收集过的城市特产 id 列表。 */
+  specialtyCollected?: string[];
+}
+
+export interface SpecialtyBagItem {
+  id: string;
+  name: string;
+  city: string;
+  category: SpecialtyDef['category'];
+  charges: number;
 }
 
 export const CERT_AUDIT_DAYS = 30;
@@ -984,6 +1014,8 @@ export interface AdvanceExt {
   seatId?: string;
   seat?: string;
   journeyCity?: string;
+  /** 当前常驻/驻留结算城市（仅 home / staying 有值，traveling 时留空防泄漏目的地限定活）。 */
+  currentCity?: string;
   gradeRoll?: number;
   qualityRoll?: number;
   dreamRoll?: number;
@@ -1462,6 +1494,10 @@ export function freshState(now: Date = new Date()): LifeState {
     certVerifiedAt: {},
     certWarnedCycle: {},
     clinicLastDay: '',
+    equipUsage: {},
+    equipPendingMaintain: [],
+    specialties: [],
+    specialtyCollected: [],
   };
 }
 
@@ -1736,6 +1772,46 @@ export function normalize(s: Partial<LifeState>, now: Date): LifeState {
       ) as Record<string, string>
       : {},
     clinicLastDay: typeof s.clinicLastDay === 'string' ? s.clinicLastDay : '',
+    equipUsage: (() => {
+      if (!s.equipUsage || typeof s.equipUsage !== 'object' || Array.isArray(s.equipUsage)) return {};
+      const out: Record<string, number> = {};
+      for (const [k, v] of Object.entries(s.equipUsage as Record<string, unknown>)) {
+        const n = Math.round(Number(v));
+        if (k && Number.isFinite(n) && n >= 0) out[k] = n;
+      }
+      return out;
+    })(),
+    equipPendingMaintain: arr<unknown>(s.equipPendingMaintain).filter((x): x is string => typeof x === 'string' && x.length > 0),
+    jobStreak: (() => {
+      const js = s.jobStreak as { day?: unknown; labor?: unknown; social?: unknown; focus?: unknown } | undefined;
+      if (!js || typeof js !== 'object' || typeof js.day !== 'string' || !js.day) return undefined;
+      return {
+        day: js.day,
+        labor: Math.max(0, Math.round(Number(js.labor) || 0)),
+        social: Math.max(0, Math.round(Number(js.social) || 0)),
+        focus: Math.max(0, Math.round(Number(js.focus) || 0)),
+      };
+    })(),
+    specialties: arr<unknown>(s.specialties)
+      .map((x) => {
+        const o = x as Partial<SpecialtyBagItem> | null;
+        if (!o || typeof o !== 'object' || typeof o.id !== 'string' || typeof o.name !== 'string') return null;
+        const charges = Math.round(Number(o.charges) || 0);
+        if (charges <= 0) return null;
+        const cat = o.category;
+        const validCat: SpecialtyDef['category'] = (
+          cat === 'pantry_dry' || cat === 'tea_drink' || cat === 'snack' || cat === 'craft_mat' || cat === 'souvenir'
+        ) ? cat : 'souvenir';
+        return {
+          id: o.id,
+          name: o.name,
+          city: typeof o.city === 'string' && o.city ? o.city : '兰州',
+          category: validCat,
+          charges,
+        };
+      })
+      .filter((x): x is SpecialtyBagItem => Boolean(x)),
+    specialtyCollected: [...new Set(arr<unknown>(s.specialtyCollected).filter((x): x is string => typeof x === 'string' && x.length > 0))],
   };
 }
 
@@ -1914,6 +1990,11 @@ export interface CompletedTask {
   errandEmployer?: string;
   loanGarnished?: LoanGarnishResult;
   outputItem?: WorkOutputItem;
+  maintainPaid?: number;
+  maintainKey?: string;
+  maintainLabel?: string;
+  maintainNotice?: string;
+  streakNotice?: string;
 }
 
 export interface AdvanceResult {
@@ -1948,6 +2029,10 @@ export interface AdvanceResult {
   certRevoked?: { cert: string; need: number; knowledge: number }[];
   /** 本次推进顺利通过 30 天月度复核的证书。 */
   certRenewed?: string[];
+  /** 本次推进 30 天月度复核实际扣除的续期费。 */
+  certRenewFees?: { cert: string; fee: number }[];
+  /** 本次推进 30 天复核通过但手头现金不足暂缓扣费的证书。 */
+  certRenewDeferred?: { cert: string; fee: number }[];
 }
 
 function clampBuffMult(raw: unknown, lo = 0.5, hi = 2.0): number {
@@ -2186,14 +2271,74 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
               if (g.deductedTotal > 0) loanGarnished = g;
             }
           }
+          let maintainPaid = 0;
+          let maintainKey: string | undefined;
+          let maintainLabel: string | undefined;
+          let maintainNotice: string | undefined;
+          let streakNotice: string | undefined;
           if (!outOfCash) {
             state.job.days += 1;
             if (def?.domain) {
               const gain = (def.tier === 'odd' ? 2 : def.tier === 'skilled' ? 3 : def.tier === 'certified' ? 3.5 : 4) * trainExpMult;
               state.skills[def.domain] = Math.min(100, (state.skills[def.domain] ?? 0) + gain);
             }
-            if (PHYSICAL_JOB_IDS.has(actTask.id)) {
-              state.fitness = Math.min(FITNESS_MAX, state.fitness + 1.5 * streetGainFactor(workMods, 'fit') * activeMood.fitMult * fitGainMult);
+            const rawFitGain = def?.fitnessGain ?? (PHYSICAL_JOB_IDS.has(actTask.id) ? 1.5 : 0);
+            if (rawFitGain > 0) {
+              state.fitness = Math.min(FITNESS_MAX, state.fitness + rawFitGain * streetGainFactor(workMods, 'fit') * activeMood.fitMult * fitGainMult);
+            }
+            if (def?.streakTag) {
+              const workDay = localDateKey(endAt);
+              const dObj = new Date(`${workDay}T12:00:00Z`);
+              dObj.setUTCDate(dObj.getUTCDate() - 1);
+              const prevDay = dObj.toISOString().slice(0, 10);
+              const tag = def.streakTag;
+              if (state.jobStreak?.day === workDay) {
+                state.jobStreak[tag] = (state.jobStreak[tag] ?? 0) + 1;
+              } else if (state.jobStreak?.day === prevDay) {
+                const prevCount = state.jobStreak[tag] ?? 0;
+                state.jobStreak = { day: workDay, labor: 0, social: 0, focus: 0 };
+                state.jobStreak[tag] = prevCount + 1;
+              } else {
+                state.jobStreak = { day: workDay, labor: 0, social: 0, focus: 0 };
+                state.jobStreak[tag] = 1;
+              }
+              const cnt = state.jobStreak[tag];
+              if (cnt >= 2) {
+                const tagLabel = tag === 'labor' ? '重体力' : tag === 'social' ? '高社交消耗' : '高专注';
+                streakNotice = `已连续 ${cnt} 天干${tagLabel}活，眼下精力余 ${Math.round(state.vitals.energy)}，注意换换节奏歇一歇。`;
+              }
+            }
+            const mKey = def ? jobMaintainKey(actTask.id, def.equip) : null;
+            if (mKey && EQUIP_MAINTAIN[mKey]) {
+              const rule = EQUIP_MAINTAIN[mKey];
+              state.equipUsage = state.equipUsage ?? {};
+              const nextCount = (state.equipUsage[mKey] ?? 0) + 1;
+              const mName = equipMaintainName(mKey);
+              if (nextCount >= rule.every) {
+                if (state.money.cash >= rule.cost) {
+                  state.money.cash -= rule.cost;
+                  state.money.spent += rule.cost;
+                  state.equipUsage[mKey] = 0;
+                  state.equipPendingMaintain = (state.equipPendingMaintain ?? []).filter((x) => x !== mKey);
+                  maintainPaid = rule.cost;
+                  maintainKey = mKey;
+                  maintainLabel = mName;
+                  maintainNotice = `「${mName}」累计用了 ${nextCount} 次，已自动扣 ${rule.cost} 元完成保养。`;
+                } else {
+                  state.equipUsage[mKey] = nextCount;
+                  state.equipPendingMaintain = state.equipPendingMaintain ?? [];
+                  if (!state.equipPendingMaintain.includes(mKey)) state.equipPendingMaintain.push(mKey);
+                  maintainKey = mKey;
+                  maintainLabel = mName;
+                  maintainNotice = `「${mName}」累计用了 ${nextCount} 次已达保养周期，但现金不足 ${rule.cost} 元，已记为待保养（修好前暂停接对应活）。`;
+                }
+                remember(state, maintainNotice, endAt);
+              } else {
+                state.equipUsage[mKey] = nextCount;
+                if (nextCount === rule.every - 1) {
+                  maintainNotice = `「${mName}」再用 1 次就到保养周期了（届时需 ${rule.cost} 元维护费）。`;
+                }
+              }
             }
             if (def?.domain === 'photo' && photoMoodBonus > 0) {
               state.moodlets = state.moodlets.filter((m) => m.source !== 'photo-town');
@@ -2273,6 +2418,11 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
             shiftSummary,
             ...(outputItem ? { outputItem } : {}),
             ...(loanGarnished ? { loanGarnished } : {}),
+            ...(maintainPaid > 0 ? { maintainPaid } : {}),
+            ...(maintainKey ? { maintainKey } : {}),
+            ...(maintainLabel ? { maintainLabel } : {}),
+            ...(maintainNotice ? { maintainNotice } : {}),
+            ...(streakNotice ? { streakNotice } : {}),
           });
         } else {
           if (actTask.mood && !outOfCash) {
@@ -2559,6 +2709,7 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
           overdueCount,
           recentTexts: state.tellable.slice(-6).map((t) => t.text),
           journeyCity: ext?.journeyCity,
+          city: ext?.currentCity,
           lowEnergy: before.energy < 25,
           roll: ext?.dreamRoll,
         });
@@ -2650,6 +2801,8 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
   const certWarnings: { cert: string; daysLeft: number; need: number; knowledge: number }[] = [];
   const certRevoked: { cert: string; need: number; knowledge: number }[] = [];
   const certRenewed: string[] = [];
+  const certRenewFees: { cert: string; fee: number }[] = [];
+  const certRenewDeferred: { cert: string; fee: number }[] = [];
   if (state.job.certs.length > 0) {
     state.certVerifiedAt = state.certVerifiedAt ?? {};
     state.certWarnedCycle = state.certWarnedCycle ?? {};
@@ -2675,6 +2828,18 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
           delete state.certWarnedCycle[certName];
           certRenewed.push(certName);
           keptCerts.push(certName);
+          const renewFee = Math.min(60, Math.round(cDef.price * 0.1));
+          if (renewFee > 0) {
+            if (state.money.cash >= renewFee) {
+              state.money.cash -= renewFee;
+              state.money.spent += renewFee;
+              certRenewFees.push({ cert: certName, fee: renewFee });
+              remember(state, `「${certName}」满一个月月度复核通过，扣了 ${renewFee} 元轻续期费。`, now);
+            } else {
+              certRenewDeferred.push({ cert: certName, fee: renewFee });
+              remember(state, `「${certName}」满一个月月度复核通过了（应缴续期费 ${renewFee} 元，手头钱不够暂记账缓缴，证书照旧有效）。`, now);
+            }
+          }
         } else if (state.certWarnedCycle[certName] !== verifiedIso) {
           // 大离线跨过第 25–30 天且尚未收到预警时，先给 5 天补救宽限期再行吊销
           const graceIso = new Date(to - CERT_WARN_DAYS * 86_400_000).toISOString();
@@ -2750,6 +2915,8 @@ export function advance(state: LifeState, now: Date, ext?: AdvanceExt): AdvanceR
     ...(certWarnings.length ? { certWarnings } : {}),
     ...(certRevoked.length ? { certRevoked } : {}),
     ...(certRenewed.length ? { certRenewed } : {}),
+    ...(certRenewFees.length ? { certRenewFees } : {}),
+    ...(certRenewDeferred.length ? { certRenewDeferred } : {}),
   };
 }
 
@@ -3382,7 +3549,7 @@ export function applyAct(
    * 说「钱不够，只能将就吃一口」，她才知道路在哪儿。
    */
   const baseCost = actEffectiveCost(act, journey, state.job.certs);
-  const canUsePantryForCook = act.id === 'cook' && pantryCount(state.pantry) > 0;
+  const canUsePantryForCook = act.id === 'cook' && pantryCount(state.pantry, { edibleOnly: true }) > 0;
   const effectiveCost = canUsePantryForCook ? Math.min(baseCost, 3) : baseCost;
   if (effectiveCost > state.money.cash) {
     const alt = Object.values(ACTS).filter((a) => actEffectiveCost(a, journey, state.job.certs) <= state.money.cash);
@@ -3586,8 +3753,8 @@ export function applyAct(
   }
 
   let cookPantryNote = '';
-  if (act.id === 'cook' && pantryCount(state.pantry) > 0) {
-    const used = consumePantry(state.pantry, 1);
+  if (act.id === 'cook' && pantryCount(state.pantry, { edibleOnly: true }) > 0) {
+    const used = consumePantry(state.pantry, 1, { edibleOnly: true });
     if (used.consumed > 0) {
       cookPantryNote = used.sources.join('、');
       remember(state, `下厨用了储物篮里的${cookPantryNote}，只花了点油盐火钱。`, now);
@@ -3662,6 +3829,7 @@ export function applyWork(
   now: Date,
   phase: 'home' | 'staying' | 'traveling' = 'home',
   streetMods?: StreetMods,
+  currentCity = '兰州',
 ): WorkResult {
   if (isBusy(state, now)) {
     return {
@@ -3715,7 +3883,7 @@ export function applyWork(
   let mat = 0;
 
   if (def) {
-    const gate = jobGate(state, def, phase);
+    const gate = jobGate(state, def, phase, currentCity);
     if (gate) {
       if (def.cert && !state.job.certs.includes(def.cert)) {
         const cObj = certOf(def.cert);
@@ -3933,11 +4101,16 @@ export function jobGate(
   state: LifeState,
   def: JobDef,
   phase: 'home' | 'staying' | 'traveling' = 'home',
+  currentCity = '兰州',
 ): string | null {
-  if (!jobAllowedAt(def, phase)) {
-    return phase === 'traveling'
-      ? `还在路上呢，「${def.name}」没法在车上干。只有随身能接的活才行。`
-      : `你现在不在兰州家里，「${def.name}」只能在家那头接。`;
+  if (!jobAllowedAt(def, phase, currentCity)) {
+    if (phase === 'traveling') {
+      return `还在路上呢，「${def.name}」没法在车上干。只有随身能接的活才行。`;
+    }
+    if (def.cities && def.cities.length > 0) {
+      return `「${def.name}」仅限${def.cities.join('/')}本地接单，你眼下不在那座城。`;
+    }
+    return `你现在不在常驻家里（${normalizeCityName(currentCity)}外或旅途中），「${def.name}」只能在家那头接。`;
   }
   if (state.conditions.some((c) => c.id === 'injury') && (def.tier === 'odd' || def.tier === 'skilled')) {
     return `身上还挂着扭伤，像「${def.name}」这种体力活暂时接不了，先歇一两天或干点轻省的。`;
@@ -3951,6 +4124,11 @@ export function jobGate(
     const eq = findEquip(def.equip);
     return `「${def.name}」需要自备${eq ? eq.name : def.equip}`
       + (eq ? `（${eq.price} 元），用 \`life_learn\` 购置。` : '。');
+  }
+  const mKey = jobMaintainKey(def.id, def.equip);
+  if (mKey && (state.equipPendingMaintain ?? []).includes(mKey)) {
+    const rule = EQUIP_MAINTAIN[mKey];
+    return `你的「${equipMaintainName(mKey)}」到了定期维护节点（保养费 ${rule?.cost ?? 0} 元），手头得先在 \`life_learn\` 检修好才能接「${def.name}」。`;
   }
   if (def.days && state.job.days < def.days) {
     return `「${def.name}」要出过 ${def.days} 天工，你才 ${state.job.days} 天。先干几天不要证的活。`;
@@ -4272,6 +4450,321 @@ export function applyLearn(
     reason: `没找到「${q || '（未填）'}」。可报培训：${coursesText}。${equipsText ? `可买装备/轻载具：${equipsText}。` : '清单里的装备你都已经齐了。'}`,
     paid: 0,
     cash: state.money.cash,
+  };
+}
+
+export interface MaintainEquipResult {
+  ok: boolean;
+  reason?: string;
+  repaired: { key: string; name: string; cost: number }[];
+  paid: number;
+  cash: number;
+}
+
+/** 检修或定期保养已购置装备与载具，清零使用计数并解除待保养锁定。 */
+export function applyMaintainEquip(
+  state: LifeState,
+  target: string,
+  now: Date,
+): MaintainEquipResult {
+  if (isBusy(state, now)) return { ok: false, reason: busyRefusal(state, now, '检修装备'), repaired: [], paid: 0, cash: state.money.cash };
+  const sickR = sickRefusal(state, now, '出门检修装备');
+  if (sickR) return { ok: false, reason: sickR, repaired: [], paid: 0, cash: state.money.cash };
+
+  const q = String(target || '').trim();
+  const pending = [...(state.equipPendingMaintain ?? [])];
+  const resolveKey = (raw: string): string | null => {
+    const eq = findEquip(raw);
+    if (eq && EQUIP_MAINTAIN[eq.id]) return eq.id;
+    const lower = raw.toLowerCase();
+    for (const k of Object.keys(EQUIP_MAINTAIN)) {
+      const name = equipMaintainName(k);
+      if (k.toLowerCase() === lower || name === raw || name.includes(raw) || raw.includes(name)) return k;
+    }
+    return null;
+  };
+  const isOwned = (k: string): boolean => (
+    k === 'vehicle_car'
+      ? (pending.includes(k) || (state.equipUsage?.[k] ?? 0) > 0 || state.job.certs.includes('驾照'))
+      : state.gear.includes(k)
+  );
+
+  let keys: string[] = [];
+  if (!q || q === 'all') {
+    keys = pending.filter((k) => Boolean(EQUIP_MAINTAIN[k]));
+    if (!keys.length) {
+      return {
+        ok: false,
+        reason: '眼下没有到保养周期的待检修装备或载具。',
+        repaired: [],
+        paid: 0,
+        cash: state.money.cash,
+      };
+    }
+  } else {
+    const k = resolveKey(q);
+    if (!k) {
+      return {
+        ok: false,
+        reason: `没找到「${q}」对应的装备保养项（支持：${Object.keys(EQUIP_MAINTAIN).map((id) => equipMaintainName(id)).join('、')}）。`,
+        repaired: [],
+        paid: 0,
+        cash: state.money.cash,
+      };
+    }
+    if (!isOwned(k)) {
+      return {
+        ok: false,
+        reason: `你手上还没有「${equipMaintainName(k)}」，不用保养。`,
+        repaired: [],
+        paid: 0,
+        cash: state.money.cash,
+      };
+    }
+    keys = [k];
+  }
+
+  const repaired: { key: string; name: string; cost: number }[] = [];
+  let paid = 0;
+  for (const k of keys) {
+    const rule = EQUIP_MAINTAIN[k];
+    if (!rule) continue;
+    const mName = equipMaintainName(k);
+    if (state.money.cash < rule.cost) {
+      if (repaired.length === 0) {
+        return {
+          ok: false,
+          reason: `保养「${mName}」需要 ${rule.cost} 元，你手上只有 ${Math.round(state.money.cash)} 元。`,
+          repaired: [],
+          paid: 0,
+          cash: state.money.cash,
+        };
+      }
+      break;
+    }
+    state.money.cash -= rule.cost;
+    state.money.spent += rule.cost;
+    paid += rule.cost;
+    state.equipUsage = state.equipUsage ?? {};
+    state.equipUsage[k] = 0;
+    state.equipPendingMaintain = (state.equipPendingMaintain ?? []).filter((x) => x !== k);
+    repaired.push({ key: k, name: mName, cost: rule.cost });
+  }
+
+  const summary = repaired.map((x) => `${x.name}(${x.cost}元)`).join('、');
+  remember(state, `给「${summary}」做了检修保养，合计花了 ${paid} 元，又能顺手出工了。`, now);
+  state.updatedAt = now.toISOString();
+  return { ok: true, repaired, paid, cash: state.money.cash };
+}
+
+export interface BuySpecialtyResult {
+  ok: boolean;
+  reason?: string;
+  spec?: SpecialtyDef;
+  chargesAdded?: number;
+  intoPantry?: boolean;
+  knowGained?: number;
+  paid: number;
+  cash: number;
+}
+
+/** 购买所在城市（兰州/北京）特色伴手礼或风物特产。 */
+export function applyBuySpecialty(
+  state: LifeState,
+  what: string,
+  currentCity: string,
+  now: Date,
+): BuySpecialtyResult {
+  if (isBusy(state, now)) return { ok: false, reason: busyRefusal(state, now, '买城里特产'), paid: 0, cash: state.money.cash };
+  const sickR = sickRefusal(state, now, '出门买特产');
+  if (sickR) return { ok: false, reason: sickR, paid: 0, cash: state.money.cash };
+
+  const normCity = normalizeCityName(currentCity);
+  const q = String(what || '').trim();
+  if (!q) {
+    const list = specialtiesForCity(normCity).map((s) => `${s.name}(${s.price}元/${s.charges ?? 1}次)`).join('、');
+    return { ok: false, reason: `${normCity}特产铺在售：${list}。`, paid: 0, cash: state.money.cash };
+  }
+
+  const spec = findSpecialty(q, normCity);
+  if (!spec) {
+    return {
+      ok: false,
+      reason: `${normCity}本地特产铺没找着「${q}」。今天在售：${specialtiesForCity(normCity).map((s) => s.name).join('、')}。`,
+      paid: 0,
+      cash: state.money.cash,
+    };
+  }
+  if (spec.city !== '通用' && normalizeCityName(spec.city) !== normCity) {
+    return {
+      ok: false,
+      reason: `「${spec.name}」是${spec.city}本地特产，你此刻在${normCity}直接买不到（可逛鱼市街看看跨城摊位）。`,
+      paid: 0,
+      cash: state.money.cash,
+    };
+  }
+  if (state.money.cash < spec.price) {
+    return {
+      ok: false,
+      reason: `「${spec.name}」要 ${spec.price} 元，你手上只有 ${Math.round(state.money.cash)} 元。`,
+      paid: 0,
+      cash: state.money.cash,
+    };
+  }
+
+  const charges = Math.max(1, spec.charges ?? 1);
+  state.money.cash -= spec.price;
+  state.money.spent += spec.price;
+  state.specialtyCollected = state.specialtyCollected ?? [];
+  const isFirst = !state.specialtyCollected.includes(spec.id);
+  if (isFirst) state.specialtyCollected.push(spec.id);
+  let knowGained = 0;
+  if (isFirst && spec.knowFirst && spec.knowFirst > 0) {
+    knowGained = spec.knowFirst;
+    state.knowledge = Math.round(Math.min(KNOWLEDGE_MAX, state.knowledge + spec.knowFirst) * 100) / 100;
+  }
+
+  let intoPantry = false;
+  if ((spec.useMode === 'pantry' || spec.useMode === 'snack_or_pantry') && spec.pantryId) {
+    intoPantry = true;
+    state.pantry = addPantryItem(state.pantry, {
+      itemId: spec.pantryId,
+      name: spec.name,
+      kind: spec.pantryKind ?? 'craft_mat',
+      qty: charges,
+      freshVeg: false,
+      origin: 'market',
+      unitCost: spec.price,
+      acquiredAt: now.toISOString(),
+    });
+  } else {
+    state.specialties = state.specialties ?? [];
+    const exist = state.specialties.find((x) => x.id === spec.id);
+    if (exist) {
+      exist.charges += charges;
+    } else {
+      state.specialties.push({
+        id: spec.id,
+        name: spec.name,
+        city: spec.city,
+        category: spec.category,
+        charges,
+      });
+    }
+  }
+  remember(
+    state,
+    `在${spec.city}买了特产「${spec.name}」（${spec.price} 元，${intoPantry ? '已收入储物篮' : `带 ${charges} 次可用`}${knowGained > 0 ? `，初识见识 +${knowGained}` : ''}）。`,
+    now,
+  );
+  state.updatedAt = now.toISOString();
+  return {
+    ok: true,
+    spec,
+    chargesAdded: charges,
+    intoPantry,
+    ...(knowGained > 0 ? { knowGained } : {}),
+    paid: spec.price,
+    cash: state.money.cash,
+  };
+}
+
+export interface UseSpecialtyResult {
+  ok: boolean;
+  reason?: string;
+  name?: string;
+  remainingCharges?: number;
+  appliedParts?: string[];
+  vitals?: Vitals;
+}
+
+/** 使用随身背包里的城市特产（每次消耗 1 格可用次数）。 */
+export function applyUseSpecialty(
+  state: LifeState,
+  what: string,
+  now: Date,
+): UseSpecialtyResult {
+  if (isBusy(state, now)) return { ok: false, reason: busyRefusal(state, now, '享用特产') };
+
+  const bag = state.specialties ?? [];
+  const q = String(what || '').trim();
+  const hit = !q
+    ? bag[0]
+    : (bag.find((b) => b.id === q || b.name === q) ?? bag.find((b) => b.name.includes(q) || q.includes(b.name)));
+  let pantryHit: PantryItem | undefined;
+  let spec = hit ? (findSpecialty(hit.id) ?? findSpecialty(hit.name)) : null;
+
+  if (!hit) {
+    const dualPantry = (state.pantry ?? []).filter((p) => {
+      if (p.qty <= 0) return false;
+      const sDef = findSpecialty(p.name) ?? CITY_SPECIALTIES.find((x) => x.pantryId === p.itemId && x.useMode === 'snack_or_pantry');
+      return Boolean(sDef && sDef.useMode === 'snack_or_pantry');
+    });
+    pantryHit = !q
+      ? dualPantry[0]
+      : (dualPantry.find((p) => p.itemId === q || p.name === q) ?? dualPantry.find((p) => p.name.includes(q) || q.includes(p.name)));
+    if (pantryHit) {
+      spec = findSpecialty(pantryHit.name) ?? CITY_SPECIALTIES.find((x) => x.pantryId === pantryHit!.itemId && x.useMode === 'snack_or_pantry') ?? null;
+    }
+  }
+
+  if (!hit && !pantryHit) {
+    if (!bag.length) {
+      return { ok: false, reason: '随身背包里眼下没有拆封或囤着的城市特产。' };
+    }
+    return { ok: false, reason: `背包里没找到「${q}」，眼下有：${bag.map((b) => `${b.name}×${b.charges}`).join('、')}。` };
+  }
+
+  const itemId = hit?.id ?? spec?.id ?? pantryHit!.itemId;
+  const itemName = hit?.name ?? pantryHit!.name;
+  const parts: string[] = [];
+  const gains: Partial<Record<'food' | 'fun' | 'energy', number>> = {
+    food: spec?.foodGain,
+    fun: spec?.funGain,
+    energy: spec?.energyGain,
+  };
+  if (spec?.useMode === 'collect_or_stall' && !gains.food && !gains.fun && !gains.energy) {
+    gains.fun = 8;
+  }
+  for (const k of ['food', 'fun', 'energy'] as const) {
+    const d = Number(gains[k] ?? 0);
+    if (d > 0) {
+      state.vitals[k] = clamp100(state.vitals[k] + d);
+      parts.push(`${VITAL_LABEL[k]}+${d}`);
+      if (state.vitals[k] >= LOW + 15 && state.nagged) {
+        delete state.nagged[k];
+        delete state.nagged[`crit:${k}`];
+        delete state.nagged[`zero:${k}`];
+      }
+    }
+  }
+  state.moodlets = state.moodlets.filter((m) => m.source !== `spec-${itemId}`);
+  state.moodlets.push({
+    id: `m-spec-${now.getTime().toString(36)}`,
+    source: `spec-${itemId}`,
+    text: `品味「${itemName}」，${spec?.note ?? '满口地方风味'}`,
+    kind: 'good',
+    expiresAt: new Date(now.getTime() + 4 * 3_600_000).toISOString(),
+  });
+
+  let remainingCharges = 0;
+  if (hit) {
+    hit.charges -= 1;
+    remainingCharges = Math.max(0, hit.charges);
+    state.specialties = bag.filter((x) => x.charges > 0);
+  } else if (pantryHit) {
+    pantryHit.qty -= 1;
+    remainingCharges = Math.max(0, pantryHit.qty);
+    state.pantry = state.pantry.filter((x) => x.qty > 0);
+  }
+  remember(state, `用了手头的特产「${itemName}」${parts.length ? `（${parts.join('、')}）` : ''}。`, now);
+  state.updatedAt = now.toISOString();
+  return {
+    ok: true,
+    name: itemName,
+    remainingCharges,
+    appliedParts: parts,
+    vitals: state.vitals,
   };
 }
 
@@ -4737,6 +5230,12 @@ export interface Snapshot {
   };
   /** 本地摆摊本钱与单价台账。 */
   stallRecords: StallRecord[];
+  /** 已买装备累计使用次数。 */
+  equipUsage: Record<string, number>;
+  /** 待缴费检修的装备/载具 key。 */
+  equipPendingMaintain: string[];
+  /** 随身城市特产背包。 */
+  specialties: SpecialtyBagItem[];
 }
 
 export interface WeatherInfo {
@@ -4854,13 +5353,13 @@ export function readLedger(dataDir: string, limit = 30): LedgerEntry[] {
 }
 
 /** 本地街巷当日确定性物价表前 3 项（含早晚市折扣，兼顾老测试 3 项约定）。 */
-export function marketPrices(now: Date): MarketItem[] {
-  return marketCatalogOf(now, localDateKey(now)).slice(0, 3);
+export function marketPrices(now: Date, city?: string): MarketItem[] {
+  return marketCatalogOf(now, localDateKey(now), city).slice(0, 3);
 }
 
-/** 完整街巷市集目录（含二十四节气时令货、张掖路尾货与雁滩路周末集）。 */
-export function fullMarketPrices(now: Date): MarketItem[] {
-  return marketCatalogOf(now, localDateKey(now));
+/** 完整街巷市集目录（含二十四节气时令货、张掖路尾货与雁滩路周末集 / 北京对应集市）。 */
+export function fullMarketPrices(now: Date, city?: string): MarketItem[] {
+  return marketCatalogOf(now, localDateKey(now), city);
 }
 
 export const VITAL_LABEL: Record<VitalKey, string> = {
@@ -4875,6 +5374,7 @@ export function snapshot(
   state: LifeState,
   now: Date,
   weatherOverride?: ExternalWeatherOverride | null,
+  city?: string,
 ): Snapshot {
   const low = (Object.keys(state.vitals) as VitalKey[])
     .filter((k) => state.vitals[k] < LOW)
@@ -4962,7 +5462,7 @@ export function snapshot(
     gear: state.gear,
     shift: state.shift,
     solarTerm: solarTermOf(now),
-    streetWindow: streetWindowOf(now),
+    streetWindow: streetWindowOf(now, city),
     freshVeg: Boolean(state.freshVegUntil && Date.parse(state.freshVegUntil) > now.getTime()),
     farm: {
       homeSlots,
@@ -5012,5 +5512,8 @@ export function snapshot(
       };
     })(),
     stallRecords: state.stallRecords,
+    equipUsage: state.equipUsage ?? {},
+    equipPendingMaintain: state.equipPendingMaintain ?? [],
+    specialties: state.specialties ?? [],
   };
 }

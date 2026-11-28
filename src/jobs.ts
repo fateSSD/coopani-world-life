@@ -71,6 +71,14 @@ export interface JobDef {
   minutes: number;
   /** 这一班干完的总代价（在工作期间按分钟分摊扣减；社交与娱乐暂停日常衰减）。 */
   load: { energy: number; clean: number; fun: number; social: number; food: number; know: number };
+  /** 城市限定列表（例如 ['兰州'] 或 ['北京']）。 */
+  cities?: readonly string[];
+  /** 覆盖档位默认 load 中的单项身心消耗。 */
+  loadOverride?: Partial<JobDef['load']>;
+  /** 体力活完工后体能微增（如 0.2）。 */
+  fitnessGain?: number;
+  /** 同日连做同类型工种疲劳提示标签。 */
+  streakTag?: 'labor' | 'social' | 'focus';
 }
 
 /*
@@ -107,80 +115,121 @@ const def = (
   tier: JobTier,
   pay: number,
   domain: SkillDomain,
-  extra: Partial<Pick<JobDef, 'cert' | 'equip' | 'days' | 'place' | 'materialCost' | 'minutes' | 'shift' | 'hasVariance'>> = {},
-): JobDef => ({ id, name, tier, domain, pay, place: 'home', minutes: DEFAULT_MINUTES[tier], load: LOAD[tier], ...extra });
+  extra: Partial<Pick<JobDef, 'cert' | 'equip' | 'days' | 'place' | 'materialCost' | 'minutes' | 'shift' | 'hasVariance' | 'cities' | 'loadOverride' | 'fitnessGain' | 'streakTag'>> = {},
+): JobDef => ({
+  id,
+  name,
+  tier,
+  domain,
+  pay,
+  place: 'home',
+  minutes: DEFAULT_MINUTES[tier],
+  load: extra.loadOverride ? { ...LOAD[tier], ...extra.loadOverride } : LOAD[tier],
+  ...extra,
+});
 
 /**
- * 五十项（含轻载具跑单、八领域全通扩展与医疗康复 4 职），四档 + 三档地点过滤（home / anywhere / destination）。
+ * 69 项职业（含轻载具跑单、医疗康复、通用农牧工坊与兰州/北京城市限定），四档 + 三档地点 + 城市限定过滤。
  *
  * 城规有一条是「鱼不吃鱼」：没有渔业、没有鱼市、没有屠宰。
  * 加任何职业之前先拿这一条判一次。
  */
 export const JOBS: readonly JobDef[] = [
   // 零工：谁都能干，说走就走（3~4 小时，100–120 元）
-  def('porter', '搬货', 'odd', 112, 'labor', { place: 'anywhere', minutes: 240 }),
-  def('shopkeeper', '看店', 'odd', 105, 'social', { place: 'home', minutes: 240 }),
-  def('waiter', '端盘子', 'odd', 110, 'social', { place: 'destination', minutes: 240 }),
-  def('delivery', '送外卖', 'odd', 120, 'driving', { place: 'home', materialCost: 8, minutes: 210 }),
-  def('flyer', '发传单', 'odd', 100, 'labor', { place: 'destination', minutes: 180 }),
-  def('street_photo', '街拍明信片', 'odd', 115, 'photo', { place: 'anywhere', minutes: 210, hasVariance: true }),
-  def('menu_copy', '小店菜单手抄', 'odd', 108, 'writing', { place: 'home', minutes: 210 }),
-  def('book_sorter', '图书馆理书员', 'odd', 106, 'admin', { place: 'anywhere', minutes: 210 }),
-  def('tea_barista_helper', '茶饮店打下手', 'odd', 112, 'cooking', { place: 'destination', minutes: 210 }),
-  def('gift_wrapper', '花店扎束包装', 'odd', 104, 'craft', { place: 'destination', minutes: 210, hasVariance: true }),
-  def('pharmacy_clerk', '药房配货抓药', 'odd', 108, 'admin', { place: 'home', minutes: 210 }),
+  def('porter', '搬货', 'odd', 112, 'labor', { place: 'anywhere', minutes: 240, streakTag: 'labor' }),
+  def('shopkeeper', '看店', 'odd', 105, 'social', { place: 'home', minutes: 240, streakTag: 'social' }),
+  def('waiter', '端盘子', 'odd', 110, 'social', { place: 'destination', minutes: 240, streakTag: 'social' }),
+  def('delivery', '送外卖', 'odd', 120, 'driving', { place: 'home', materialCost: 8, minutes: 210, streakTag: 'labor' }),
+  def('flyer', '发传单', 'odd', 100, 'labor', { place: 'destination', minutes: 180, streakTag: 'labor' }),
+  def('street_photo', '街拍明信片', 'odd', 115, 'photo', { place: 'anywhere', materialCost: 8, minutes: 210, hasVariance: true, streakTag: 'focus' }),
+  def('menu_copy', '小店菜单手抄', 'odd', 108, 'writing', { place: 'home', materialCost: 4, minutes: 210, streakTag: 'focus' }),
+  def('book_sorter', '图书馆理书员', 'odd', 106, 'admin', { place: 'anywhere', minutes: 210, streakTag: 'focus' }),
+  def('tea_barista_helper', '茶饮店打下手', 'odd', 112, 'cooking', { place: 'destination', minutes: 210, streakTag: 'social' }),
+  def('gift_wrapper', '花店扎束包装', 'odd', 104, 'craft', { place: 'destination', minutes: 210, hasVariance: true, streakTag: 'focus' }),
+  def('pharmacy_clerk', '药房配货抓药', 'odd', 108, 'admin', { place: 'home', minutes: 210, streakTag: 'focus' }),
+  def('orchard_picker', '果园采摘帮工', 'odd', 114, 'labor', { place: 'home', minutes: 210, fitnessGain: 0.2, streakTag: 'labor', loadOverride: { clean: 22 } }),
+  def('lz_teahouse_boy', '黄河边茶摊帮手', 'odd', 112, 'social', { place: 'home', cities: ['兰州'], minutes: 210, streakTag: 'social' }),
+  def('bj_alley_bookstore', '胡同旧书摊理书员', 'odd', 114, 'admin', { place: 'destination', cities: ['北京'], minutes: 210, streakTag: 'focus', loadOverride: { clean: 12, know: 0.5 } }),
+  def('bj_pastry_packer', '老味点心铺装盒工', 'odd', 110, 'craft', { place: 'destination', cities: ['北京'], minutes: 210, streakTag: 'focus', loadOverride: { clean: 13 } }),
 
   // 熟练工：干满一个月或凭轻载具/基础证上路（4~5 小时，165–195 元）
-  def('kitchen', '后厨帮工', 'skilled', 175, 'cooking', { days: 30, place: 'destination', minutes: 300, hasVariance: true }),
-  def('renovation', '装修队小工', 'skilled', 192, 'craft', { days: 30, place: 'home', minutes: 300, hasVariance: true }),
-  def('errand', '跑腿代办', 'skilled', 165, 'admin', { days: 30, place: 'home', materialCost: 10, minutes: 270, hasVariance: true }),
-  def('stall', '早市摆摊', 'skilled', 185, 'cooking', { days: 30, place: 'home', materialCost: 25, minutes: 270, hasVariance: true }),
-  def('rider_delivery', '跑平台送外卖', 'skilled', 172, 'driving', { cert: '健康证', equip: 'ebike', place: 'home', materialCost: 8, minutes: 240, shift: true, hasVariance: true }),
-  def('courier_ebike', '片区送快递', 'skilled', 195, 'driving', { equip: 'ebike', place: 'home', materialCost: 10, minutes: 240, shift: true, hasVariance: true }),
-  def('darkroom_print', '暗房胶片冲印', 'skilled', 190, 'photo', { equip: 'camera', place: 'home', materialCost: 12, minutes: 300, hasVariance: true }),
-  def('local_notes', '风物随笔撰稿', 'skilled', 186, 'writing', { equip: 'computer', place: 'anywhere', minutes: 270, hasVariance: true }),
-  def('linen_embroidery', '亚麻刺绣手作', 'skilled', 188, 'craft', { equip: 'sewing', place: 'home', materialCost: 10, minutes: 300, hasVariance: true }),
-  def('greenhouse_helper', '温室育苗工', 'skilled', 178, 'labor', { days: 30, place: 'home', minutes: 270, hasVariance: true }),
-  def('parcel_station', '驿站分拣登记', 'skilled', 168, 'admin', { days: 30, place: 'home', materialCost: 6, minutes: 270 }),
-  def('homestay_host', '民宿前台管家', 'skilled', 182, 'social', { days: 30, place: 'destination', minutes: 300, hasVariance: true }),
-  def('clinic_assistant', '社区诊所分诊助理', 'skilled', 180, 'social', { cert: '健康证', place: 'home', minutes: 270 }),
+  def('kitchen', '后厨帮工', 'skilled', 175, 'cooking', { days: 30, place: 'destination', minutes: 300, hasVariance: true, streakTag: 'labor' }),
+  def('renovation', '装修队小工', 'skilled', 192, 'craft', { days: 30, place: 'home', minutes: 300, hasVariance: true, streakTag: 'labor' }),
+  def('errand', '跑腿代办', 'skilled', 165, 'admin', { days: 30, place: 'home', materialCost: 10, minutes: 270, hasVariance: true, streakTag: 'labor' }),
+  def('stall', '早市摆摊', 'skilled', 185, 'cooking', { days: 30, place: 'home', materialCost: 25, minutes: 270, hasVariance: true, streakTag: 'social' }),
+  def('rider_delivery', '跑平台送外卖', 'skilled', 172, 'driving', { cert: '健康证', equip: 'ebike', place: 'home', materialCost: 8, minutes: 240, shift: true, hasVariance: true, streakTag: 'labor' }),
+  def('courier_ebike', '片区送快递', 'skilled', 195, 'driving', { equip: 'ebike', place: 'home', materialCost: 10, minutes: 240, shift: true, hasVariance: true, streakTag: 'labor' }),
+  def('darkroom_print', '暗房胶片冲印', 'skilled', 190, 'photo', { equip: 'camera', place: 'home', materialCost: 12, minutes: 300, hasVariance: true, streakTag: 'focus' }),
+  def('local_notes', '风物随笔撰稿', 'skilled', 186, 'writing', { equip: 'computer', place: 'anywhere', materialCost: 8, minutes: 270, hasVariance: true, streakTag: 'focus' }),
+  def('linen_embroidery', '亚麻刺绣手作', 'skilled', 188, 'craft', { equip: 'sewing', place: 'home', materialCost: 10, minutes: 300, hasVariance: true, streakTag: 'focus' }),
+  def('greenhouse_helper', '温室育苗工', 'skilled', 178, 'labor', { days: 30, place: 'home', materialCost: 6, minutes: 270, hasVariance: true, streakTag: 'labor' }),
+  def('parcel_station', '驿站分拣登记', 'skilled', 168, 'admin', { days: 30, place: 'home', materialCost: 6, minutes: 270, streakTag: 'focus' }),
+  def('homestay_host', '民宿前台管家', 'skilled', 182, 'social', { days: 30, place: 'destination', minutes: 300, hasVariance: true, streakTag: 'social' }),
+  def('clinic_assistant', '社区诊所分诊助理', 'skilled', 180, 'social', { cert: '健康证', place: 'home', minutes: 270, streakTag: 'social' }),
+  def('book_restorer', '旧书铺修书工', 'skilled', 188, 'craft', { days: 30, place: 'home', materialCost: 14, minutes: 270, hasVariance: true, streakTag: 'focus', loadOverride: { energy: 34, clean: 12, social: 4, know: 1 } }),
+  def('apiary_helper', '塘畔蜂场帮手', 'skilled', 184, 'labor', { days: 30, place: 'home', materialCost: 10, minutes: 270, hasVariance: true, fitnessGain: 0.2, streakTag: 'labor' }),
+  def('lz_noodle_puller', '牛肉面馆拉面学徒', 'skilled', 188, 'cooking', { days: 30, place: 'home', cities: ['兰州'], materialCost: 6, minutes: 270, hasVariance: true, fitnessGain: 0.2, streakTag: 'labor' }),
+  def('lz_lily_sorter', '兰州百合干分拣员', 'skilled', 178, 'labor', { days: 30, place: 'home', cities: ['兰州'], minutes: 270, streakTag: 'focus', loadOverride: { clean: 14 } }),
+  def('bj_hutong_walk', '胡同Citywalk领队', 'skilled', 190, 'social', { days: 30, place: 'destination', cities: ['北京'], materialCost: 10, minutes: 270, hasVariance: true, streakTag: 'social', loadOverride: { know: 1 } }),
+  def('bj_clay_artisan', '泥塑兔儿爷彩绘工', 'skilled', 192, 'craft', { days: 30, place: 'destination', cities: ['北京'], materialCost: 14, minutes: 300, hasVariance: true, streakTag: 'focus', loadOverride: { clean: 16, social: 4 } }),
 
   // 有证：一天的钱够吃住几天，但证与装备要一笔投入（4~6 小时，260–310 元）
-  def('caregiver', '护工', 'certified', 260, 'social', { cert: '护工证', place: 'home', minutes: 360 }),
-  def('driver', '网约车司机', 'certified', 295, 'driving', { cert: '驾照', place: 'home', materialCost: 45, minutes: 360, shift: true, hasVariance: true }),
-  def('designated_driver', '夜间代驾', 'certified', 280, 'driving', { cert: '驾照', equip: 'folding_bike', place: 'home', materialCost: 12, minutes: 240, shift: true, hasVariance: true }),
-  def('cook', '厨师', 'certified', 310, 'cooking', { cert: '厨师证', place: 'destination', minutes: 360, hasVariance: true }),
-  def('electrician', '电工', 'certified', 278, 'craft', { cert: '电工证', place: 'home', materialCost: 15, minutes: 360, hasVariance: true }),
-  def('arch_photo', '古建采风跟拍', 'certified', 300, 'photo', { cert: '摄影证', equip: 'camera', place: 'anywhere', minutes: 360, hasVariance: true }),
-  def('magazine_feature', '城市特约撰稿', 'certified', 286, 'writing', { equip: 'computer', days: 30, place: 'anywhere', minutes: 360, hasVariance: true }),
-  def('custom_tailor', '成衣裁缝定制', 'certified', 302, 'craft', { equip: 'sewing', days: 30, place: 'home', materialCost: 18, minutes: 360, hasVariance: true }),
-  def('bakery_assistant', '暖炉烘焙点心师', 'certified', 282, 'cooking', { cert: '健康证', equip: 'oven', place: 'home', materialCost: 16, minutes: 330, hasVariance: true }),
-  def('garden_trimmer', '社区园艺修剪师', 'certified', 288, 'labor', { cert: '园艺花艺证', equip: 'garden_kit', place: 'home', minutes: 330, hasVariance: true }),
-  def('archivist', '档案整理专员', 'certified', 276, 'admin', { equip: 'computer', days: 30, place: 'anywhere', minutes: 330, hasVariance: true }),
-  def('handbrew_barista', '手冲咖啡茶艺师', 'certified', 292, 'cooking', { cert: '茶艺咖啡证', equip: 'coffee_kit', place: 'anywhere', materialCost: 14, minutes: 330, hasVariance: true }),
-  def('local_guide', '城市文化讲解导游', 'certified', 298, 'social', { cert: '导游证', place: 'destination', minutes: 360, hasVariance: true }),
-  def('aerial_landscape', '景区风光跟拍师', 'certified', 305, 'photo', { cert: '摄影证', equip: 'camera', place: 'destination', minutes: 360, hasVariance: true }),
-  def('rehab_therapist', '社区理疗康复师', 'certified', 295, 'social', { cert: '护工证', place: 'home', minutes: 360, hasVariance: true }),
+  def('caregiver', '护工', 'certified', 260, 'social', { cert: '护工证', place: 'home', materialCost: 8, minutes: 360, streakTag: 'social' }),
+  def('driver', '网约车司机', 'certified', 295, 'driving', { cert: '驾照', place: 'home', materialCost: 45, minutes: 360, shift: true, hasVariance: true, streakTag: 'focus' }),
+  def('designated_driver', '夜间代驾', 'certified', 280, 'driving', { cert: '驾照', equip: 'folding_bike', place: 'home', materialCost: 12, minutes: 240, shift: true, hasVariance: true, streakTag: 'focus' }),
+  def('cook', '厨师', 'certified', 310, 'cooking', { cert: '厨师证', place: 'destination', minutes: 360, hasVariance: true, streakTag: 'labor' }),
+  def('electrician', '电工', 'certified', 278, 'craft', { cert: '电工证', place: 'home', materialCost: 15, minutes: 360, hasVariance: true, streakTag: 'focus' }),
+  def('arch_photo', '古建采风跟拍', 'certified', 300, 'photo', { cert: '摄影证', equip: 'camera', place: 'anywhere', materialCost: 18, minutes: 360, hasVariance: true, streakTag: 'focus' }),
+  def('magazine_feature', '城市特约撰稿', 'certified', 286, 'writing', { equip: 'computer', days: 30, place: 'anywhere', materialCost: 14, minutes: 360, hasVariance: true, streakTag: 'focus' }),
+  def('custom_tailor', '成衣裁缝定制', 'certified', 302, 'craft', { equip: 'sewing', days: 30, place: 'home', materialCost: 18, minutes: 360, hasVariance: true, streakTag: 'focus' }),
+  def('bakery_assistant', '暖炉烘焙点心师', 'certified', 282, 'cooking', { cert: '健康证', equip: 'oven', place: 'home', materialCost: 16, minutes: 330, hasVariance: true, streakTag: 'focus' }),
+  def('garden_trimmer', '社区园艺修剪师', 'certified', 288, 'labor', { cert: '园艺花艺证', equip: 'garden_kit', place: 'home', materialCost: 16, minutes: 330, hasVariance: true, streakTag: 'labor' }),
+  def('archivist', '档案整理专员', 'certified', 276, 'admin', { equip: 'computer', days: 30, place: 'anywhere', minutes: 330, hasVariance: true, streakTag: 'focus' }),
+  def('handbrew_barista', '手冲咖啡茶艺师', 'certified', 292, 'cooking', { cert: '茶艺咖啡证', equip: 'coffee_kit', place: 'anywhere', materialCost: 14, minutes: 330, hasVariance: true, streakTag: 'social' }),
+  def('local_guide', '城市文化讲解导游', 'certified', 298, 'social', { cert: '导游证', place: 'destination', materialCost: 15, minutes: 360, hasVariance: true, streakTag: 'social' }),
+  def('aerial_landscape', '景区风光跟拍师', 'certified', 305, 'photo', { cert: '摄影证', equip: 'camera', place: 'destination', materialCost: 20, minutes: 360, hasVariance: true, streakTag: 'focus' }),
+  def('rehab_therapist', '社区理疗康复师', 'certified', 295, 'social', { cert: '护工证', place: 'home', materialCost: 18, minutes: 360, hasVariance: true, streakTag: 'social' }),
+  def('tea_sommelier', '花果茶调香师', 'certified', 296, 'cooking', { cert: '茶艺咖啡证', equip: 'coffee_kit', place: 'anywhere', materialCost: 22, minutes: 330, hasVariance: true, streakTag: 'focus', loadOverride: { clean: 16 } }),
+  def('wool_artisan', '绒线织造手作人', 'certified', 294, 'craft', { equip: 'sewing', days: 30, place: 'home', materialCost: 24, minutes: 330, hasVariance: true, streakTag: 'focus', loadOverride: { energy: 38, clean: 14, social: 4 } }),
+  def('lz_gourd_carver', '河岸刻葫芦手作人', 'certified', 296, 'craft', { days: 30, place: 'home', cities: ['兰州'], materialCost: 20, minutes: 330, hasVariance: true, streakTag: 'focus', loadOverride: { energy: 38, clean: 14, social: 4, know: 1.5 } }),
+  def('lz_river_docent', '黄河风情带讲解员', 'certified', 302, 'social', { cert: '导游证', place: 'destination', cities: ['兰州'], materialCost: 12, minutes: 360, hasVariance: true, streakTag: 'social', loadOverride: { know: 1.5 } }),
+  def('bj_axis_photo', '中轴线古建约拍摄影师', 'certified', 308, 'photo', { cert: '摄影证', equip: 'camera', place: 'destination', cities: ['北京'], materialCost: 22, minutes: 360, hasVariance: true, streakTag: 'focus' }),
+  def('bj_courtyard_docent', '博物馆与古建特约讲解', 'certified', 305, 'social', { cert: '导游证', place: 'destination', cities: ['北京'], materialCost: 15, minutes: 360, hasVariance: true, streakTag: 'social', loadOverride: { clean: 16, know: 1.5 } }),
 
   // 专业：证 + 经验，两个都要（7~8 小时，380–450 元）
-  def('nurse', '社区护士', 'professional', 430, 'social', { cert: '护士执业证', days: 30, place: 'home', minutes: 480, hasVariance: true }),
-  def('teacher', '小学代课老师', 'professional', 410, 'writing', { cert: '教师资格证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
-  def('accountant', '会计', 'professional', 445, 'admin', { cert: '会计证', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
-  def('socialworker', '社区社工', 'professional', 380, 'social', { cert: '社工证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
-  def('photo_column', '纪实摄影专栏', 'professional', 420, 'photo', { cert: '摄影证', equip: 'camera', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
-  def('landscape_chief', '生态林园养护主管', 'professional', 396, 'labor', { cert: '园艺花艺证', days: 30, place: 'home', minutes: 420, hasVariance: true }),
-  def('pastry_chef', '私房研发点心主厨', 'professional', 440, 'cooking', { cert: '厨师证', equip: 'oven', days: 30, place: 'home', materialCost: 22, minutes: 420, hasVariance: true }),
-  def('pottery_master', '陶艺木作主理人', 'professional', 415, 'craft', { days: 30, place: 'home', materialCost: 20, minutes: 420, hasVariance: true }),
-  def('charter_captain', '城际定制包车司导', 'professional', 425, 'driving', { cert: '驾照', days: 30, place: 'anywhere', materialCost: 40, minutes: 420, shift: true, hasVariance: true }),
-  def('travel_editor', '旅行杂志专栏主编', 'professional', 405, 'writing', { equip: 'computer', days: 30, place: 'anywhere', minutes: 420, hasVariance: true }),
-  def('community_doctor', '社区全科医生', 'professional', 450, 'social', { cert: '执业医师证', days: 30, place: 'home', minutes: 450, hasVariance: true }),
+  def('nurse', '社区护士', 'professional', 430, 'social', { cert: '护士执业证', days: 30, place: 'home', materialCost: 15, minutes: 480, hasVariance: true, streakTag: 'social' }),
+  def('teacher', '小学代课老师', 'professional', 410, 'writing', { cert: '教师资格证', days: 30, place: 'home', materialCost: 14, minutes: 420, hasVariance: true, streakTag: 'focus' }),
+  def('accountant', '会计', 'professional', 445, 'admin', { cert: '会计证', days: 30, place: 'anywhere', materialCost: 12, minutes: 420, hasVariance: true, streakTag: 'focus' }),
+  def('socialworker', '社区社工', 'professional', 380, 'social', { cert: '社工证', days: 30, place: 'home', materialCost: 12, minutes: 420, hasVariance: true, streakTag: 'social' }),
+  def('photo_column', '纪实摄影专栏', 'professional', 420, 'photo', { cert: '摄影证', equip: 'camera', days: 30, place: 'anywhere', materialCost: 24, minutes: 420, hasVariance: true, streakTag: 'focus' }),
+  def('landscape_chief', '生态林园养护主管', 'professional', 396, 'labor', { cert: '园艺花艺证', days: 30, place: 'home', materialCost: 24, minutes: 420, hasVariance: true, streakTag: 'labor' }),
+  def('pastry_chef', '私房研发点心主厨', 'professional', 440, 'cooking', { cert: '厨师证', equip: 'oven', days: 30, place: 'home', materialCost: 22, minutes: 420, hasVariance: true, streakTag: 'focus' }),
+  def('pottery_master', '陶艺木作主理人', 'professional', 415, 'craft', { days: 30, place: 'home', materialCost: 20, minutes: 420, hasVariance: true, streakTag: 'focus' }),
+  def('charter_captain', '城际定制包车司导', 'professional', 425, 'driving', { cert: '驾照', days: 30, place: 'anywhere', materialCost: 40, minutes: 420, shift: true, hasVariance: true, streakTag: 'focus' }),
+  def('travel_editor', '旅行杂志专栏主编', 'professional', 405, 'writing', { equip: 'computer', days: 30, place: 'anywhere', materialCost: 18, minutes: 420, hasVariance: true, streakTag: 'focus' }),
+  def('community_doctor', '社区全科医生', 'professional', 450, 'social', { cert: '执业医师证', days: 30, place: 'home', materialCost: 20, minutes: 450, hasVariance: true, streakTag: 'social' }),
+  def('agro_advisor', '农牧生态技术顾问', 'professional', 425, 'labor', { cert: '园艺花艺证', days: 30, place: 'home', materialCost: 28, minutes: 420, hasVariance: true, streakTag: 'focus', loadOverride: { know: 2 } }),
+  def('lz_noodle_master', '老巷面馆掌勺师傅', 'professional', 435, 'cooking', { cert: '厨师证', days: 30, place: 'home', cities: ['兰州'], materialCost: 18, minutes: 420, hasVariance: true, streakTag: 'labor' }),
+  def('bj_book_conservator', '古籍文献修复师', 'professional', 442, 'writing', { equip: 'computer', days: 30, place: 'destination', cities: ['北京'], materialCost: 26, minutes: 420, hasVariance: true, streakTag: 'focus', loadOverride: { energy: 41, clean: 15, social: 6, know: 2 } }),
 ];
 
-/** 判断某份活在当前位置阶段能否接：在路上只能接 anywhere；在外地可接 anywhere+destination；在家可接 home+anywhere。 */
-export function jobAllowedAt(job: JobDef, phase: 'home' | 'staying' | 'traveling'): boolean {
-  if (phase === 'traveling') return job.place === 'anywhere';
-  if (phase === 'staying') return job.place === 'anywhere' || job.place === 'destination';
-  return job.place === 'home' || job.place === 'anywhere';
+export function normalizeCityName(city?: string): string {
+  return String(city ?? '').trim().replace(/[市省区县]$/, '');
+}
+
+/** 判断某份活在当前位置阶段与所属城能否接：在路上严禁解锁城市限定职业；停驻/居家核验城市归一化。 */
+export function jobAllowedAt(
+  job: JobDef,
+  phase: 'home' | 'staying' | 'traveling',
+  currentCity = '兰州',
+): boolean {
+  if (phase === 'traveling') {
+    return job.place === 'anywhere' && (!job.cities || job.cities.length === 0);
+  }
+  const cityOk = !job.cities?.length || job.cities.includes(normalizeCityName(currentCity));
+  if (!cityOk) return false;
+  if (phase === 'staying') return job.place === 'anywhere' || job.place === 'destination' || Boolean(job.cities?.length);
+  return job.place === 'home' || job.place === 'anywhere' || Boolean(job.cities?.length);
 }
 
 /**

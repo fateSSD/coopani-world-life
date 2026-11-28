@@ -26,6 +26,10 @@ const TEXT = {
     fbAddr: '仓库：',
     fbGroupLead: 'QQ 群：',
     fbWhy: '仅复制脱敏版本号与当前状态，点右侧链接可粘贴至 Issue。',
+    sponsorTitle: '支持作者（支付宝资助）',
+    sponsorLoading: '正在加载收款码…',
+    sponsorFail: '收款码加载失败，可收起后重试。',
+    sponsorCaption: '打开支付宝扫一扫，纯自愿随缘支持，感谢喜欢模拟鱼生。',
     who: '此刻概览',
     visits: '陪伴天数',
     visitDays: '近 7 天 {n} 天',
@@ -101,6 +105,10 @@ const TEXT = {
     fbAddr: 'Repo: ',
     fbGroupLead: 'QQ group: ',
     fbWhy: 'Copies sanitized version & state, then paste into GitHub Issue.',
+    sponsorTitle: 'Support the author (Alipay)',
+    sponsorLoading: 'Loading QR code…',
+    sponsorFail: 'Failed to load QR code. Collapse and reopen to retry.',
+    sponsorCaption: 'Scan with Alipay — purely voluntary support. Thank you!',
     who: 'Overview',
     visits: 'Visits',
     visitDays: '{n}d / 7d',
@@ -671,6 +679,9 @@ details.lf-fold[open] summary { margin-bottom: 10px; padding-bottom: 8px; border
 .lf-help .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .lf-help .addr { margin-top: 6px; font-size: 11px; color: #64748b; }
 .lf-help code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+.lf-sponsor-box { margin-top: 8px; padding: 10px; border-radius: 10px; border: 1px solid #e2e8f0; background: #fff; display: inline-flex; flex-direction: column; align-items: center; gap: 6px; max-width: 260px; }
+.lf-sponsor-qr { width: 220px; max-width: 100%; height: auto; border-radius: 8px; display: block; }
+.lf-sponsor-cap { font-size: 11.5px; color: #64748b; text-align: center; line-height: 1.5; margin: 0; }
 
 .lf-diary-wrap { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 11px; }
 .lf-dlist { flex: 0 0 155px; display: flex; flex-direction: column; gap: 5px; }
@@ -886,7 +897,8 @@ export default {
         const toolsRow = el('div', 'lf-tools-row');
         const helpBox = el('details', 'lf-help');
         const fbBox = el('details', 'lf-help');
-        toolsRow.append(helpBox, fbBox);
+        const sponsorBox = el('details', 'lf-help lf-sponsor');
+        toolsRow.append(helpBox, fbBox, sponsorBox);
 
         const foot = el('div', 'lf-foot');
         const reload = el('button', 'lf-btn', t(lang, 'reload'));
@@ -1296,6 +1308,40 @@ export default {
             ul.append(li);
           }
           helpBox.append(ul, el('p', 'lf-note-line', t(lang, 'helpHint')));
+
+          sponsorBox.append(el('summary', null, t(lang, 'sponsorTitle')));
+          const sponsorBody = el('div', 'lf-sponsor-box');
+          sponsorBody.append(el('p', 'lf-sponsor-cap', t(lang, 'sponsorLoading')));
+          sponsorBox.append(sponsorBody);
+          let sponsorLoaded = false;
+          let sponsorLoading = false;
+          sponsorBox.addEventListener('toggle', () => {
+            if (!sponsorBox.open || sponsorLoaded || sponsorLoading) return;
+            sponsorLoading = true;
+            sponsorBody.innerHTML = '';
+            sponsorBody.append(el('p', 'lf-sponsor-cap', t(lang, 'sponsorLoading')));
+            ctx.invoke('sponsorQr')
+              .then((r) => {
+                sponsorLoading = false;
+                if (r && r.ok && r.dataUrl) {
+                  sponsorLoaded = true;
+                  sponsorBody.innerHTML = '';
+                  const img = document.createElement('img');
+                  img.className = 'lf-sponsor-qr';
+                  img.alt = '支付宝资助二维码';
+                  img.src = r.dataUrl;
+                  sponsorBody.append(img, el('p', 'lf-sponsor-cap', t(lang, 'sponsorCaption')));
+                } else {
+                  sponsorBody.innerHTML = '';
+                  sponsorBody.append(el('p', 'lf-sponsor-cap', (r && r.reason) || t(lang, 'sponsorFail')));
+                }
+              })
+              .catch(() => {
+                sponsorLoading = false;
+                sponsorBody.innerHTML = '';
+                sponsorBody.append(el('p', 'lf-sponsor-cap', t(lang, 'sponsorFail')));
+              });
+          });
         };
 
         const render = (d) => {
@@ -1668,11 +1714,31 @@ export default {
             skillRow.append(ch);
           }
           for (const eq of (c.gear || [])) {
-            const ch = el('span', 'lf-chip' + (eq.owned ? ' good' : ''), `${eq.owned ? '✓ ' : ''}${eq.name}`);
-            ch.title = `${eq.owned ? '已购置' : `未买 · ¥${eq.price}`}：${eq.note}`;
+            const pend = (d.equipPendingMaintain || []).includes(eq.id);
+            const used = (d.equipUsage && d.equipUsage[eq.id]) || 0;
+            const mRule = d.equipMaintainRules && d.equipMaintainRules[eq.id];
+            const ch = el('span', 'lf-chip' + (pend ? ' bad' : (eq.owned ? ' good' : '')), `${eq.owned ? '✓ ' : ''}${eq.name}${pend ? '·需保养' : ''}`);
+            ch.title = `${eq.owned ? `已购置${mRule ? ` · 保养${used}/${mRule.every}次(¥${mRule.cost})` : ''}` : `未买 · ¥${eq.price}`}：${eq.note}`;
             skillRow.append(ch);
           }
+          const carPend = (d.equipPendingMaintain || []).includes('vehicle_car');
+          const carUsed = (d.equipUsage && d.equipUsage.vehicle_car) || 0;
+          if (carPend || carUsed > 0) {
+            const carRule = d.equipMaintainRules && d.equipMaintainRules.vehicle_car;
+            const carChip = el('span', 'lf-chip' + (carPend ? ' bad' : ' info'), `🚗 运营车辆${carPend ? '·需保养' : ''}`);
+            carChip.title = carRule ? `保养周期 ${carUsed}/${carRule.every}次(¥${carRule.cost} · ${carRule.label})` : `累计出车 ${carUsed} 次`;
+            skillRow.append(carChip);
+          }
           summaryCard.append(skillRow);
+          const ownSpecs = d.ownedSpecialties || c.specialties || [];
+          if (ownSpecs.length) {
+            const specRow = el('div', 'lf-subrow');
+            specRow.append(el('span', 'lf-chip info', '随身特产'));
+            for (const sp of ownSpecs) {
+              specRow.append(el('span', 'lf-chip good', `${sp.name}×${sp.charges}`));
+            }
+            summaryCard.append(specRow);
+          }
 
           /* 2. 考证中心 */
           certCard.innerHTML = '';
@@ -1720,6 +1786,7 @@ export default {
             ['photo', '📷 影像·暗房作品墙'],
             ['craft', '🧵 手作·缝纫文创台'],
             ['writing', '✒️ 文字·书桌稿件夹'],
+            ['labor', '🌾 农牧·自制工坊台'],
             ['driving', '🚗 驾驶·出车调度台'],
           ];
           for (const [sid, slab] of STUDIO_TABS) {
@@ -1765,7 +1832,7 @@ export default {
             }
             recipeCard.append(cookGateChips);
             const fTabs = el('div', 'lf-tabs');
-            for (const [tid, tlab] of [['all', '全部菜谱'], ['ready', `材料齐可做 (${readyRecipes.length})`], ['simple', '零门槛简食'], ['chef', '厨师招牌菜']]) {
+            for (const [tid, tlab] of [['all', '全部菜谱'], ['ready', `材料齐可做 (${readyRecipes.length})`], ['simple', '零门槛简食'], ['chef', '厨师招牌菜'], ['feast', '宴席硬菜']]) {
               const tb = el('button', 'lf-btn sm lf-tab', tlab);
               tb.type = 'button';
               if (recipeTab === tid) tb.setAttribute('data-on', '1');
@@ -1802,6 +1869,7 @@ export default {
               if (recipeTab === 'ready') return r.canCook;
               if (recipeTab === 'simple') return r.tier === 'simple';
               if (recipeTab === 'chef') return r.tier === 'chef';
+              if (recipeTab === 'feast') return r.tier === 'feast';
               return true;
             });
             if (!rList.length) {
@@ -1811,12 +1879,13 @@ export default {
               for (const rc of rList) {
                 const card = el('div', 'lf-recipe' + (rc.canCook ? ' ready' : (!rc.unlocked ? ' locked' : '')));
                 const top = el('div', 'rtop');
-                top.append(el('span', null, rc.name));
+                top.append(el('span', null, `${rc.name}${rc.cityTag ? ` · ${rc.cityTag}` : ''}`));
                 const badgeTxt = !rc.unlocked ? '未解锁' : (rc.canCook ? '材料齐 · 可做' : '缺原料');
                 const badgeCls = !rc.unlocked ? '' : (rc.canCook ? 'good' : 'warn');
                 top.append(el('span', 'lf-chip ' + badgeCls, badgeTxt));
                 card.append(top);
-                card.append(el('div', 'rmeta', `${rc.tier === 'simple' ? '家常简食(免证)' : '厨师招牌'} · 饱腹+${rc.foodGain} 娱+${rc.funGain}${rc.energyGain ? ` 精+${rc.energyGain}` : ''} · 油盐¥${rc.fuelCost} · 建议摊价¥${rc.suggestedPrice}`));
+                const tierTxt = rc.tier === 'feast' ? '宴席硬菜' : (rc.tier === 'simple' ? '家常简食(免证)' : '厨师招牌');
+                card.append(el('div', 'rmeta', `${tierTxt} · 饱腹+${rc.foodGain} 娱+${rc.funGain}${rc.energyGain ? ` 精+${rc.energyGain}` : ''} · 油盐¥${rc.fuelCost} · 建议摊价¥${rc.suggestedPrice}`));
                 if (!rc.unlocked && rc.lockReason) {
                   const lp = el('div', 'rmeta', `门槛：${rc.lockReason}`);
                   lp.style.color = '#b45309';
@@ -1884,7 +1953,37 @@ export default {
           } else if (studioTab !== 'cooking') {
             recipeCard.append(el('p', 'lf-muted', '暂无该领域产出记录；对话里让她干一场对应工作后就会把作品和品质收进这里。'));
           }
-          recipeCard.append(el('p', 'lf-note-line', '在对话里对它说「去拍照接单」「写一篇随笔」「缝亚麻茶垫」「考驾照」「去烤个红薯」即可由它自主执行并结算四档品质。'));
+          const stationMap = { cooking: 'tea', craft: 'weave', photo: 'photo', writing: 'book', labor: 'agro' };
+          const stId = stationMap[studioTab];
+          const wbList = stId ? (c.workbench || []).filter((w) => w.station === stId) : [];
+          if (wbList.length) {
+            const wbTitle = el('div', 'lf-subrow');
+            wbTitle.append(el('span', 'lf-chip info', `工坊台 · ${wbList[0].stationLabel}（${wbList.length} 项）`));
+            recipeCard.append(wbTitle);
+            const wbGrid = el('div', 'lf-recipe-grid');
+            for (const wb of wbList) {
+              const card = el('div', 'lf-recipe' + (wb.canCraft ? ' ready' : (!wb.unlocked ? ' locked' : '')));
+              const top = el('div', 'rtop');
+              top.append(el('span', null, wb.name));
+              const badgeTxt = !wb.unlocked ? '未解锁' : (wb.canCraft ? '可制作' : '缺原料');
+              top.append(el('span', 'lf-chip ' + (!wb.unlocked ? '' : (wb.canCraft ? 'good' : 'warn')), badgeTxt));
+              card.append(top);
+              card.append(el('div', 'rmeta', `${wb.stationLabel} · 耗材¥${wb.materialCost} · 精-${wb.energyCost} · 建议摊价¥${wb.suggestedPrice}`));
+              if (!wb.unlocked && wb.lockReason) {
+                const lp = el('div', 'rmeta', `门槛：${wb.lockReason}`);
+                lp.style.color = '#b45309';
+                card.append(lp);
+              }
+              const ingRow = el('div', 'lf-chips');
+              for (const ing of (wb.ingredients || [])) {
+                ingRow.append(el('span', 'lf-ing ' + (ing.ok ? 'ok' : 'miss'), `${ing.label} ${ing.have}/${ing.need}`));
+              }
+              card.append(ingRow);
+              wbGrid.append(card);
+            }
+            recipeCard.append(wbGrid);
+          }
+          recipeCard.append(el('p', 'lf-note-line', '在对话里对它说「去拍照接单」「写一篇随笔」「缝亚麻茶垫」「做份安神茶包」「考驾照」「去烤个红薯」即可由它自主执行并结算四档品质。'));
 
           /* 4. 全职业岗位目录 */
           jobCard.innerHTML = '';
@@ -1911,6 +2010,7 @@ export default {
             const statusTd = el('td', null, jbItem.qualified ? '✓ 已可接' : `缺：${jbItem.missing.join('、')}`);
             statusTd.style.color = jbItem.qualified ? '#166534' : '#9a3412';
             const jobNameTxt = jbItem.name
+              + (jbItem.cities && jbItem.cities.length ? ` [${jbItem.cities.join('/')}限定]` : '')
               + (jbItem.materialCost > 0 ? ` (垫¥${jbItem.materialCost})` : '')
               + (jbItem.outputName ? ` · 产出:${jbItem.outputName}` : '');
             tr.append(
@@ -2620,7 +2720,7 @@ export default {
           seedsFold.append(seedsSum, sWrap);
           farmCard.append(seedsFold);
 
-          /* 3. 动物养殖场（鸡舍 / 牛棚 / 鱼塘，支持手动点击操作） */
+          /* 3. 动物养殖场（禽舍 / 畜棚 / 鱼塘，支持手动点击操作） */
           ranchCard.innerHTML = '';
           const rn = d.ranch || {
             homeSlots: { chicken: 0, cow: 0, fish: 0 },
@@ -2633,15 +2733,15 @@ export default {
             readyHarvestCount: 0,
             pens: [],
           };
-          const rLease = d.ranchLeaseConfig || { slots: { chicken: 2, cow: 2, fish: 2 }, signupFee: 180, monthly: 240 };
-          const grpLabels = d.animalGroupLabels || { chicken: '鸡舍', cow: '牛棚', fish: '鱼塘' };
+          const rLease = d.ranchLeaseConfig || { slots: { chicken: 3, cow: 3, fish: 3 }, signupFee: 180, monthly: 240 };
+          const grpLabels = d.animalGroupLabels || { chicken: '禽舍', cow: '畜棚', fish: '鱼塘' };
 
           const rHead = el('div', 'lf-mkt-head');
-          const capDesc = `鸡 ${rn.usedSlots.chicken}/${rn.totalSlots.chicken} · 牛 ${rn.usedSlots.cow}/${rn.totalSlots.cow} · 鱼 ${rn.usedSlots.fish}/${rn.totalSlots.fish}`;
-          rHead.append(el('h3', null, `养殖场 · 鸡舍 / 牛棚 / 鱼塘（${capDesc}）`));
+          const capDesc = `禽 ${rn.usedSlots.chicken}/${rn.totalSlots.chicken} · 畜 ${rn.usedSlots.cow}/${rn.totalSlots.cow} · 鱼 ${rn.usedSlots.fish}/${rn.totalSlots.fish}`;
+          rHead.append(el('h3', null, `养殖场 · 禽舍 / 畜棚 / 鱼塘（${capDesc}）`));
           const rActs = el('div', 'lf-mkt-actions');
           if (!rn.leased) {
-            const rrBtn = el('button', 'lf-btn sm primary', `签约城郊农牧场 +2鸡/+2牛/+2鱼 (¥${rLease.signupFee}+¥${rLease.monthly}/月)`);
+            const rrBtn = el('button', 'lf-btn sm primary', `签约城郊农牧场 +${rLease.slots.chicken}禽/+${rLease.slots.cow}畜/+${rLease.slots.fish}鱼 (¥${rLease.signupFee}+¥${rLease.monthly}/月)`);
             rrBtn.type = 'button';
             rrBtn.addEventListener('click', () => { rrBtn.disabled = true; runOp('ranch', 'rentRanch', {}); });
             rActs.append(rrBtn);
@@ -2701,9 +2801,9 @@ export default {
               pact.append(cb);
             }
             if (pen.mature) {
-              const isFish = pen.group === 'fish';
-              const needConf = !isFish && confirmHarvestId !== pen.id;
-              const hb = el('button', 'lf-btn sm ' + (isFish ? 'primary' : (needConf ? '' : 'danger')), isFish ? `起塘收${pen.harvestProductName}` : (needConf ? `出栏收${pen.harvestProductName}` : `确认出栏收肉`));
+              const isPond = pen.group === 'fish';
+              const needConf = !isPond && confirmHarvestId !== pen.id;
+              const hb = el('button', 'lf-btn sm ' + (isPond ? 'primary' : (needConf ? '' : 'danger')), isPond ? `起塘收${pen.harvestProductName}` : (needConf ? `换购收${pen.harvestProductName}` : `确认合作社换购`));
               hb.type = 'button';
               hb.addEventListener('click', () => {
                 if (needConf) {
@@ -2747,7 +2847,7 @@ export default {
             }
           }
           if (!(rn.pens || []).length && !hasAnyEmptyRanch) {
-            ranchCard.append(el('p', 'lf-muted', '当前住处（城中村）还没有自家养殖栏位：搬到老小区起解锁鸡舍，新小区起解锁鱼池，或直接点右上角签约城郊农牧场解锁鸡舍+牛棚+鱼塘！'));
+            ranchCard.append(el('p', 'lf-muted', '当前住处（城中村）还没有自家养殖栏位：搬到老小区起解锁禽舍，新小区起解锁鱼塘，或直接点右上角签约城郊农牧场解锁禽舍+畜棚+鱼塘！'));
           } else {
             ranchCard.append(pensGrid);
           }

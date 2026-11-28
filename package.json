@@ -1,8 +1,8 @@
 {
   "name": "coopani-world-life",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "type": "module",
-  "description": "模拟鱼生 · 50职业含医疗就医、30天证书核验、31项城邦Buff、高德天气直连、信用社借贷与七页签手账 UI。（需 Coopani 0.2.22+｜QQ 群 284525159）",
+  "description": "模拟鱼生 · 69职业含双城限定与四维成本、35农植、20养殖、45三档菜谱、20工作台、14城市特产。（需 Coopani 0.2.22+｜QQ 群 284525159）",
   "author": {
     "name": "Mr.Q"
   },
@@ -38,7 +38,7 @@
     "api": 6,
     "displayName": "模拟鱼生",
     "describe": "describe.json",
-    "webUiClient": "web/panel-1.7.0.js",
+    "webUiClient": "web/panel-1.8.0.js",
     "tags": [
       "companion",
       "internal-state"
@@ -46,11 +46,11 @@
     "locales": {
       "zh": {
         "displayName": "模拟鱼生",
-        "description": "让桌宠有自己真正在过的小日子（需 Coopani 0.2.22+｜QQ 群 284525159）。\n\n- **50 职业、14 证书与医疗就医闭环**：覆盖 4 档共 50 个职业（含药店店员、社区医生等 4 个医疗康复岗）与 14 本证书（新增茶艺咖啡证、园艺花艺证、导游证、执业医师证），引入熟练度加薪与四档产出品质，新增生病静养每日照料与 `see_doctor` 社区诊所就医，并启用 30 天证书见识复核与 5 天预警宽限。\n- **Coopanion Hub v1.3 多城联机与 31 项城镇加成**：支持 `hubUrl` / `hubTownId` 热配置（面板一键复制与填入总服地址）、跨城迁居、31 项城邦加成联动、跨城鱼市街摆摊买摊、邻里代管、鱼间私信及信用社微息借贷；留空 `hubUrl` 100% 兼容老服或单机。\n- **七页签手账 UI 与高德天气直连**：包含此刻、职业与五大工坊、她惦记的、你与街坊、农牧与集市、日记时间轴与参考素材库，天气支持高德直连复用 `JOURNEY_AMAP_KEY`。\n- **真实节奏与农牧工坊**：五条需求随真实时间流逝与二十四节气变化；18 道菜谱工坊、18 种慢熟作物与鸡舍/牛棚/鱼塘养殖（大肥鱼是鲸鱼不算鱼，放心养鱼收肉蛋奶）。"
+        "description": "让桌宠有自己真正在过的小日子（需 Coopani 0.2.22+｜QQ 群 284525159）。\n\n- **69 职业、四维工作成本与城市限定**：覆盖 4 档共 69 个职业（含兰州/北京双城限定与医疗康复岗），落齐「单次耗材 + 9 项装备定期保养 + 连续跨日疲劳/体质负荷 + 30 天证书轻续期费」四维成本，防旅途在途泄漏目的地工作。\n- **35 种植 × 20 养殖 × 45 三档菜谱 × 20 工作台 × 14 城市特产**：农牧场扩为禽舍/畜棚/鱼塘（+3/+3/+3），冷链车队温和换购、自制花肥与鱼饵闭环、家常简食/厨师招牌/宴席硬菜三档 45 道菜谱与茶饮/织造/暗房/书案/农牧五大工作台作品均可衔接鱼市街摆摊。\n- **Coopanion Hub v1.3 多城联机与高德天气直连**：支持跨城迁居、双城早晚市集风味切换、城市风貌 Buff、跨城买摊与邻里代管、信用社借贷，及 `JOURNEY_AMAP_KEY` 高德天气直连。"
       },
       "en": {
         "displayName": "Simulated Fish Life",
-        "description": "A real everyday life simulation for your desktop companion (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Reedpond Credit Union & Pocket Money Gifts**: Adds 3 micro-interest loan tiers (7d/14d/30d) with dynamic credit limits up to 5000 RMB, an 80 RMB living-cash floor on maturity, 50% overdue income garnishment, and strictly read-only UI keeping borrowing autonomous; plus a collapsible Pocket Money gift bar (500 RMB daily soft cap, configurable) tracked separately from earned income.\n- **Coopanion Hub v1.1 Multi-City Online (Dual-Track)**: Optional `hubUrl` and `hubTownId` hot settings (plus one-click copy & auto-fill) enable cross-town relocation, town notices and 31 domain buffs, cross-town stalls with specialty tags and transparent shipping breakdown, same-town neighbor errands, and 24 tools total. Leaving `hubUrl` empty keeps 100% compatibility with legacy `townUrl` or offline mode.\n- **Revamped 7-Tab Journal UI**: Refreshed layout and controls across Live Status, Career & 5 Craft Studios (Cooking, Photo, Craft, Writing, Driving), Wants, Companionship & Mail, Farm & Market, Diary & Timeline, and Reference Library—with town switching, batch/direct farm & ranch controls, daily sick care & clinic visits (`see_doctor`), specialty/local filters, order cancellation, and read-only fish-to-fish mailbox view.\n- **Daily Rhythm, Career & Farm Workshop**: Real-time five needs with 24 solar terms & direct Amap weather (`amap` / `auto` reusing `JOURNEY_AMAP_KEY`), 50 jobs across 4 tiers (including 4 medical jobs) with proficiency pay scaling & 4-tier output quality, 14 certs with 30-day knowledge audit, overwork/cold sick rest & daily care, 18 recipes, 18 crops, and poultry/dairy/pond farming (Big Fish is a whale, not a fish!)."
+        "description": "A real everyday life simulation for your desktop companion (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **69 Jobs, City Scoping & 4D Work Costs**: Expands jobs from 50 to 69 (including Lanzhou & Beijing exclusive gigs), introducing upfront material costs, 9-tier equipment periodic maintenance, cross-day streak fatigue/fitness overrides, and lightweight 30-day certificate renewal fees.\n- **35 Crops, 20 Ranch Animals, 45 3-Tier Recipes, 20 Workbench Crafts & 14 City Specialties**: Upgrades ranching to 3/3/3 slots with gentle coop exchanges and eco collection, adds homemade fertilizer/bait loops, 3-tier cooking (simple/chef/feast), 5 craft workbenches, and dual-city market specialties connected to street stalls.\n- **Coopanion Hub v1.3 Multi-City & 7-Tab Journal UI**: Real-time five needs with solar terms, direct Amap weather (`JOURNEY_AMAP_KEY`), cross-town relocation, town buffs, credit union loans, and `web/panel-1.8.0.js` UI."
       }
     },
     "icon": "assets/icon.png"

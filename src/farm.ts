@@ -20,7 +20,7 @@ export const LEASE_PLOT_COUNT = 4;
 export const LEASE_SIGNUP_FEE = 100;
 export const LEASE_MONTHLY_RENT = 150;
 
-export type IngredientKind = 'veg' | 'starch' | 'fruit' | 'herb' | 'egg_dairy' | 'meat' | 'fish';
+export type IngredientKind = 'veg' | 'starch' | 'fruit' | 'herb' | 'egg_dairy' | 'meat' | 'fish' | 'craft_mat';
 
 export interface SeedDef {
   id: string;
@@ -256,6 +256,217 @@ export const SEEDS: readonly SeedDef[] = [
     dishHints: ['奶油草莓蛋糕'],
     note: '9 天慢熟精品果品，直接挂鲜蔬摊或配鸡蛋鲜奶做蛋糕利润最高。',
   },
+  {
+    id: 'melon',
+    name: '脆甜香瓜',
+    aliases: ['香瓜', '甜瓜', '白兰瓜'],
+    category: 'fruit',
+    price: 11,
+    growHours: 120,
+    baseYield: 3,
+    solarTerms: ['立夏', '小满', '芒种', '夏至'],
+    dishHints: ['冰镇鲜切瓜果盘'],
+    note: '5 天熟透清甜脆爽，切盘即食或挂鲜蔬摊都很受欢迎。',
+  },
+  {
+    id: 'watermelon',
+    name: '沙瓤大西瓜',
+    aliases: ['西瓜', '沙瓤瓜'],
+    category: 'fruit',
+    price: 14,
+    growHours: 168,
+    baseYield: 4,
+    needSpace: true,
+    solarTerms: ['夏至', '小暑', '大暑', '立秋'],
+    dishHints: ['冰镇鲜切瓜果盘'],
+    note: '7 天抱大瓜，需至少 2 槽铺藤空间，夏日解暑主力。',
+  },
+  {
+    id: 'peach',
+    name: '粉嫩水蜜桃',
+    aliases: ['水蜜桃', '桃子', '鲜桃'],
+    category: 'fruit',
+    price: 15,
+    growHours: 168,
+    baseYield: 4,
+    solarTerms: ['芒种', '夏至', '小暑', '大暑'],
+    dishHints: ['嫩煎蜜桃鸭胸肉', '蜜桃蓝莓冷萃果茶'],
+    note: '7 天挂果，汁水丰盈，鲜吃、做果茶或煎鸭胸都很出彩。',
+  },
+  {
+    id: 'loquat',
+    name: '黄金枇杷',
+    aliases: ['枇杷', '白沙枇杷'],
+    category: 'fruit',
+    price: 14,
+    growHours: 168,
+    baseYield: 4,
+    solarTerms: ['谷雨', '立夏', '小满'],
+    dishHints: ['枇杷金桔蜜渍冰酿', '枇杷金桔润喉膏'],
+    note: '7 天采摘金黄枇杷，水乡初夏招牌果品，熬润喉膏最合适。',
+  },
+  {
+    id: 'yangmei',
+    name: '紫红杨梅',
+    aliases: ['杨梅', '东魁杨梅'],
+    category: 'fruit',
+    price: 15,
+    growHours: 168,
+    baseYield: 4,
+    solarTerms: ['芒种', '夏至', '小暑'],
+    dishHints: ['杨梅紫葡萄手工果醋'],
+    note: '7 天熟透酸甜生津，适合酿果醋和做夏日冰饮。',
+  },
+  {
+    id: 'blueberry',
+    name: '爆浆蓝莓',
+    aliases: ['蓝莓', '鲜蓝莓'],
+    category: 'fruit',
+    price: 17,
+    growHours: 192,
+    baseYield: 4,
+    solarTerms: ['立夏', '小满', '芒种', '夏至'],
+    dishHints: ['蓝莓羊奶松饼', '蜜桃蓝莓冷萃果茶'],
+    note: '8 天慢熟浆果，烘焙松饼与冷萃果茶的高颜值主角。',
+  },
+  {
+    id: 'pear',
+    name: '冰糖翠冠梨',
+    aliases: ['梨', '雪梨', '翠冠梨'],
+    category: 'fruit',
+    price: 15,
+    growHours: 168,
+    baseYield: 4,
+    needSpace: true,
+    solarTerms: ['立秋', '处暑', '白露', '秋分'],
+    dishHints: ['蜂蜜冰糖炖雪梨'],
+    note: '7 天采梨，需至少 2 槽空间，秋燥时炖碗冰糖雪梨最舒坦。',
+  },
+  {
+    id: 'fig',
+    name: '蜜汁无花果',
+    aliases: ['无花果', '鲜无花果'],
+    category: 'fruit',
+    price: 16,
+    growHours: 192,
+    baseYield: 4,
+    solarTerms: ['立秋', '处暑', '白露', '秋分'],
+    dishHints: ['无花果羊奶酪欧包'],
+    note: '8 天软糯流蜜，配羊奶与冬小麦烤欧包风味独特。',
+  },
+  {
+    id: 'grape',
+    name: '巨峰紫葡萄',
+    aliases: ['葡萄', '紫葡萄', '提子'],
+    category: 'fruit',
+    price: 18,
+    growHours: 216,
+    baseYield: 4,
+    needSpace: true,
+    solarTerms: ['处暑', '白露', '秋分', '寒露'],
+    dishHints: ['杨梅紫葡萄手工果醋'],
+    note: '9 天搭架熟透，需至少 2 槽空间，鲜卖酿醋利润都高。',
+  },
+  {
+    id: 'kumquat',
+    name: '蜜香小金桔',
+    aliases: ['金桔', '小金桔', '脆皮桔'],
+    category: 'fruit',
+    price: 16,
+    growHours: 192,
+    baseYield: 5,
+    solarTerms: ['立冬', '小雪', '大雪', '冬至'],
+    dishHints: ['枇杷金桔蜜渍冰酿', '枇杷金桔润喉膏'],
+    note: '8 天满枝金灿，一次收 5 份，熬膏调香泡茶都耐放。',
+  },
+  {
+    id: 'persimmon',
+    name: '红灯甜柿子',
+    aliases: ['柿子', '甜柿', '脆柿'],
+    category: 'fruit',
+    price: 18,
+    growHours: 216,
+    baseYield: 4,
+    needSpace: true,
+    solarTerms: ['寒露', '霜降', '立冬', '小雪'],
+    dishHints: ['霜降甜柿桂花千层酥', '慢晒甜柿饼'],
+    note: '9 天霜降变红，需至少 2 槽空间，可烤酥点也可慢晒柿饼。',
+  },
+  {
+    id: 'mint',
+    name: '清凉薄荷',
+    aliases: ['薄荷', '薄荷叶'],
+    category: 'herb',
+    price: 5,
+    growHours: 96,
+    baseYield: 3,
+    solarTerms: ['清明', '谷雨', '立夏', '小暑'],
+    dishHints: ['薄荷洋甘菊安神茶包', '枇杷金桔蜜渍冰酿'],
+    note: '4 天快熟香草，窗台一槽就能长满，泡茶冷饮与蓝晒画都好用。',
+  },
+  {
+    id: 'chamomile',
+    name: '洋甘菊与桂花',
+    aliases: ['洋甘菊', '桂花', '金桂'],
+    category: 'herb',
+    price: 10,
+    growHours: 144,
+    baseYield: 3,
+    solarTerms: ['白露', '秋分', '寒露', '霜降'],
+    dishHints: ['薄荷洋甘菊安神茶包', '霜降甜柿桂花千层酥'],
+    note: '6 天采花晾香，泡安神茶、做蜂蜡香薰和桂花酥的核心香草。',
+  },
+  {
+    id: 'wild_rice_stem',
+    name: '水乡脆茭白',
+    aliases: ['茭白', '水笋'],
+    category: 'veg',
+    price: 9,
+    growHours: 144,
+    baseYield: 3,
+    needSpace: true,
+    solarTerms: ['芒种', '夏至', '秋分', '寒露'],
+    dishHints: ['浓油焖茭白五花', '蒜蓉清炒时蔬'],
+    note: '6 天长出洁白脆嫩的浅滩茭白，需至少 2 槽水田空间。',
+  },
+  {
+    id: 'water_caltrop',
+    name: '塘边嫩菱角',
+    aliases: ['菱角', '红菱'],
+    category: 'starch',
+    price: 10,
+    growHours: 144,
+    baseYield: 4,
+    needSpace: true,
+    solarTerms: ['处暑', '白露', '秋分', '寒露'],
+    dishHints: ['盐水煮嫩菱角'],
+    note: '6 天浅塘采菱，需至少 2 槽空间，盐水一煮就是水乡零嘴。',
+  },
+  {
+    id: 'purple_yam',
+    name: '紫心糯紫薯',
+    aliases: ['紫薯', '紫心番薯'],
+    category: 'starch',
+    price: 9,
+    growHours: 168,
+    baseYield: 4,
+    solarTerms: ['立秋', '处暑', '白露', '秋分'],
+    dishHints: ['紫薯糯香杂粮粥'],
+    note: '7 天起薯，粉糯微甜，煮粥或做甜点内馅都很顶饱。',
+  },
+  {
+    id: 'wheat',
+    name: '黄金冬小麦',
+    aliases: ['小麦', '冬小麦', '面粉'],
+    category: 'starch',
+    price: 11,
+    growHours: 192,
+    baseYield: 5,
+    needSpace: true,
+    solarTerms: ['芒种', '夏至', '霜降', '立冬'],
+    dishHints: ['咸蛋黄流沙拌面', '无花果羊奶酪欧包', '一清二白牛肉面'],
+    note: '8 天熟麦收 5 份，需至少 2 槽空间，自制面食与烘焙的万能主粮。',
+  },
 ];
 
 export interface FarmPlot {
@@ -302,7 +513,7 @@ export interface CookedDishItem {
   funGain: number;
   energyGain?: number;
   cleanGain?: number;
-  tier: 'simple' | 'chef';
+  tier: 'simple' | 'chef' | 'feast';
   quality?: 'common' | 'good' | 'fine' | 'exquisite';
   qualityLabel?: string;
   cookedAt: string;
@@ -396,6 +607,8 @@ export interface FarmHostState {
   farm: FarmState;
   pantry: PantryItem[];
   cookedDishes?: CookedDishItem[];
+  workOutputs?: { id: string; name: string; count: number; value: number }[];
+  specialties?: { id: string; name: string; city: string; category: string; charges: number }[];
   tellable: { id: string; text: string; at: string; said: boolean }[];
   moodlets: { id: string; source: string; text: string; kind: 'good' | 'bad'; expiresAt: string }[];
   updatedAt: string;
@@ -410,9 +623,25 @@ export function inferIngredientId(name: string, explicitId?: string): { itemId: 
   if (s) {
     const sd = SEEDS.find((x) => x.id === s);
     if (sd) return { itemId: sd.id, kind: sd.category };
-    if (s === 'egg' || s === 'milk') return { itemId: s, kind: 'egg_dairy' };
-    if (s === 'chicken_meat' || s === 'beef') return { itemId: s, kind: 'meat' };
-    if (s === 'fresh_fish') return { itemId: s, kind: 'fish' };
+    if (s === 'egg' || s === 'milk' || s === 'quail_egg' || s === 'duck_egg' || s === 'pigeon_egg' || s === 'goose_egg' || s === 'goat_milk') {
+      return { itemId: s, kind: 'egg_dairy' };
+    }
+    if (s === 'chicken_meat' || s === 'beef' || s === 'duck_meat' || s === 'pigeon_meat' || s === 'mutton' || s === 'pork') {
+      return { itemId: s, kind: 'meat' };
+    }
+    if (s === 'fresh_fish' || s === 'crucian_fish' || s === 'river_shrimp' || s === 'black_carp' || s === 'mandarin_fish') {
+      return { itemId: s, kind: 'fish' };
+    }
+    if (
+      s === 'pearl' || s === 'goose_down' || s === 'rabbit_fur' || s === 'beeswax'
+      || s === 'silk_cocoon' || s === 'wool' || s === 'lz_gourd_blank' || s === 'bj_tuer_blank'
+      || s === 'organic_fertilizer' || s === 'fish_bait'
+    ) {
+      return { itemId: s, kind: 'craft_mat' };
+    }
+    if (s === 'honey' || s === 'spice_pack' || s === 'sweet_sauce') return { itemId: s, kind: 'herb' };
+    if (s === 'lily_dry') return { itemId: s, kind: 'veg' };
+    if (s === 'chestnut') return { itemId: s, kind: 'starch' };
   }
   const raw = String(name || '').trim();
   const low = raw.toLowerCase();
@@ -426,11 +655,40 @@ export function inferIngredientId(name: string, explicitId?: string): { itemId: 
       return { itemId: sd.id, kind: sd.category };
     }
   }
+  if (/羊奶/.test(raw)) return { itemId: 'goat_milk', kind: 'egg_dairy' };
   if (/牛奶|鲜奶|奶/.test(raw)) return { itemId: 'milk', kind: 'egg_dairy' };
-  if (/鸡蛋|土鸡蛋|鸭蛋|蛋/.test(raw)) return { itemId: 'egg', kind: 'egg_dairy' };
+  if (/鹌鹑蛋/.test(raw)) return { itemId: 'quail_egg', kind: 'egg_dairy' };
+  if (/鸭蛋/.test(raw)) return { itemId: 'duck_egg', kind: 'egg_dairy' };
+  if (/鸽蛋/.test(raw)) return { itemId: 'pigeon_egg', kind: 'egg_dairy' };
+  if (/鹅蛋/.test(raw)) return { itemId: 'goose_egg', kind: 'egg_dairy' };
+  if (/鸡蛋|土鸡蛋|蛋/.test(raw)) return { itemId: 'egg', kind: 'egg_dairy' };
+  if (/鸭胸|鸭肉|老鸭/.test(raw)) return { itemId: 'duck_meat', kind: 'meat' };
+  if (/鸽肉|老鸽/.test(raw)) return { itemId: 'pigeon_meat', kind: 'meat' };
+  if (/羊肉|羔羊/.test(raw)) return { itemId: 'mutton', kind: 'meat' };
+  if (/五花|排骨|猪肉/.test(raw)) return { itemId: 'pork', kind: 'meat' };
   if (/牛肉|牛腩/.test(raw)) return { itemId: 'beef', kind: 'meat' };
-  if (/鸡肉|土鸡|鸡腿|鸡/.test(raw)) return { itemId: 'chicken_meat', kind: 'meat' };
-  if (/鲈鱼|草鱼|鲫鱼|鲜鱼|鱼/.test(raw)) return { itemId: 'fresh_fish', kind: 'fish' };
+  if (/鸡肉|土鸡|鸡腿|鸡|小禽肉/.test(raw)) return { itemId: 'chicken_meat', kind: 'meat' };
+  if (/鲫鱼/.test(raw)) return { itemId: 'crucian_fish', kind: 'fish' };
+  if (/青虾|河虾|鲜虾/.test(raw)) return { itemId: 'river_shrimp', kind: 'fish' };
+  if (/青鱼/.test(raw)) return { itemId: 'black_carp', kind: 'fish' };
+  if (/鳜鱼|桂鱼/.test(raw)) return { itemId: 'mandarin_fish', kind: 'fish' };
+  if (/鲈鱼|草鱼|黄颡鱼|鲜鱼|鱼/.test(raw)) return { itemId: 'fresh_fish', kind: 'fish' };
+  if (/珍珠|淡水珠/.test(raw)) return { itemId: 'pearl', kind: 'craft_mat' };
+  if (/鹅绒|落羽绒/.test(raw)) return { itemId: 'goose_down', kind: 'craft_mat' };
+  if (/兔绒/.test(raw)) return { itemId: 'rabbit_fur', kind: 'craft_mat' };
+  if (/蜂蜡/.test(raw)) return { itemId: 'beeswax', kind: 'craft_mat' };
+  if (/蚕茧/.test(raw)) return { itemId: 'silk_cocoon', kind: 'craft_mat' };
+  if (/羊毛/.test(raw)) return { itemId: 'wool', kind: 'craft_mat' };
+  if (/葫芦坯/.test(raw)) return { itemId: 'lz_gourd_blank', kind: 'craft_mat' };
+  if (/兔儿爷.*套|素坯兔儿爷/.test(raw)) return { itemId: 'bj_tuer_blank', kind: 'craft_mat' };
+  if (/花肥/.test(raw)) return { itemId: 'organic_fertilizer', kind: 'craft_mat' };
+  if (/鱼饵/.test(raw)) return { itemId: 'fish_bait', kind: 'craft_mat' };
+  if (/百花蜜|蜂蜜/.test(raw)) return { itemId: 'honey', kind: 'herb' };
+  if (/花椒/.test(raw)) return { itemId: 'spice_pack', kind: 'herb' };
+  if (/甜面酱/.test(raw)) return { itemId: 'sweet_sauce', kind: 'herb' };
+  if (/百合干/.test(raw)) return { itemId: 'lily_dry', kind: 'veg' };
+  if (/板栗/.test(raw)) return { itemId: 'chestnut', kind: 'starch' };
+  if (/春笋/.test(raw)) return { itemId: 'wild_rice_stem', kind: 'veg' };
   return { itemId: 'bokchoy', kind: 'veg' };
 }
 
@@ -467,7 +725,7 @@ export function normFarm(raw: unknown): FarmState {
 
 export function normPantry(raw: unknown): PantryItem[] {
   if (!Array.isArray(raw)) return [];
-  const validKinds = new Set<IngredientKind>(['veg', 'starch', 'fruit', 'herb', 'egg_dairy', 'meat', 'fish']);
+  const validKinds = new Set<IngredientKind>(['veg', 'starch', 'fruit', 'herb', 'egg_dairy', 'meat', 'fish', 'craft_mat']);
   const out: PantryItem[] = [];
   for (const x of raw) {
     if (!x || typeof x !== 'object') continue;
@@ -516,7 +774,7 @@ export function normCookedDishes(raw: unknown): CookedDishItem[] {
       funGain: Math.max(0, Math.round(Number(o.funGain) || 6)),
       ...(Number.isFinite(Number(o.energyGain)) ? { energyGain: Math.round(Number(o.energyGain)) } : {}),
       ...(Number.isFinite(Number(o.cleanGain)) ? { cleanGain: Math.round(Number(o.cleanGain)) } : {}),
-      tier: o.tier === 'chef' ? 'chef' : 'simple',
+      tier: o.tier === 'feast' ? 'feast' : (o.tier === 'chef' ? 'chef' : 'simple'),
       ...(o.quality && ['common', 'good', 'fine', 'exquisite'].includes(o.quality) ? { quality: o.quality } : {}),
       ...(typeof o.qualityLabel === 'string' && o.qualityLabel ? { qualityLabel: o.qualityLabel } : {}),
       cookedAt: typeof o.cookedAt === 'string' ? o.cookedAt : '',
@@ -726,10 +984,16 @@ export function addPantryItem(
   return pantry.slice(-50);
 }
 
-export function pantryCount(pantry: readonly PantryItem[], opts: { homeOnly?: boolean } = {}): number {
+function isEdiblePantryItem(x: PantryItem): boolean {
+  const k = x.kind ?? inferIngredientId(x.name, x.itemId).kind;
+  return k !== 'craft_mat';
+}
+
+export function pantryCount(pantry: readonly PantryItem[], opts: { homeOnly?: boolean; edibleOnly?: boolean } = {}): number {
   let total = 0;
   for (const x of pantry) {
     if (opts.homeOnly && x.origin !== 'home-grown' && x.origin !== 'ranch') continue;
+    if (opts.edibleOnly && !isEdiblePantryItem(x)) continue;
     if (x.qty > 0) total += x.qty;
   }
   return total;
@@ -749,13 +1013,15 @@ export function pantryCountByIds(pantry: readonly PantryItem[], ingredientIds: r
 export function consumePantry(
   pantry: PantryItem[],
   qty: number,
-  opts: { homeOnly?: boolean } = {},
+  opts: { homeOnly?: boolean; edibleOnly?: boolean } = {},
 ): { consumed: number; sources: string[]; totalUnitCost: number } {
   let need = Math.max(0, Math.round(qty));
   if (need <= 0) return { consumed: 0, sources: [], totalUnitCost: 0 };
   const rank = (o: PantryItem['origin']) => (o === 'home-grown' ? 0 : o === 'ranch' ? 1 : o === 'town-buy' ? 2 : 3);
   const candidates = pantry
-    .filter((x) => x.qty > 0 && (!opts.homeOnly || x.origin === 'home-grown' || x.origin === 'ranch'))
+    .filter((x) => x.qty > 0
+      && (!opts.homeOnly || x.origin === 'home-grown' || x.origin === 'ranch')
+      && (!opts.edibleOnly || isEdiblePantryItem(x)))
     .sort((a, b) => rank(a.origin) - rank(b.origin));
 
   let consumed = 0;
@@ -861,7 +1127,15 @@ export function applyPlant(
   const growMult = Number.isFinite(Number(opts.growMult)) && Number(opts.growMult) > 0
     ? Math.max(0.5, Math.min(2.5, Number(opts.growMult)))
     : 1;
-  const effectiveHours = seed.growHours / growMult;
+  let effectiveHours = seed.growHours / growMult;
+  let fertilized = false;
+  if (pantryCountByIds(state.pantry, ['organic_fertilizer']) > 0) {
+    const fertUsed = consumePantryByIngredient(state.pantry, ['organic_fertilizer'], 1);
+    if (fertUsed.consumed > 0) {
+      effectiveHours *= 0.85;
+      fertilized = true;
+    }
+  }
   const plot: FarmPlot = {
     id: `plot-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
     seedId: seed.id,
@@ -882,11 +1156,11 @@ export function applyPlant(
   const who = opts.byUser ? '你在面板上帮我' : '';
   pushMemory(
     state,
-    `${who}在${source === 'leased' ? '城郊菜地' : '家里种植槽'}播下了「${seed.name}」（花 ${seed.price} 元，约 ${days} 天成熟${solarBonus ? '，正赶上应季好节气' : ''}）。`,
+    `${who}在${source === 'leased' ? '城郊菜地' : '家里种植槽'}播下了「${seed.name}」（花 ${seed.price} 元，约 ${days} 天成熟${solarBonus ? '，正赶上应季好节气' : ''}${fertilized ? '，并施用有机花肥熟期缩短 15%' : ''}）。`,
     now,
   );
   state.updatedAt = now.toISOString();
-  return { ok: true, plot, paid: seed.price, cash: state.money.cash };
+  return { ok: true, plot, paid: seed.price, cash: state.money.cash, ...(fertilized ? { fertilized } : {}) };
 }
 
 export function applyWater(
@@ -894,7 +1168,7 @@ export function applyWater(
   plotId: string,
   now: Date,
   opts: { byUser?: boolean } = {},
-): { ok: boolean; reason?: string; watered: number; names?: string[]; remaining?: number; energy: number } {
+): { ok: boolean; reason?: string; watered: number; fertilizedCount?: number; names?: string[]; remaining?: number; energy: number } {
   if (!state.farm.plots.length) {
     return { ok: false, reason: '地里还没有种东西呢，先选种子播下去吧。', watered: 0, energy: state.vitals.energy };
   }
@@ -928,6 +1202,8 @@ export function applyWater(
 
   const doneNames: string[] = [];
   let stopReason = '';
+  let fertilizedCount = 0;
+  const nowMs = now.getTime();
   for (const target of targets) {
     if (!opts.byUser && state.vitals.energy < 5) {
       stopReason = `精力只剩 ${Math.round(state.vitals.energy)} 点了，歇一歇再去提水浇菜吧。`;
@@ -937,6 +1213,14 @@ export function applyWater(
     target.waterCount += 1;
     target.wateredAt = now.toISOString();
     target.wateredDay = today;
+    const mMs = Date.parse(target.matureAt);
+    if (Number.isFinite(mMs) && mMs > nowMs && pantryCountByIds(state.pantry, ['organic_fertilizer']) > 0) {
+      const fUsed = consumePantryByIngredient(state.pantry, ['organic_fertilizer'], 1);
+      if (fUsed.consumed > 0) {
+        target.matureAt = new Date(nowMs + Math.max(60_000, Math.round((mMs - nowMs) * 0.85))).toISOString();
+        fertilizedCount += 1;
+      }
+    }
     doneNames.push(target.name);
   }
 
@@ -944,17 +1228,19 @@ export function applyWater(
     return { ok: false, reason: stopReason || '精力不够去浇菜了。', watered: 0, energy: state.vitals.energy };
   }
 
+  const fertNote = fertilizedCount > 0 ? `，顺手给 ${fertilizedCount} 块地追施了有机花肥` : '';
   if (doneNames.length === 1) {
     const first = targets[0]!;
-    pushMemory(state, `${opts.byUser ? '你顺手帮菜地里的' : '提水浇了'}「${first.name}」浇水（已照料 ${first.waterCount} 次）。`, now);
+    pushMemory(state, `${opts.byUser ? '你顺手帮菜地里的' : '提水浇了'}「${first.name}」浇水（已照料 ${first.waterCount} 次${fertNote}）。`, now);
   } else {
-    pushMemory(state, `${opts.byUser ? '你顺手帮菜地浇了' : '提水浇了'} ${doneNames.length} 块菜（${doneNames.join('、')}）。`, now);
+    pushMemory(state, `${opts.byUser ? '你顺手帮菜地浇了' : '提水浇了'} ${doneNames.length} 块菜（${doneNames.join('、')}${fertNote}）。`, now);
   }
   state.updatedAt = now.toISOString();
   const remaining = targets.length - doneNames.length;
   return {
     ok: true,
     watered: doneNames.length,
+    ...(fertilizedCount > 0 ? { fertilizedCount } : {}),
     names: doneNames,
     ...(remaining > 0 ? { remaining, reason: stopReason } : {}),
     energy: state.vitals.energy,
@@ -1116,12 +1402,32 @@ export interface StallPlanResult {
   explicitCategory: boolean;
   cashCost: number;
   cookedUsed: number;
+  workOutputUsed: number;
+  specialtyUsed: number;
   pantryUsed: number;
   pantrySources: string[];
   pantryUnitCostSum: number;
   energyCost: number;
   breakdown: string;
   breakEvenPrice: number;
+}
+
+function countMatchingFinishedGoods(
+  state: FarmHostState,
+  itemName: string,
+): { workOutAvail: number; specAvail: number } {
+  const q = String(itemName || '').trim();
+  if (!q) return { workOutAvail: 0, specAvail: 0 };
+  const matchName = (name: string) => name === q || name.includes(q) || q.includes(name);
+  let workOutAvail = 0;
+  for (const w of state.workOutputs ?? []) {
+    if ((w.count ?? 0) > 0 && matchName(w.name)) workOutAvail += w.count;
+  }
+  let specAvail = 0;
+  for (const sp of state.specialties ?? []) {
+    if ((sp.charges ?? 0) > 0 && matchName(sp.name)) specAvail += sp.charges;
+  }
+  return { workOutAvail, specAvail };
 }
 
 export function evaluateStallPlan(
@@ -1155,6 +1461,8 @@ export function evaluateStallPlan(
     explicitCategory,
     cashCost: 0,
     cookedUsed: 0,
+    workOutputUsed: 0,
+    specialtyUsed: 0,
     pantryUsed: 0,
     pantrySources: [],
     pantryUnitCostSum: 0,
@@ -1165,31 +1473,55 @@ export function evaluateStallPlan(
 
   let cashCost = 0;
   let cookedUsed = 0;
+  let workOutputUsed = 0;
+  let specialtyUsed = 0;
   let pantryUsed = 0;
   let energyCost = 0;
   let breakdown = '';
 
+  const invCounts = usePantry ? countMatchingFinishedGoods(state, opts.item) : { workOutAvail: 0, specAvail: 0 };
+  const takeFinished = (needed: number): number => {
+    if (needed <= 0) return 0;
+    const takeW = Math.min(needed, invCounts.workOutAvail);
+    const takeS = Math.min(needed - takeW, invCounts.specAvail);
+    workOutputUsed += takeW;
+    specialtyUsed += takeS;
+    return takeW + takeS;
+  };
+  const invSegText = (): string[] => {
+    const out: string[] = [];
+    if (workOutputUsed > 0) out.push(`工坊作品仓成品 ${workOutputUsed} 份`);
+    if (specialtyUsed > 0) out.push(`随身特产库存 ${specialtyUsed} 份`);
+    return out;
+  };
+
   if (category === 'produce') {
     energyCost = Math.min(12, 3 + Math.ceil(stock / 2));
-    const homeAvail = usePantry ? pantryCount(state.pantry, { homeOnly: true }) : 0;
+    const finishedUsed = takeFinished(stock);
+    const rem = stock - finishedUsed;
+    const homeAvail = rem > 0 && usePantry ? pantryCount(state.pantry, { homeOnly: true, edibleOnly: true }) : 0;
     const packFee = 3;
-    if (homeAvail >= stock) {
-      pantryUsed = stock;
+    if (rem === 0) {
+      cashCost = 2;
+      breakdown = `${invSegText().join(' + ')}（打包保鲜 2 元）`;
+    } else if (homeAvail >= rem) {
+      pantryUsed = rem;
       cashCost = packFee;
-      breakdown = `消耗自产农牧货 ${stock} 份 + 打包保鲜费 ${packFee} 元`;
+      const segs = [...invSegText(), `消耗自产农牧货 ${rem} 份`, `打包保鲜费 ${packFee} 元`];
+      breakdown = segs.join(' + ');
     } else if (explicitCategory || price > 20) {
       return fail(
-        `自产鲜蔬储备不足（家里储物篮里自己种养的只有 ${homeAvail} 份，摆 ${stock} 份还差 ${stock - homeAvail} 份）。先用 life_farm / life_ranch 收成或从面板打理再摆摊吧。`,
+        `自产鲜蔬储备不足（家里储物篮里自己种养的只有 ${homeAvail} 份，摆 ${stock} 份还差 ${rem - homeAvail} 份）。先用 life_farm / life_ranch 收成或从面板打理再摆摊吧。`,
         energyCost,
       );
     } else {
       const fromHome = homeAvail;
-      const buyNeed = stock - fromHome;
+      const buyNeed = rem - fromHome;
       const wholesalePer = Math.max(2, Math.ceil(price * 0.6));
       pantryUsed = fromHome;
       cashCost = packFee + buyNeed * wholesalePer;
-      breakdown = fromHome > 0
-        ? `自产农牧货 ${fromHome} 份 + 早市现批 ${buyNeed} 份(${buyNeed * wholesalePer}元) + 打包 ${packFee} 元`
+      breakdown = fromHome > 0 || finishedUsed > 0
+        ? [...invSegText(), ...(fromHome > 0 ? [`自产农牧货 ${fromHome} 份`] : []), `早市现批 ${buyNeed} 份(${buyNeed * wholesalePer}元)`, `打包 ${packFee} 元`].join(' + ')
         : `暂无自产囤货，按早市现批进货 ${buyNeed} 份(${buyNeed * wholesalePer}元) + 打包 ${packFee} 元（自己种养卖只用 3 元打包费）`;
     }
   } else if (category === 'food') {
@@ -1200,7 +1532,8 @@ export function evaluateStallPlan(
     const hasKitchen = homeTier !== 'urban-village';
     const cookedAvail = usePantry ? cookedDishCount(state.cookedDishes) : 0;
     cookedUsed = Math.min(stock, cookedAvail);
-    const remNeed = stock - cookedUsed;
+    const finishedUsed = takeFinished(stock - cookedUsed);
+    const remNeed = stock - cookedUsed - finishedUsed;
 
     if (remNeed > 0 && price > 25 && !hasChef && cookExp < 10 && !hasOven && !hasKitchen) {
       return fail(
@@ -1208,7 +1541,7 @@ export function evaluateStallPlan(
         energyCost,
       );
     }
-    const avail = usePantry ? pantryCount(state.pantry) : 0;
+    const avail = remNeed > 0 && usePantry ? pantryCount(state.pantry, { edibleOnly: true }) : 0;
     const fromPantry = Math.min(remNeed, avail);
     const buyNeed = remNeed - fromPantry;
     const fuelPer = price <= 5 ? Math.min(3, Math.max(1, Math.ceil(price * 0.45))) : 3;
@@ -1216,54 +1549,83 @@ export function evaluateStallPlan(
       ? Math.max(1, Math.ceil(price * 0.45))
       : Math.max(2, Math.ceil(price * (hasChef ? 0.28 : 0.38)));
     pantryUsed = fromPantry;
-    const cookedPackFee = cookedUsed > 0 ? 2 : 0;
+    const cookedPackFee = (cookedUsed + finishedUsed) > 0 ? 2 : 0;
     cashCost = cookedPackFee + fromPantry * fuelPer + buyNeed * marketPer;
     const segs: string[] = [];
-    if (cookedUsed > 0) segs.push(`用已做好的成品菜 ${cookedUsed} 份(打包保鲜 ${cookedPackFee}元)`);
+    if (cookedUsed > 0) segs.push(`用已做好的成品菜 ${cookedUsed} 份`);
+    segs.push(...invSegText());
+    if (cookedPackFee > 0) segs[segs.length - 1] += `(打包保鲜 ${cookedPackFee}元)`;
     if (fromPantry > 0) segs.push(`用储物篮鲜蔬 ${fromPantry} 份(油盐燃料 ${fromPantry * fuelPer}元)`);
     if (buyNeed > 0) segs.push(`早市现买原料 ${buyNeed} 份(${buyNeed * marketPer}元)`);
     breakdown = segs.join(' + ');
   } else if (category === 'writing') {
     energyCost = Math.min(22, 6 + stock * 2);
+    const finishedUsed = takeFinished(stock);
+    const rem = stock - finishedUsed;
     const writeExp = Number(skills.writing ?? 0);
     const hasComputer = gear.includes('computer');
-    if (price > 25 && state.knowledge < 15 && writeExp < 10 && !hasComputer) {
+    if (rem > 0 && price > 25 && state.knowledge < 15 && writeExp < 10 && !hasComputer) {
       return fail(
         `定价超过 25 元的写作/出版物需要一定积累（见识达到 15、文字熟练度达到 10 或自备「二手笔记本电脑」任一即可）。`,
         energyCost,
       );
     }
-    const paperBase = hasComputer ? 3 : (price <= 10 ? 3 : 8);
-    const printPer = Math.max(1, price <= 5 ? Math.ceil(price * 0.4) : Math.ceil(price * (writeExp >= 25 ? 0.25 : 0.30)));
-    cashCost = paperBase + stock * printPer;
-    breakdown = `纸笔排版底费 ${paperBase} 元${hasComputer ? '(电脑减免)' : ''} + 印刷装帧 ${stock}×${printPer}=${stock * printPer} 元`;
+    if (rem === 0) {
+      cashCost = 2;
+      breakdown = `${invSegText().join(' + ')}（装袋摆摊底费 2 元）`;
+    } else {
+      const invFee = finishedUsed > 0 ? 2 : 0;
+      const paperBase = hasComputer ? 3 : (price <= 10 ? 3 : 8);
+      const printPer = Math.max(1, price <= 5 ? Math.ceil(price * 0.4) : Math.ceil(price * (writeExp >= 25 ? 0.25 : 0.30)));
+      cashCost = invFee + paperBase + rem * printPer;
+      breakdown = [
+        ...invSegText(),
+        `纸笔排版底费 ${paperBase} 元${hasComputer ? '(电脑减免)' : ''} + 印刷装帧 ${rem}×${printPer}=${rem * printPer} 元`,
+      ].join(' + ');
+    }
   } else if (category === 'craft') {
     energyCost = Math.min(20, 5 + stock * 2);
+    const finishedUsed = takeFinished(stock);
+    const rem = stock - finishedUsed;
     const craftExp = Number(skills.craft ?? 0);
     const hasSewing = gear.includes('sewing');
-    if (price > 25 && craftExp < 5 && !hasSewing) {
+    if (rem > 0 && price > 25 && craftExp < 5 && !hasSewing) {
       return fail(
         `定价超过 25 元的精致手作需要「手作熟练度 ≥ 5」或添置「老式缝纫机」（做两次 miniature/craft_shop 或上一次手工课就能达到）。`,
         energyCost,
       );
     }
-    const matPer = Math.max(1, Math.ceil(price * (craftExp >= 20 || hasSewing ? 0.30 : 0.38)));
-    cashCost = stock * matPer;
-    breakdown = `手作耗材 ${stock}×${matPer}=${cashCost} 元`;
+    if (rem === 0) {
+      cashCost = 2;
+      breakdown = `${invSegText().join(' + ')}（礼袋包装费 2 元）`;
+    } else {
+      const invFee = finishedUsed > 0 ? 2 : 0;
+      const matPer = Math.max(1, Math.ceil(price * (craftExp >= 20 || hasSewing ? 0.30 : 0.38)));
+      cashCost = invFee + rem * matPer;
+      breakdown = [...invSegText(), `手作耗材 ${rem}×${matPer}=${rem * matPer} 元`].join(' + ');
+    }
   } else {
     energyCost = Math.min(16, 4 + stock);
+    const finishedUsed = takeFinished(stock);
+    const rem = stock - finishedUsed;
     const photoExp = Number(skills.photo ?? 0);
     const hasCam = gear.includes('camera');
-    if (price > 15 && !hasCam && photoExp < 10) {
+    if (rem > 0 && price > 15 && !hasCam && photoExp < 10) {
       return fail(
         `定价超过 15 元的影像周边需要「二手胶片微单」或「影像熟练度 ≥ 10」。`,
         energyCost,
       );
     }
-    const devBase = price <= 10 ? 3 : 6;
-    const printPer = Math.max(1, price <= 5 ? Math.ceil(price * 0.4) : Math.ceil(price * 0.30));
-    cashCost = devBase + stock * printPer;
-    breakdown = `冲扫整理底费 ${devBase} 元 + 相纸印制 ${stock}×${printPer}=${stock * printPer} 元`;
+    if (rem === 0) {
+      cashCost = 2;
+      breakdown = `${invSegText().join(' + ')}（护套包装费 2 元）`;
+    } else {
+      const invFee = finishedUsed > 0 ? 2 : 0;
+      const devBase = price <= 10 ? 3 : 6;
+      const printPer = Math.max(1, price <= 5 ? Math.ceil(price * 0.4) : Math.ceil(price * 0.30));
+      cashCost = invFee + devBase + rem * printPer;
+      breakdown = [...invSegText(), `冲扫整理底费 ${devBase} 元 + 相纸印制 ${rem}×${printPer}=${rem * printPer} 元`].join(' + ');
+    }
   }
 
   if (state.money.cash < cashCost) {
@@ -1286,6 +1648,8 @@ export function evaluateStallPlan(
     explicitCategory,
     cashCost,
     cookedUsed,
+    workOutputUsed,
+    specialtyUsed,
     pantryUsed,
     pantrySources: [],
     pantryUnitCostSum: 0,

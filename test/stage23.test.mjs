@@ -1334,8 +1334,8 @@ test('经济闭环与 UI（P2.5）：种菜进储物篮 → 五赛道扣本摆�
 
     // G) 验证 market 面板接口与当前 panel UI 讲解内容（含 18 种种子 + 手动种菜/养殖）
     const mktSnap = await wSeller.webUi().invoke('market', 'snapshot');
-    assert.equal(mktSnap.seeds.length, 18);
-    assert.equal(mktSnap.animals.length, 4);
+    assert.equal(mktSnap.seeds.length, 35);
+    assert.equal(mktSnap.animals.length, 20);
     assert.equal(mktSnap.stallRules.length, 5);
     assert.equal(mktSnap.deals.some((d) => d.income === 30), true);
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -2779,7 +2779,7 @@ test('她惦记的自动记账（买家伙/考证/搬家遇阻写入与办成消
     fakeDoc.head.ownerDocument = fakeDoc;
     fakeDoc.body.ownerDocument = fakeDoc;
     globalThis.document = fakeDoc;
-    const panelMod = await import(`../web/panel-1.7.0.js?mood=${Date.now()}`);
+    const panelMod = await import(`../web/panel-1.8.0.js?mood=${Date.now()}`);
     const panels = panelMod.default.panels;
 
     const nowRoot = fakeDoc.createElement('div');
@@ -2815,8 +2815,8 @@ test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产�
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
 
-  // 1) 50 个职业与零鱼肉忌讳校验
-  assert.equal(JOBS.length, 50, 'JOBS 应扩充到 50 项');
+  // 1) 69 个职业与零鱼肉忌讳校验
+  assert.equal(JOBS.length, 69, 'JOBS 应扩充到 69 项');
   for (const jb of JOBS) {
     assert.doesNotMatch(jb.name, /鱼肉|生鱼|鱼排|鱼丸|烤鱼|鱼汤|水煮鱼|刺身/);
     assert.ok(jb.pay > 0 && jb.minutes > 0);
@@ -2858,7 +2858,7 @@ test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产�
   assert.equal(sHigh.cookedDishes[0].qualityLabel, '臻品');
 
   const overview = buildCareerOverview(sHigh);
-  assert.equal(overview.jobs.length, 50);
+  assert.equal(overview.jobs.length, 69);
   assert.equal(overview.workOutputs.length, 1);
 
   // 3) 过劳生病门禁（禁外出打工/逛街，放行在家休息与农牧照料）+ 每日照料与 World 广播
@@ -2975,7 +2975,7 @@ test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产�
     fakeDoc.body.ownerDocument = fakeDoc;
     globalThis.document = fakeDoc;
 
-    const panelMod = await import(`../web/panel-1.7.0.js?stage24=${Date.now()}`);
+    const panelMod = await import(`../web/panel-1.8.0.js?stage24=${Date.now()}`);
     const panels = panelMod.default.panels;
 
     const nowSnap = await world.panelInvoke('now', 'snapshot', []);
@@ -2989,7 +2989,7 @@ test('30 个职业无鱼类禁忌词，熟练度涨薪(1.0x→1.5x)、四档产�
     const careerRoot = fakeDoc.createElement('div');
     await panels.career.mount({ root: careerRoot, language: 'zh', invoke: async () => careerSnap, timeout: () => 0 });
     assert.match(careerRoot.textContent, /五大职业特色工作台/);
-    assert.match(careerRoot.textContent, /50 项/);
+    assert.match(careerRoot.textContent, /69 项/);
     for (const [sid, expectWord] of [
       ['photo', '暗房胶片冲印'],
       ['craft', '亚麻刺绣手作'],
@@ -3188,7 +3188,7 @@ test('复审 P0/P1/P2 全项回归：照料点击不报错、混合心情对齐�
     fakeDoc.body.ownerDocument = fakeDoc;
     globalThis.document = fakeDoc;
 
-    const panelMod = await import(`../web/panel-1.7.0.js?careclick=${Date.now()}`);
+    const panelMod = await import(`../web/panel-1.8.0.js?careclick=${Date.now()}`);
     const nowRoot = fakeDoc.createElement('div');
     await panelMod.default.panels.now.mount({
       root: nowRoot,
@@ -3224,7 +3224,7 @@ test('1.7.0 全新特性：医疗系与看病、30天证书核验/25天预警、
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
 
-  assert.equal(JOBS.length, 50);
+  assert.equal(JOBS.length, 69);
   assert.equal(CERTS.length, 14);
   for (const id of ['pharmacy_clerk', 'clinic_assistant', 'rehab_therapist', 'community_doctor']) {
     assert.ok(JOBS.some((j) => j.id === id), `缺少医疗岗位 ${id}`);
@@ -3373,7 +3373,7 @@ test('1.7.0 全新特性：医疗系与看病、30天证书核验/25天预警、
       getElementById(id) { return findAll(this.head, (x) => x.id === id)[0] || findAll(this.body, (x) => x.id === id)[0] || null; },
     };
     globalThis.document = fakeDoc;
-    const panelMod = await import(`../web/panel-1.7.0.js?hubbtn=${Date.now()}`);
+    const panelMod = await import(`../web/panel-1.8.0.js?hubbtn=${Date.now()}`);
     const nowRoot = fakeDoc.createElement('div');
     await panelMod.default.panels.now.mount({
       root: nowRoot,

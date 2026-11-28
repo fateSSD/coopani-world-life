@@ -68,7 +68,7 @@
 
 ```bash
 # 校验新版手账面板语法
-node --check web/panel-1.7.0.js
+node --check web/panel-1.8.0.js
 
 # 全部单元测试与 Hub v1.1 本地 mock 集成测试
 node --import 'file:///E:/Coopanion/resources/app/node_modules/tsx/dist/loader.mjs' --test test/*.test.mjs

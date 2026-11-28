@@ -84,6 +84,89 @@ export function findEquip(q: string): EquipDef | null {
   return EQUIP_CATALOG.find((e) => e.id === s || e.name.toLowerCase().includes(s)) ?? null;
 }
 
+export interface EquipMaintainRule {
+  every: number;
+  cost: number;
+  label: string;
+}
+
+export const EQUIP_MAINTAIN: Record<string, EquipMaintainRule> = {
+  garden_kit: { every: 8, cost: 22, label: '磨剪防锈油与园艺手套换新' },
+  folding_bike: { every: 10, cost: 20, label: '链条上油与胎压刹车微调' },
+  coffee_kit: { every: 8, cost: 28, label: '滤纸耗材与磨芯除垢清理' },
+  sewing: { every: 10, cost: 25, label: '缝纫机上油、梭芯与换针' },
+  oven: { every: 8, cost: 25, label: '烤盘垫纸与炉膛清垢校温' },
+  camera: { every: 10, cost: 40, label: '传感器除尘与防潮保养耗材' },
+  ebike: { every: 8, cost: 35, label: '补胎换刹片与充电耗损维护' },
+  computer: { every: 12, cost: 30, label: '散热清灰与外设耗损维护' },
+  vehicle_car: { every: 6, cost: 55, label: '洗车保养与机油里程分摊' },
+};
+
+export function equipMaintainName(key: string): string {
+  if (key === 'vehicle_car') return '运营车辆';
+  return EQUIP_CATALOG.find((e) => e.id === key)?.name ?? key;
+}
+
+export function jobMaintainKey(jobId: string, equip?: string): string | null {
+  if (jobId === 'driver' || jobId === 'charter_captain') return 'vehicle_car';
+  if (equip && Object.prototype.hasOwnProperty.call(EQUIP_MAINTAIN, equip)) return equip;
+  return null;
+}
+
+export interface SpecialtyDef {
+  id: string;
+  city: '兰州' | '北京' | '通用';
+  category: 'pantry_dry' | 'tea_drink' | 'snack' | 'craft_mat' | 'souvenir';
+  name: string;
+  price: number;
+  useMode: 'pantry' | 'drink' | 'snack' | 'snack_or_pantry' | 'collect_or_stall';
+  pantryId?: string;
+  pantryKind?: 'veg' | 'starch' | 'fruit' | 'herb' | 'craft_mat';
+  foodGain?: number;
+  funGain?: number;
+  energyGain?: number;
+  charges?: number;
+  knowFirst?: number;
+  stallCategory?: 'produce' | 'food' | 'craft' | 'writing' | 'photo';
+  note: string;
+}
+
+export const CITY_SPECIALTIES: readonly SpecialtyDef[] = [
+  { id: 'lz_lily_dry', city: '兰州', category: 'pantry_dry', name: '兰州真空甜百合干', price: 24, useMode: 'pantry', pantryId: 'lily_dry', pantryKind: 'veg', note: '入炖汤甜品提鲜润口。' },
+  { id: 'lz_pepper', city: '兰州', category: 'pantry_dry', name: '陇南大红袍花椒', price: 18, useMode: 'pantry', pantryId: 'spice_pack', pantryKind: 'herb', note: '炖羊肉与牛肉面提味底料。' },
+  { id: 'lz_sanpaotai', city: '兰州', category: 'tea_drink', name: '盖碗三泡台料包', price: 22, useMode: 'drink', funGain: 14, energyGain: 5, note: '枸杞红枣桂圆冰糖茶包，泡饮解乏。' },
+  { id: 'lz_rose_jam', city: '兰州', category: 'snack', name: '苦水玫瑰花酱', price: 26, useMode: 'snack_or_pantry', pantryId: 'honey', pantryKind: 'herb', foodGain: 24, funGain: 14, note: '可直接抹面包吃，或当花蜜入烘焙。' },
+  { id: 'lz_gourd_blank', city: '兰州', category: 'craft_mat', name: '素面小葫芦坯', price: 20, useMode: 'pantry', pantryId: 'lz_gourd_blank', pantryKind: 'craft_mat', note: '进织造手作台加工为彩绘刻花小葫芦。' },
+  { id: 'lz_bridge_mark', city: '兰州', category: 'souvenir', name: '黄河铁桥木刻书签', price: 16, useMode: 'collect_or_stall', knowFirst: 1, stallCategory: 'writing', note: '首次获得见识 +1，亦可摆摊转卖。' },
+
+  { id: 'bj_chestnut', city: '北京', category: 'pantry_dry', name: '怀柔去壳熟板栗仁', price: 22, useMode: 'snack_or_pantry', pantryId: 'chestnut', pantryKind: 'starch', foodGain: 26, funGain: 10, note: '便携甜栗，亦可入炖菜。' },
+  { id: 'bj_sweet_sauce', city: '北京', category: 'pantry_dry', name: '京式六味甜面酱', price: 16, useMode: 'pantry', pantryId: 'sweet_sauce', pantryKind: 'herb', note: '复刻炸酱面与烤鸭荷叶卷的增香酱料。' },
+  { id: 'bj_jasmine_tea', city: '北京', category: 'tea_drink', name: '浓香茉莉花茶罐', price: 28, useMode: 'drink', funGain: 15, energyGain: 5, note: '京味花茶，泡饮舒心提神。' },
+  { id: 'bj_pastry_box', city: '北京', category: 'snack', name: '京八件手工糕点盒', price: 34, useMode: 'snack', charges: 2, foodGain: 30, funGain: 14, note: '可分 2 次享用的旅途高情绪点心盒。' },
+  { id: 'bj_tuer_blank', city: '北京', category: 'craft_mat', name: '素坯兔儿爷彩绘套', price: 26, useMode: 'pantry', pantryId: 'bj_tuer_blank', pantryKind: 'craft_mat', note: '进织造手作台加工为手绘金线兔儿爷摆件。' },
+  { id: 'bj_axis_cards', city: '北京', category: 'souvenir', name: '中轴线铜版明信片套', price: 20, useMode: 'collect_or_stall', knowFirst: 1, stallCategory: 'photo', note: '首次获得见识 +1，亦可挂影像摊转卖。' },
+
+  { id: 'town_osmanthus', city: '通用', category: 'tea_drink', name: '手筛干金桂花罐', price: 18, useMode: 'pantry', pantryId: 'chamomile', pantryKind: 'herb', note: '居家常备桂花香料，可替代洋甘菊桂花入茶入点心。' },
+  { id: 'town_bamboo_dry', city: '通用', category: 'pantry_dry', name: '水乡手晒春笋干', price: 20, useMode: 'pantry', pantryId: 'wild_rice_stem', pantryKind: 'veg', note: '跨季替代脆茭白入锅，缓解反季缺料。' },
+];
+
+export function findSpecialty(q: string, city?: string): SpecialtyDef | null {
+  const s = String(q || '').trim().toLowerCase();
+  if (!s) return null;
+  const norm = city ? String(city).trim().replace(/[市省区县]$/, '') : '';
+  const pool = norm
+    ? CITY_SPECIALTIES.filter((x) => x.city === norm || x.city === '通用')
+    : CITY_SPECIALTIES;
+  return pool.find((x) => x.id.toLowerCase() === s || x.name.toLowerCase() === s || x.name.toLowerCase().includes(s))
+    ?? CITY_SPECIALTIES.find((x) => x.id.toLowerCase() === s || x.name.toLowerCase() === s || x.name.toLowerCase().includes(s))
+    ?? null;
+}
+
+export function specialtiesForCity(city = '兰州'): SpecialtyDef[] {
+  const norm = String(city || '兰州').trim().replace(/[市省区县]$/, '') || '兰州';
+  return CITY_SPECIALTIES.filter((x) => x.city === norm || x.city === '通用');
+}
+
 /* ------------------------------------------------------------------ */
 /* 五档完成度定价（§4.10）                                             */
 /* ------------------------------------------------------------------ */
@@ -213,17 +296,56 @@ export interface StreetWindow {
   discount: number;
 }
 
-export function streetWindowOf(now: Date): StreetWindow | null {
+export const CITY_STREET_WINDOWS = {
+  兰州: {
+    'morning-market': { street: '南滨河路', label: '晨集', hint: '鲜菜早点 8 折', discount: 0.8 },
+    'night-clearance': { street: '张掖路', label: '尾货市', hint: '熟食点心半价', discount: 0.5 },
+    'weekend-flea': { street: '雁滩路', label: '周末旧货集与夜唱', hint: '有旧货和小物件摆出来', discount: 1 },
+  },
+  北京: {
+    'morning-market': { street: '鼓楼西大街', label: '胡同早市', hint: '鲜蔬早点 8 折', discount: 0.8 },
+    'night-clearance': { street: '什刹海沿岸', label: '晚市尾货', hint: '熟食京味点心半价', discount: 0.5 },
+    'weekend-flea': { street: '琉璃厂', label: '周末旧书文玩集', hint: '有旧连环画与书签摆出来', discount: 1 },
+  },
+} as const;
+
+export const CITY_MARKET_SNACKS = {
+  兰州: [
+    { item: '冰镇灰豆子', price: 10, unit: '碗', foodGain: 32, funGain: 11 },
+    { item: '燕麦甜醅子', price: 12, unit: '杯', foodGain: 26, funGain: 13 },
+    { item: '牛奶鸡蛋醪糟', price: 15, unit: '碗', foodGain: 38, funGain: 16 },
+    { item: '一清二白牛肉面', price: 16, unit: '碗', foodGain: 52, funGain: 14 },
+  ],
+  北京: [
+    { item: '胡同瓷瓶老酸奶', price: 10, unit: '瓶', foodGain: 20, funGain: 10 },
+    { item: '糖炒栗子与冰糖葫芦', price: 16, unit: '份', foodGain: 26, funGain: 16 },
+    { item: '豌豆黄与驴打滚拼盘', price: 18, unit: '盒', foodGain: 32, funGain: 15 },
+    { item: '老北京小碗干炸酱面', price: 22, unit: '碗', foodGain: 52, funGain: 15 },
+    { item: '现烙门钉肉饼', price: 24, unit: '份', foodGain: 54, funGain: 14 },
+  ],
+} as const;
+
+function pickMarketCity(city?: string): '兰州' | '北京' {
+  const norm = String(city ?? '').trim().replace(/[市省区县]$/, '');
+  return norm === '北京' ? '北京' : '兰州';
+}
+
+export function streetWindowOf(now: Date, city = '兰州'): StreetWindow | null {
   const h = now.getHours() + now.getMinutes() / 60;
   const day = now.getDay();
+  const c = pickMarketCity(city);
+  const tbl = CITY_STREET_WINDOWS[c];
   if (h >= 6 && h < 9.5) {
-    return { id: 'morning-market', street: '南滨河路', place: '南滨河路', label: '晨集', hint: '鲜菜早点 8 折', discount: 0.8 };
+    const row = tbl['morning-market'];
+    return { id: 'morning-market', street: row.street, place: row.street, label: row.label, hint: row.hint, discount: row.discount };
   }
   if (h >= 19.5 && h < 21.5) {
-    return { id: 'night-clearance', street: '张掖路', place: '张掖路', label: '尾货市', hint: '熟食点心半价', discount: 0.5 };
+    const row = tbl['night-clearance'];
+    return { id: 'night-clearance', street: row.street, place: row.street, label: row.label, hint: row.hint, discount: row.discount };
   }
   if ((day === 0 || day === 6) && h >= 18 && h < 22) {
-    return { id: 'weekend-flea', street: '雁滩路', place: '雁滩路', label: '周末旧货集与夜唱', hint: '有旧货和小物件摆出来', discount: 1 };
+    const row = tbl['weekend-flea'];
+    return { id: 'weekend-flea', street: row.street, place: row.street, label: row.label, hint: row.hint, discount: row.discount };
   }
   return null;
 }
@@ -240,15 +362,16 @@ export interface MarketItem {
 }
 
 /**
- * 兰州本地确定性物价表（融合 §4.19 日内街巷折扣 + 二十四节气时令货 + 周末旧货集）。
+ * 确定性街市物价表（融合日内街巷折扣 + 二十四节气时令货 + 周末集市；未传 city 默认保持兰州旧版输出）。
  */
-export function marketCatalogOf(now: Date, localDate: string): MarketItem[] {
+export function marketCatalogOf(now: Date, localDate: string, city?: string): MarketItem[] {
   let h = 0;
   for (let i = 0; i < localDate.length; i++) h = (h * 33 + localDate.charCodeAt(i)) >>> 0;
   const delta = (offset: number) => ((h + offset) % 5) - 2;
 
+  const targetCity = pickMarketCity(city);
   const term = solarTermOf(now);
-  const win = streetWindowOf(now);
+  const win = streetWindowOf(now, targetCity);
   const vegDisc = win?.id === 'morning-market' ? win.discount : 1;
   const cookedDisc = win?.id === 'night-clearance' ? win.discount : 1;
 
@@ -259,13 +382,15 @@ export function marketCatalogOf(now: Date, localDate: string): MarketItem[] {
     winter: { item: '炭烤红薯', base: 9, unit: '个', food: 28, fun: 10 },
   };
   const sea = seasonalBySeason[term.season];
+  const morningTag = win?.id === 'morning-market' ? `${win.label}8折` : '生鲜';
+  const nightTag = win?.id === 'night-clearance' ? '尾货半价' : '熟食';
 
   const list: MarketItem[] = [
     {
       item: '青菜豆腐',
       price: Math.max(3, Math.round((7 + delta(1)) * vegDisc)),
       unit: '一份',
-      tag: win?.id === 'morning-market' ? '晨集8折·带露水' : '生鲜',
+      tag: win?.id === 'morning-market' ? `${win.label}8折·带露水` : '生鲜',
       foodGain: 28,
       funGain: 6,
       freshVeg: win?.id === 'morning-market',
@@ -275,7 +400,7 @@ export function marketCatalogOf(now: Date, localDate: string): MarketItem[] {
       item: '番茄鸡蛋面料',
       price: Math.max(4, Math.round((10 + delta(2)) * vegDisc)),
       unit: '一份',
-      tag: win?.id === 'morning-market' ? '晨集8折' : '生鲜',
+      tag: morningTag,
       foodGain: 30,
       funGain: 6,
       freshVeg: win?.id === 'morning-market',
@@ -285,7 +410,7 @@ export function marketCatalogOf(now: Date, localDate: string): MarketItem[] {
       item: '小鱼干配菜',
       price: Math.max(4, Math.round((12 + delta(3)) * cookedDisc)),
       unit: '一份',
-      tag: win?.id === 'night-clearance' ? '尾货半价' : '熟食',
+      tag: nightTag,
       foodGain: 32,
       funGain: 8,
       discounted: win?.id === 'night-clearance',
@@ -306,17 +431,37 @@ export function marketCatalogOf(now: Date, localDate: string): MarketItem[] {
       item: '酱卤豆干拼盘',
       price: 6,
       unit: '半价袋',
-      tag: '张掖路尾货',
+      tag: targetCity === '北京' ? '什刹海尾货' : '张掖路尾货',
       foodGain: 34,
       funGain: 10,
       discounted: true,
     });
   }
   if (win?.id === 'weekend-flea') {
-    list.push(
-      { item: '旧磁带随身听小带', price: 14, unit: '盘', tag: '周末旧货集', foodGain: 0, funGain: 26 },
-      { item: '街口扭蛋机盲盒', price: 5, unit: '颗', tag: '周末集市', foodGain: 0, funGain: 20 },
-    );
+    if (targetCity === '北京') {
+      list.push(
+        { item: '琉璃厂旧连环画', price: 14, unit: '本', tag: '周末旧书文玩集', foodGain: 0, funGain: 26 },
+        { item: '老胡同铜纹书签', price: 8, unit: '枚', tag: '周末集市', foodGain: 0, funGain: 20 },
+      );
+    } else {
+      list.push(
+        { item: '旧磁带随身听小带', price: 14, unit: '盘', tag: '周末旧货集', foodGain: 0, funGain: 26 },
+        { item: '街口扭蛋机盲盒', price: 5, unit: '颗', tag: '周末集市', foodGain: 0, funGain: 20 },
+      );
+    }
+  }
+  if (city !== undefined) {
+    for (const sk of CITY_MARKET_SNACKS[targetCity]) {
+      list.push({
+        item: sk.item,
+        price: win?.id === 'night-clearance' ? Math.max(4, Math.round(sk.price * cookedDisc)) : sk.price,
+        unit: sk.unit,
+        tag: `${targetCity}风味${win?.id === 'night-clearance' ? '·半价' : ''}`,
+        foodGain: sk.foodGain,
+        funGain: sk.funGain,
+        discounted: win?.id === 'night-clearance',
+      });
+    }
   }
   return list;
 }
@@ -336,6 +481,7 @@ export function buildDreamSlice(opts: {
   overdueCount: number;
   recentTexts: readonly string[];
   journeyCity?: string;
+  city?: string;
   lowEnergy?: boolean;
   roll?: number;
 }): string | null {
@@ -344,7 +490,10 @@ export function buildDreamSlice(opts: {
   if (r >= chance) return null;
 
   const anchor = opts.pledges[0] || opts.wants[0] || opts.recentTexts[0] || '';
-  const place = opts.journeyCity ? `一路走到了${opts.journeyCity}` : '沿着滨河路走到铁桥边看黄河水光';
+  const homePlace = pickMarketCity(opts.city) === '北京'
+    ? '沿着什刹海湖岸走过钟鼓楼下的老槐树'
+    : '沿着滨河路走到铁桥边看黄河水光';
+  const place = opts.journeyCity ? `一路走到了${opts.journeyCity}` : homePlace;
   if (!anchor && !opts.journeyCity) return null;
 
   if (opts.pledges[0]) {
@@ -450,6 +599,25 @@ export const JOB_OUTPUT_CATALOG: Record<string, { name: string; basePrice: numbe
   greenhouse_helper: { name: '温室时令壮苗礼篮', basePrice: 48 },
   rehab_therapist: { name: '居家理疗调理随访案', basePrice: 76 },
   community_doctor: { name: '社区健康随访手册', basePrice: 110 },
+  orchard_picker: { name: '时令鲜果采摘篮', basePrice: 24 },
+  book_restorer: { name: '修旧如旧线装书样', basePrice: 52 },
+  apiary_helper: { name: '封盖巢蜜试吃罐', basePrice: 48 },
+  tea_sommelier: { name: '节气拼配花果茶罐', basePrice: 84 },
+  wool_artisan: { name: '手工纺线绒毛织片', basePrice: 86 },
+  agro_advisor: { name: '农牧生态轮作规划册', basePrice: 122 },
+  lz_teahouse_boy: { name: '黄河岸边盖碗茶单', basePrice: 22 },
+  lz_noodle_puller: { name: '手工拉面二细面坯盒', basePrice: 46 },
+  lz_lily_sorter: { name: '精选特级鲜百合礼盒', basePrice: 48 },
+  lz_gourd_carver: { name: '针刻水墨花鸟小葫芦', basePrice: 90 },
+  lz_river_docent: { name: '黄河铁桥风物手绘讲稿', basePrice: 82 },
+  lz_noodle_master: { name: '秘制牛骨清汤辣子套组', basePrice: 126 },
+  bj_alley_bookstore: { name: '旧书摊寻得毛边诗签', basePrice: 24 },
+  bj_pastry_packer: { name: '红绳纸包传统点心盒', basePrice: 25 },
+  bj_hutong_walk: { name: '胡同门墩漫步手账页', basePrice: 50 },
+  bj_clay_artisan: { name: '手绘金线兔儿爷小像', basePrice: 56 },
+  bj_axis_photo: { name: '红墙银杏中轴线印样', basePrice: 94 },
+  bj_courtyard_docent: { name: '古建彩画与匾额札记', basePrice: 86 },
+  bj_book_conservator: { name: '宣纸托裱古籍修复样卷', basePrice: 134 },
 };
 
 export function jobOutputOf(jobId: string): { name: string; basePrice: number } | null {
